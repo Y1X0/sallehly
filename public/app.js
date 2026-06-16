@@ -313,8 +313,6 @@ function v11SelectService(service){
   }else{ toast('هذه الخدمة للعميل. يمكنك إدارة الطلبات من لوحتك.'); }
 }
 function v11Hero(title, sub){return `<div class="dh-slim"><div class="dh-slim-top"><span class="dh-slim-title">👋 ${title}</span>${sub?`<span class="dh-slim-sub">${sub}</span>`:''}</div></div>`;}
-
-function v11Hero(title, sub){return `<div class="dh-slim"><div class="dh-slim-top"><span class="dh-slim-title">👋 ${title}</span>${sub?`<span class="dh-slim-sub">${sub}</span>`:''}</div></div>`;}
 function v11Improvements(){return `<div class="v11-improve-grid"><div><b>📌 طلبات بدون تداخل</b><small>الفني لا يقبل طلب جديد قبل إنهاء الطلب النشط.</small></div><div><b>🧾 سجل عمليات</b><small>كل طلب وشحن ورصيد محفوظ للنظام.</small></div><div><b>💬 شات بعد القبول</b><small>المحادثة بين العميل والفني مرتبطة بالطلب.</small></div><div><b>📍 محافظة ومنطقة</b><small>بحث حسب عمان، الزرقاء، إربد وباقي المحافظات.</small></div></div>`;}
 
 
@@ -353,10 +351,6 @@ function home(){app.innerHTML=`<section class="hero pro-hero"><div class="hero-c
   window.contact = contact;
 
 function servicesPage(){
-  window.servicesPage = servicesPage;
-  window.howPage = howPage;
-  window.techPage = techPage;
-  window.contact = contact;
   document.body.classList.remove('open','sidebar-open','v37-menu-open','dashboard-mode','v37-dashboard');
   const safe = window.esc || (v=>String(v??''));
   const cards = (state.meta.services||[]).map(s=>`

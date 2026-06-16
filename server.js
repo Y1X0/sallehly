@@ -67,7 +67,7 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
     origin: process.env.NODE_ENV === 'production'
-      ? ['https://sallehly.onrender.com']
+      ? ['https://sallehly.onrender.com', 'https://sallehly.com', 'https://www.sallehly.com']
       : ['http://localhost:3000'],
     credentials: true
   }
