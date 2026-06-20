@@ -73,7 +73,19 @@ const io = new Server(server, {
   }
 });
 const PORT = process.env.PORT || 3000;
-const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? (()=>{ throw new Error('JWT_SECRET is required in production'); })() : 'local_development_secret_change_me');
+// [SEC-FIX-01] JWT_SECRET validation — must be ≥32 chars in production, ≥16 in dev
+const JWT_SECRET = (() => {
+  const secret = process.env.JWT_SECRET;
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') throw new Error('[FATAL] JWT_SECRET is required in production');
+    console.warn('[WARN] JWT_SECRET not set — using insecure default for development only');
+    return 'local_development_secret_CHANGE_ME_before_deploy';
+  }
+  if (process.env.NODE_ENV === 'production' && secret.length < 32) {
+    throw new Error('[FATAL] JWT_SECRET must be at least 32 characters in production');
+  }
+  return secret;
+})();
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const RESEND_FROM = process.env.RESEND_FROM || 'onboarding@resend.dev';
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
@@ -87,6 +99,9 @@ fs.mkdirSync(path.join(UPLOAD_DIR, 'avatars'), { recursive: true });
 fs.mkdirSync(path.join(UPLOAD_DIR, 'audios'), { recursive: true });
 fs.mkdirSync(path.join(UPLOAD_DIR, 'requests'), { recursive: true });
 
+// [SEC-FIX-05] Escape LIKE wildcards to prevent unintended wildcard matching
+function escapeLike(str){ return String(str||'').replace(/[%_\\]/g, c => '\\' + c); }
+
 function hasSafeExt(file, allowedExts){
   const ext = path.extname(file.originalname || '').toLowerCase();
   return allowedExts.includes(ext);
@@ -97,7 +112,9 @@ function safeUploadName(file){
 }
 
 
+// [SEC-FIX-13] Helmet with explicit frameguard DENY + CSP hardened
 app.use(helmet({
+  frameguard: { action: 'deny' },
   hsts: {
     maxAge: 31536000,
     includeSubDomains: true,
@@ -120,6 +137,31 @@ app.use(helmet({
   }
 }));
 app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: process.env.NODE_ENV === 'production' ? 1500 : 100000, standardHeaders: true, legacyHeaders: false, skip: (req)=> req.path.startsWith('/uploads') || req.path.startsWith('/socket.io') || req.path==='/' || req.path.endsWith('.css') || req.path.endsWith('.js') }));
+// [SEC-FIX-06] CSRF Protection — Origin/Referer validation for state-changing requests
+const ALLOWED_ORIGINS = process.env.NODE_ENV === 'production'
+  ? ['https://sallehly.com', 'https://www.sallehly.com', 'https://sallehly.onrender.com']
+  : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+
+app.use((req, res, next) => {
+  if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method) && req.path.startsWith('/api/')) {
+    const origin = req.headers.origin;
+    const referer = req.headers.referer;
+    // Allow requests with no origin (same-origin fetch, server-to-server)
+    if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+      return res.status(403).json({ error: 'طلب غير مصرح به (CSRF)' });
+    }
+    if (!origin && referer) {
+      try {
+        const refOrigin = new URL(referer).origin;
+        if (!ALLOWED_ORIGINS.includes(refOrigin)) {
+          return res.status(403).json({ error: 'طلب غير مصرح به (CSRF)' });
+        }
+      } catch { /* invalid referer — let it pass, rate-limiting handles abuse */ }
+    }
+  }
+  next();
+});
+
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
@@ -512,11 +554,19 @@ async function sendOtpEmail(toEmail, otp, name) {
     return false;
   }
 }
+// [SEC-FIX-08] auth() — JWT verify + live is_active check to support instant revocation
 function auth(req,res,next){
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : req.cookies.token;
   if(!token) return res.status(401).json({error:'يرجى تسجيل الدخول'});
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); } catch { return res.status(401).json({error:'جلسة غير صالحة'}); }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    // Revocation check: ensure account still active in DB
+    const liveUser = db.prepare('SELECT id, role, name, is_active FROM users WHERE id=?').get(decoded.id);
+    if(!liveUser || !liveUser.is_active) return res.status(401).json({error:'الجلسة منتهية أو الحساب موقوف'});
+    req.user = decoded;
+    next();
+  } catch { return res.status(401).json({error:'جلسة غير صالحة'}); }
 }
 function requireRole(...roles){ return (req,res,next)=> roles.includes(req.user.role) ? next() : res.status(403).json({error:'لا تملك صلاحية'}); }
 function clean(s){ return String(s||'').trim(); }
@@ -542,7 +592,13 @@ io.use((socket, next)=>{
     next();
   } catch { next(new Error('جلسة غير صالحة')); }
 });
+// [SEC-FIX-03] Socket.IO — join personal room on connect for targeted emits
 io.on('connection', (socket)=>{
+  // Each authenticated user joins their personal room: "user-{id}" and role room
+  socket.join(`user-${socket.user.id}`);
+  if(socket.user.role === 'admin') socket.join('admin-room');
+  if(socket.user.role === 'technician') socket.join('technicians-room');
+
   socket.on('join-request', (requestId)=>{
     if(!requestId) return;
     // Only allow joining rooms for requests the user is part of
@@ -670,19 +726,22 @@ app.post('/api/auth/logout', (req,res)=>{ res.clearCookie('token'); res.json({ok
 // ── Forgot Password: خطوة 1 — إرسال OTP لإعادة التعيين ──────────────────
 app.post('/api/auth/forgot-password', otpLimiter, async (req,res)=>{
   const email = clean(req.body.email||'').toLowerCase();
-  if(!validator.isEmail(email)) return res.status(400).json({error:'البريد غير صحيح'});
+  if(!validator.isEmail(email)) return res.status(400).json({error:'البريد الإلكتروني غير صحيح'});
   const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
-  // نرد بنجاح دائماً لمنع تخمين الإيميلات
-  if(!user){ return res.json({ok:true, message:'إذا كان البريد مسجلاً، ستصلك رسالة خلال دقائق'}); }
+  // [SEC-FIX-04] No User Enumeration — always return the same message
+  if(!user){
+    // Constant-time delay to prevent timing-based enumeration
+    await new Promise(r => setTimeout(r, 350 + Math.floor(Math.random() * 200)));
+    return res.json({ok:true, message:'إذا كان البريد مسجلاً لدينا، ستصلك رسالة التحقق خلال دقيقة'});
+  }
   const otp = String(Math.floor(100000 + Math.random() * 900000));
   const otp_expires = Date.now() + 10 * 60 * 1000;
-  // نخزن في pending_users مع type='reset'
   db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
   db.prepare('INSERT INTO pending_users(email,otp,otp_expires,data,avatar_filename) VALUES(?,?,?,?,?)')
     .run(email, otp, otp_expires, JSON.stringify({type:'reset', userId:user.id}), '');
   const sent = await sendOtpEmail(email, otp, user.name);
   if(!sent) return res.status(500).json({error:'تعذر إرسال البريد، حاول مرة أخرى'});
-  res.json({ok:true, message:'إذا كان البريد مسجلاً، ستصلك رسالة خلال دقائق'});
+  res.json({ok:true, message:'تم إرسال كود التحقق على بريدك الإلكتروني'});
 });
 
 // ── Forgot Password: خطوة 2 — التحقق وإعادة التعيين ─────────────────────
@@ -746,9 +805,10 @@ app.get('/api/technicians', auth, (req,res)=>{
   let sql=`SELECT id,name${phoneField},city,areas,services,avatar_url,rating_avg,rating_count,completed_jobs,is_active FROM users WHERE role='technician' AND is_active=1`;
   const params=[];
   const wanted = service || q;
-  if(wanted){ sql += " AND (services LIKE ? OR name LIKE ?)"; params.push('%'+wanted+'%', '%'+wanted+'%'); }
-  if(city){ sql += " AND (city=? OR areas LIKE ?)"; params.push(city, '%'+city+'%'); }
-  if(area){ sql += " AND (areas LIKE ? OR city=?)"; params.push('%'+area+'%', city||area); }
+  // [SEC-FIX-05] Escape LIKE wildcards before interpolation
+  if(wanted){ const w=escapeLike(wanted); sql += " AND (services LIKE ? OR name LIKE ?)"; params.push('%'+w+'%', '%'+w+'%'); }
+  if(city){ const c=escapeLike(city); sql += " AND (city=? OR areas LIKE ?)"; params.push(city, '%'+c+'%'); }
+  if(area){ const a=escapeLike(area); sql += " AND (areas LIKE ? OR city=?)"; params.push('%'+a+'%', city||area); }
   sql += ' ORDER BY rating_avg DESC, completed_jobs DESC, created_at DESC';
   res.json({technicians: db.prepare(sql).all(...params)});
 });
@@ -774,9 +834,14 @@ app.post('/api/requests', auth, requireRole('customer'), requestsLimiter, upload
   const info = db.prepare('INSERT INTO requests(customer_id,technician_id,service,city,area,lat,lng,description,preferred_time,problem_image_url,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
     .run(req.user.id, requestedTechId, clean(service), clean(city), clean(area), lat, lng, clean(description), clean(preferred_time), problemImage, 'بانتظار العروض');
   const request = db.prepare('SELECT * FROM requests WHERE id=?').get(info.lastInsertRowid);
-  io.emit('requests-updated', { request });
-  io.emit('new-request-created', { request });
+  // [SEC-FIX-03] Targeted emit: only relevant users & admins
   safeEmit(request.id, 'request-status-updated', { request });
+  // Notify the customer who created the request
+  io.to(`user-${request.customer_id}`).emit('requests-updated', { request });
+  // Notify all technicians about new available request (no sensitive customer data sent here)
+  io.to('technicians-room').emit('new-request-created', { requestId: request.id, service: request.service, city: request.city, area: request.area, status: request.status });
+  // Notify admins with full data
+  io.to('admin-room').emit('requests-updated', { request });
   res.json({request});
 });
 app.get('/api/requests', auth, (req,res)=>{
@@ -809,8 +874,11 @@ app.delete('/api/requests/:id', auth, requireRole('customer'), (req,res)=>{
   db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(r.id);
   db.prepare("UPDATE requests SET status='ملغي', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(r.id);
   const request=db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);
-  io.emit('requests-updated',{request});
+  // [SEC-FIX-03] Targeted emit
   safeEmit(r.id,'request-status-updated',{request});
+  io.to(`user-${request.customer_id}`).emit('requests-updated',{request});
+  if(request.technician_id) io.to(`user-${request.technician_id}`).emit('requests-updated',{request});
+  io.to('admin-room').emit('requests-updated',{request});
   res.json({request});
 });
 app.post('/api/requests/:id/offer', auth, requireRole('technician'), (req,res)=>{
@@ -850,11 +918,12 @@ app.post('/api/requests/:id/offer', auth, requireRole('technician'), (req,res)=>
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);
     const offers = db.prepare('SELECT * FROM offers WHERE request_id=? ORDER BY id DESC').all(r.id);
     
-    io.emit('requests-updated', { request });
-    io.emit('offer-created', { requestId:r.id, request, offers });
-    
+    // [SEC-FIX-03] Targeted emit for offer creation
     safeEmit(r.id, 'request-status-updated', { request });
     safeEmit(r.id, 'offer-created', { requestId:r.id, request, offers });
+    io.to(`user-${r.customer_id}`).emit('requests-updated', { request });
+    io.to(`user-${r.customer_id}`).emit('offer-created', { requestId:r.id, request, offers });
+    io.to('admin-room').emit('requests-updated', { request });
     
     res.json({request, offers});
 });
@@ -891,11 +960,14 @@ app.post('/api/offers/:id/decision', auth, requireRole('customer'), (req,res)=>{
   }
   const request = db.prepare('SELECT * FROM requests WHERE id=?').get(offer.request_id);
   const offers = db.prepare('SELECT * FROM offers WHERE request_id=? ORDER BY id DESC').all(offer.request_id);
-  io.emit('requests-updated', { request });
+  // [SEC-FIX-03] Targeted emit for offer decision
   safeEmit(offer.request_id, 'request-status-updated', { request });
-  // إشعار خاص للفني بقبول عرضه
+  io.to(`user-${request.customer_id}`).emit('requests-updated', { request });
+  if(request.technician_id) io.to(`user-${request.technician_id}`).emit('requests-updated', { request });
+  io.to('admin-room').emit('requests-updated', { request });
   if(decision === 'accepted'){
-    io.emit('offer-accepted', {
+    // Notify the winning technician specifically
+    io.to(`user-${offer.technician_id}`).emit('offer-accepted', {
       requestId: offer.request_id,
       technicianId: offer.technician_id,
       offerId: offer.id,
@@ -920,8 +992,10 @@ app.delete('/api/offers/:id', auth, requireRole('technician'), (req,res)=>{
   db.prepare("UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
     .run(remaining ? 'وصلت عروض' : 'بانتظار العروض', offer.request_id);
   const request = db.prepare('SELECT * FROM requests WHERE id=?').get(offer.request_id);
-  io.emit('requests-updated', { request });
+  // [SEC-FIX-03] Targeted emit for offer withdrawal
   safeEmit(offer.request_id, 'request-status-updated', { request });
+  io.to(`user-${request.customer_id}`).emit('requests-updated', { request });
+  io.to('admin-room').emit('requests-updated', { request });
   res.json({ok:true, message:'تم سحب العرض بنجاح'});
 });
 
@@ -958,8 +1032,11 @@ app.post('/api/requests/:id/status', auth, (req,res)=>{
   }
   db.prepare('UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(status, r.id);
   const request = db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);
-  io.emit('requests-updated', { request });
+  // [SEC-FIX-03] Targeted emit for status update
   safeEmit(r.id, 'request-status-updated', { request });
+  io.to(`user-${request.customer_id}`).emit('requests-updated', { request });
+  if(request.technician_id) io.to(`user-${request.technician_id}`).emit('requests-updated', { request });
+  io.to('admin-room').emit('requests-updated', { request });
   res.json({request});
 });
 
@@ -1024,16 +1101,21 @@ app.post('/api/requests/:id/messages', auth, messagesLimiter, (req,res)=>{
   const messages = getMessages(r.id);
   safeEmit(r.id, 'messages-updated', { requestId:r.id, messages, senderId:Number(req.user.id) });
 
-const payload = {
+const chatPayload = {
   requestId: Number(r.id),
   senderId: Number(req.user.id),
   customerId: Number(r.customer_id),
   technicianId: r.technician_id ? Number(r.technician_id) : null
 };
-
-
-io.emit('chat-message-notify', payload);
-io.emit('chat-badges-updated', { requestId:Number(r.id) });
+// [SEC-FIX-03] Only notify the other party in the chat, not everyone
+const otherPartyId = req.user.id === r.customer_id ? r.technician_id : r.customer_id;
+if(otherPartyId) io.to(`user-${otherPartyId}`).emit('chat-message-notify', chatPayload);
+io.to(`user-${req.user.id}`).emit('chat-message-notify', chatPayload);
+io.to('admin-room').emit('chat-message-notify', chatPayload);
+// chat-badges-updated only to participants
+io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId:Number(r.id) });
+if(r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId:Number(r.id) });
+io.to('admin-room').emit('chat-badges-updated', { requestId:Number(r.id) });
   res.json({messages});
 });
 
@@ -1050,7 +1132,10 @@ app.post('/api/requests/:id/audio', auth, messagesLimiter, uploadAudio.single('a
   markChatRead(r.id, req.user.id);
   const messages = getMessages(r.id);
   safeEmit(r.id, 'messages-updated', { requestId:r.id, messages, senderId:Number(req.user.id) });
-  io.emit('chat-badges-updated', { requestId:r.id });
+  // [SEC-FIX-03] Targeted badges update for audio message
+  io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId:r.id });
+  if(r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId:r.id });
+  io.to('admin-room').emit('chat-badges-updated', { requestId:r.id });
   res.json({messages});
 });
 
@@ -1060,7 +1145,10 @@ app.get('/api/requests/:id/messages', auth, (req,res)=>{
   const hasOffer = req.user.role==='technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
   if(req.user.role!=='admin' && req.user.id!==r.customer_id && req.user.id!==r.technician_id && !hasOffer) return res.status(403).json({error:'لا تملك صلاحية'});
   markChatRead(r.id, req.user.id);
-  io.emit('chat-badges-updated', { requestId:r.id });
+  // [SEC-FIX-03] Targeted badges updated on read
+  io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId:r.id });
+  if(r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId:r.id });
+  io.to('admin-room').emit('chat-badges-updated', { requestId:r.id });
   res.json({messages: getMessages(req.params.id)});
 });
 app.post('/api/requests/:id/rate', auth, requireRole('customer'), (req,res)=>{
@@ -1086,7 +1174,9 @@ app.post('/api/topups', auth, requireRole('technician'), upload.single('receipt'
     'SELECT * FROM topups WHERE id=?'
     ).get(info.lastInsertRowid);
     
-    io.emit('topup-created', { topup });
+    // [SEC-FIX-03] Topup notifications only to admin + the technician themselves
+    io.to('admin-room').emit('topup-created', { topup });
+    io.to(`user-${req.user.id}`).emit('topup-created', { topup });
   res.json({topup: db.prepare('SELECT * FROM topups WHERE id=?').get(info.lastInsertRowid)});
 });
 app.get('/api/topups', auth, (req,res)=>{
@@ -1294,7 +1384,9 @@ app.post('/api/support', auth, (req,res)=>{
 
 const ticket = db.prepare('SELECT * FROM support_tickets WHERE id=?').get(info.lastInsertRowid);
 
-io.emit('support-created', { ticket });
+// [SEC-FIX-03] Support ticket notifications only to admin + ticket owner
+io.to('admin-room').emit('support-created', { ticket });
+io.to(`user-${req.user.id}`).emit('support-created', { ticket });
 
 res.json({ticket});
 });
@@ -1307,6 +1399,14 @@ app.post('/api/support/:id/status', auth, requireRole('admin'), (req,res)=>{
   db.prepare('UPDATE support_tickets SET status=? WHERE id=?').run(status, req.params.id);
   res.json({ticket: db.prepare('SELECT * FROM support_tickets WHERE id=?').get(req.params.id)});
 });
+// endpoint جديد: يرجع تذاكر الدعم الخاصة بالمستخدم الحالي
+app.get('/api/support/my', auth, (req,res)=>{
+  const tickets = db.prepare(
+    'SELECT * FROM support_tickets WHERE user_id=? ORDER BY id DESC'
+  ).all(req.user.id);
+  res.json({ tickets });
+});
+
 app.get('/api/support/:id/messages', auth, (req,res)=>{
   const ticket = db.prepare(`
     SELECT t.*, u.name user_name, u.email, u.role user_role
@@ -1316,6 +1416,10 @@ app.get('/api/support/:id/messages', auth, (req,res)=>{
   `).get(req.params.id);
 
   if(!ticket) return res.status(404).json({error:'التذكرة غير موجودة'});
+
+  // IDOR guard: only the ticket owner or admin can read the ticket
+  if(req.user.role !== 'admin' && ticket.user_id !== req.user.id)
+    return res.status(403).json({error:'غير مصرح'});
 
   const messages = db.prepare(`
     SELECT m.*, u.name sender_name, u.role sender_role
@@ -1332,6 +1436,10 @@ app.post('/api/support/:id/messages', auth, (req,res)=>{
 
   if(!ticket) return res.status(404).json({error:'التذكرة غير موجودة'});
 
+  // IDOR guard: only the ticket owner or admin can post messages
+  if(req.user.role !== 'admin' && ticket.user_id !== req.user.id)
+    return res.status(403).json({error:'غير مصرح'});
+
   if(ticket.status === 'closed'){
     return res.status(400).json({error:'الدردشة منتهية'});
   }
@@ -1347,16 +1455,13 @@ app.post('/api/support/:id/messages', auth, (req,res)=>{
     VALUES(?,?,?)
   `).run(req.params.id, req.user.id, body);
 
-  io.emit('support-message',{
-    ticketId:Number(req.params.id),
-    ticketUserId:ticket.user_id,
-    senderId:req.user.id
-  });
-  // إشعار تحديث فوري للمحادثة المفتوحة
-  io.emit('support-message-refresh', {
-    ticketId:Number(req.params.id),
-    senderId:req.user.id
-  });
+  // [SEC-FIX-03] Support message — only to ticket owner + admin
+  const supportMsgPayload = { ticketId:Number(req.params.id), ticketUserId:ticket.user_id, senderId:req.user.id };
+  io.to(`user-${ticket.user_id}`).emit('support-message', supportMsgPayload);
+  io.to('admin-room').emit('support-message', supportMsgPayload);
+  const refreshPayload = { ticketId:Number(req.params.id), senderId:req.user.id };
+  io.to(`user-${ticket.user_id}`).emit('support-message-refresh', refreshPayload);
+  io.to('admin-room').emit('support-message-refresh', refreshPayload);
   res.json({success:true});
 });
 

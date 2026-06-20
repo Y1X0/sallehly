@@ -14,10 +14,8 @@ function setupSocket(){
   socket = io();
 
   socket.on('connect', ()=>{
-    console.log('Socket connected:', socket.id);
   });
   socket.on('chat-message-notify', data=>{
-    console.log('CHAT NOTIFY RECEIVED', data);
   
     if(!state.user) return;
     if(Number(data.senderId) === Number(state.user.id)) return;
@@ -108,7 +106,6 @@ function setupSocket(){
     }
   });
   socket.on('topup-created', (data)=>{
-    console.log('TOPUP NOTIFY RECEIVED', data, state.user);
     if(state.user && state.user.role==='admin'){
   
       addBellNotification(
@@ -123,7 +120,6 @@ function setupSocket(){
     }
   });
   socket.on('support-created', (data)=>{
-    console.log('SUPPORT NOTIFY RECEIVED', data, state.user);
   
     if(state.user && state.user.role === 'admin'){
   
@@ -140,20 +136,21 @@ function setupSocket(){
   });
   socket.on('support-message', (data)=>{
     if(!state.user) return;
-  
     if(Number(data.senderId) === Number(state.user.id)) return;
-    if(Number(data.ticketUserId) !== Number(state.user.id) && state.user.role !== 'admin') return;
-  
-    addBellNotification(
-      'support',
-      'رسالة من الدعم',
-      'الإدارة أرسلت لك رسالة دعم',
-      'support',
-      data.ticketId
-    );
-  
-    v10Sound('notify');
-    toast('وصلتك رسالة من الدعم');
+    const isAdmin = state.user.role === 'admin';
+    const isOwner = Number(data.ticketUserId) === Number(state.user.id);
+    if(!isAdmin && !isOwner) return;
+    // لو الشات مفتوح الحين — ما نضيف إشعار، الـrefresh تلقائي
+    if(Number(state.activeSupportTicketId) === Number(data.ticketId)) return;
+    if(isAdmin){
+      addBellNotification('support','رسالة دعم جديدة','العميل أرسل رسالة — اضغط للرد','support',data.ticketId);
+      v10Sound('notify');
+      toast('📨 رسالة جديدة في الدعم الفني');
+    } else {
+      addBellNotification('support','رسالة من الدعم','الإدارة أرسلت لك رسالة — اضغط لعرضها','support',data.ticketId);
+      v10Sound('notify');
+      toast('📨 وصلتك رسالة من الدعم');
+    }
   });
   socket.on('rated', ()=>{
     toast('تم استلام التقييم');
@@ -249,10 +246,14 @@ function openNotification(id){
     dashboard();
 
   }else if(n.type==='support'){
-    if(typeof supportChat==='function' && n.ticketId){
+    state.tab='support';
+    if(n.ticketId && typeof supportChat==='function'){
       supportChat(n.ticketId);
-    }else{
-      state.tab='support';
+    } else if(state.user && state.user.role==='admin'){
+      dashboard();
+    } else if(typeof window.custDash==='function'){
+      window.custDash();
+    } else {
       dashboard();
     }
 
@@ -1963,61 +1964,112 @@ admin=async function(){
   layout('لوحة الإدارة',menu,c);
 }
 window.supportChat = async function(id){
-  const j = await api(`/api/support/${id}/messages`);
+  // حفظ الـticket المفتوح عشان الإشعارات لا تتكرر
+  state.activeSupportTicketId = Number(id);
 
-  app.innerHTML = `
-    <div class="page">
-      <button class="btn ghost" onclick="state.tab='support';dashboard()">رجوع للدعم</button>
-      <div class="dash-card" style="margin-top:16px">
-        <h2>محادثة الدعم #${id}</h2>
-        <p class="muted">${v15EscapeHtml(j.ticket.title||'')}</p>
+  let j;
+  try { j = await api(`/api/support/${id}/messages`); }
+  catch(e){ toast(e.message||'تعذر تحميل المحادثة'); return; }
 
-        <div id="supportMessages" class="chat-box" style="min-height:280px;max-height:420px;overflow:auto;margin:16px 0">
-          ${(j.messages||[]).map(m=>`
-            <div class="msg ${m.sender_role==='admin'?'me':''}">
-              <b>${v15EscapeHtml(m.sender_name||'-')}</b>
-              <p>${v15EscapeHtml(m.body||'')}</p>
-              <small>${v15EscapeHtml(m.created_at||'')}</small>
-            </div>
-          `).join('') || '<div class="empty">لا توجد رسائل بعد</div>'}
-        </div>
+  const isClosed = j.ticket.status !== 'open';
+  const esc2 = window.v15EscapeHtml || ((s)=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])));
 
-        ${j.ticket.status==='open'?`
-          <div class="form">
-            <textarea id="supportMsgBody" placeholder="اكتب ردك هنا..." style="min-height:90px"></textarea>
-            <button class="btn" onclick="sendSupportMessage(${id})">إرسال</button>
+  function renderSupportMsgs(msgs){
+    const box = document.getElementById('supportMessages');
+    if(!box) return;
+    box.innerHTML = (msgs||[]).length
+      ? (msgs||[]).map(m=>`
+          <div class="msg ${m.sender_role==='admin'?'me':''}" style="margin-bottom:10px">
+            <b style="font-size:13px;opacity:.7">${esc2(m.sender_name||'-')}</b>
+            <p style="margin:4px 0">${esc2(m.body||'')}</p>
+            <small style="opacity:.5;font-size:11px">${esc2(m.created_at||'')}</small>
+          </div>`).join('')
+      : '<div class="empty">لا توجد رسائل بعد. ابدأ المحادثة.</div>';
+    box.scrollTop = box.scrollHeight;
+  }
+
+  const chatContent = `
+    <div class="dash-card" style="max-width:700px;margin:0 auto">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;flex-wrap:wrap">
+        <button class="btn ghost" onclick="state.activeSupportTicketId=null;state.tab='support';if(state.user&&state.user.role==='admin'){dashboard();}else if(typeof window.custDash==='function'){window.custDash();}else{dashboard();}">← الدعم الفني</button>
+        <h2 style="margin:0">محادثة الدعم #${id}</h2>
+        <span class="status" style="font-size:12px">${isClosed?'🔴 منتهية':'🟢 مفتوحة'}</span>
+      </div>
+      <p class="muted" style="margin-bottom:12px">${esc2(j.ticket.title||'')}</p>
+      <div id="supportMessages" class="chat-box" style="min-height:260px;max-height:400px;overflow-y:auto;padding:12px;background:rgba(0,0,0,.15);border-radius:10px;margin-bottom:12px"></div>
+      ${!isClosed ? `
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <textarea id="supportMsgBody" placeholder="اكتب ردك هنا..." style="min-height:80px;width:100%;box-sizing:border-box;resize:vertical"></textarea>
+          <div style="display:flex;gap:8px;flex-wrap:wrap">
+            <button class="btn" id="supportSendBtn" onclick="sendSupportMessage(${id})">إرسال</button>
             <button class="btn red" onclick="closeSupportTicket(${id})">إنهاء الدردشة</button>
           </div>
-        `:'<div class="empty">هذه الدردشة منتهية</div>'}
-      </div>
-    </div>
-  `;
+        </div>
+      ` : '<div class="empty" style="text-align:center;padding:12px">🔴 هذه المحادثة منتهية</div>'}
+    </div>`;
+
+  // استخدم layout الصح حسب دور المستخدم
+  if(state.user && state.user.role === 'admin'){
+    const menu=[['dash','لوحة الإدارة'],['users','المستخدمين'],['orders','الطلبات'],['topups','شحن الفنيين'],['services','المهن'],['packages','الباقات'],['support','الدعم'],['violations','محاولات الشات']];
+    if(typeof layout==='function') layout('الدعم الفني', menu, chatContent);
+    else if(typeof window.layout==='function') window.layout('الدعم الفني', menu, chatContent);
+  } else {
+    const menu=[['dash','طلب جديد'],['near','البحث عن فني'],['orders','طلباتي'],['chats','الدردشات'],['support','الدعم الفني']];
+    if(typeof window.layout==='function') window.layout('الدعم الفني', menu, chatContent);
+    else { app.innerHTML = `<div class="page">${chatContent}</div>`; }
+  }
+
+  // رسم الرسائل بعد إدراج الـHTML في DOM
+  renderSupportMsgs(j.messages);
+
+  // Real-time refresh عند وصول رسائل جديدة
+  if(typeof socket !== 'undefined' && socket){
+    socket.off('support-message-refresh');
+    socket.on('support-message-refresh', async function(data){
+      if(Number(data.ticketId) !== Number(id)) return;
+      try{
+        const fresh = await api(`/api/support/${id}/messages`);
+        renderSupportMsgs(fresh.messages);
+      }catch(e){}
+    });
+  }
+
+  window._renderSupportMsgs = renderSupportMsgs;
 }
-
 window.sendSupportMessage = async function(id){
-  const body = document.getElementById('supportMsgBody')?.value?.trim();
+  const bodyEl = document.getElementById('supportMsgBody');
+  const sendBtn = document.getElementById('supportSendBtn');
+  const body = bodyEl?.value?.trim();
   if(!body) return toast('اكتب رسالة');
-
-  await api(`/api/support/${id}/messages`, {
-    method:'POST',
-    body:JSON.stringify({body})
-  });
-
-  toast('تم إرسال الرسالة');
-  supportChat(id);
+  try{
+    if(sendBtn){ sendBtn.disabled=true; sendBtn.textContent='جاري الإرسال...'; }
+    await api(`/api/support/${id}/messages`, { method:'POST', body:JSON.stringify({body}) });
+    if(bodyEl) bodyEl.value = '';
+    toast('تم إرسال الرسالة');
+    try{
+      const fresh = await api(`/api/support/${id}/messages`);
+      if(typeof window._renderSupportMsgs==='function') window._renderSupportMsgs(fresh.messages);
+      else supportChat(id);
+    }catch(e){ supportChat(id); }
+  }catch(e){
+    toast(e.message||'تعذر إرسال الرسالة');
+  }finally{
+    if(sendBtn){ sendBtn.disabled=false; sendBtn.textContent='إرسال'; }
+  }
 }
 
 window.closeSupportTicket = async function(id){
-  if(!confirm('إنهاء هذه الدردشة؟')) return;
-
-  await api(`/api/support/${id}/status`, {
-    method:'POST',
-    body:JSON.stringify({status:'closed'})
-  });
-
-  toast('تم إنهاء الدردشة');
-  state.tab='support';
-  dashboard();
+  if(!confirm('هل تريد إنهاء هذه المحادثة؟ لن تتمكن من إرسال رسائل جديدة بعدها.')) return;
+  try{
+    await api(`/api/support/${id}/status`, { method:'POST', body:JSON.stringify({status:'closed'}) });
+    state.activeSupportTicketId = null;
+    if(typeof socket!=='undefined' && socket) socket.off('support-message-refresh');
+    toast('تم إنهاء المحادثة بنجاح');
+    state.tab='support';
+    if(state.user && state.user.role==='admin') dashboard();
+    else if(typeof window.custDash==='function') window.custDash();
+    else dashboard();
+  }catch(e){ toast(e.message||'تعذر إنهاء المحادثة'); }
 }
 logout=async function(){
   try{ await api('/api/auth/logout',{method:'POST'}); }catch(e){}
@@ -2506,12 +2558,37 @@ window.sendLocation = async function(id){
 
   window.__SALLEHLY_PATCH_VERSION__ = 'v33-support-real-final';
 
+  // ─── تذاكر الدعم: ترسم داخل الـ sidebar الجانبية للصفحة ───
+  window._loadMyTickets = async function(){
+    const box = document.getElementById('myTicketsBox');
+    if(!box) return;
+    const esc2 = window.v15EscapeHtml||((s)=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])));
+    try{
+      const j = await api('/api/support/my').catch(()=>null);
+      if(!j || !j.tickets || !j.tickets.length){
+        box.innerHTML = '';
+        return;
+      }
+      box.innerHTML = j.tickets.map(t=>`
+        <button type="button" onclick="supportChat(${t.id})"
+          style="width:100%;text-align:right;background:rgba(124,58,237,.08);border:1px solid rgba(124,58,237,.25);border-radius:8px;padding:10px 12px;margin-bottom:6px;cursor:pointer;display:block">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+            <span style="font-size:13px;font-weight:700;flex:1;text-align:right">${esc2(t.title||'محادثة دعم')}</span>
+            <span style="font-size:10px;padding:2px 7px;border-radius:100px;white-space:nowrap;background:${t.status==='open'?'rgba(34,197,94,.2)':'rgba(239,68,68,.15)'};color:${t.status==='open'?'#86efac':'#fca5a5'}">${t.status==='open'?'مفتوحة':'منتهية'}</span>
+          </div>
+          <div style="font-size:11px;opacity:.5;margin-top:3px">${esc2(t.created_at?.slice(0,10)||'')}</div>
+        </button>`).join('');
+    }catch(e){ box.innerHTML=''; }
+  };
+
   window.sallehlySupportContentV33 = function(){
+    setTimeout(()=>window._loadMyTickets?.(), 80);
     return `<section class="v33-support-page">
+
       <div class="dash-card v33-support-main">
         <span class="eyebrow">مركز الدعم</span>
-        <h2>الدعم الفني</h2>
-        <p class="muted">هذه صفحة الدعم الخاصة بالعميل. ليست صفحة طلب جديد. اكتب المشكلة وسيتم إرسالها للإدارة.</p>
+        <h2>تذكرة دعم جديدة</h2>
+        <p class="muted">اكتب مشكلتك وسيتم إرسالها للإدارة مباشرة.</p>
         <form class="form v33-support-form" onsubmit="sendSupport(event)">
           <div class="field"><label>نوع المشكلة</label><select id="supportType"><option value="مشكلة طلب">مشكلة طلب</option><option value="مشكلة حساب">مشكلة حساب</option><option value="مشكلة دفع أو رصيد">مشكلة دفع أو رصيد</option><option value="مشكلة في الموقع">مشكلة في الموقع</option><option value="اقتراح تحسين">اقتراح تحسين</option></select></div>
           <div class="field"><label>عنوان المشكلة</label><input id="supportTitle" required minlength="3" maxlength="120" placeholder="مثال: زر الدردشة لا يعمل"></div>
@@ -2519,7 +2596,11 @@ window.sendLocation = async function(id){
           <button class="btn" type="submit">إرسال طلب الدعم</button>
         </form>
       </div>
+
       <div class="dash-card v33-support-side">
+        <!-- محادثاتي السابقة — بتظهر بس لو عنده تذاكر -->
+        <div id="myTicketsBox" style="margin-bottom:12px"></div>
+
         <h2>مساعدة سريعة</h2>
         <div class="faq-list">
           <details open><summary>كيف أتابع الطلب؟</summary><p>من صفحة طلباتي يمكنك مشاهدة الحالة والعروض والدردشة.</p></details>
@@ -2527,6 +2608,7 @@ window.sendLocation = async function(id){
           <details><summary>الموقع لا يرسل؟</summary><p>اسمح للمتصفح باستخدام الموقع ثم جرّب مرة أخرى.</p></details>
         </div>
       </div>
+
     </section>`;
   };
 
@@ -2542,9 +2624,13 @@ window.sendLocation = async function(id){
       const body=(document.getElementById('supportBody')?.value||'').trim();
       if(title.length<3) throw new Error('اكتب عنوان المشكلة');
       if(body.length<10) throw new Error('اكتب تفاصيل أوضح');
-      await api('/api/support',{method:'POST',body:JSON.stringify({type,title,body})});
-      toast?.('تم إرسال طلب الدعم للإدارة بنجاح');
+      const res = await api('/api/support',{method:'POST',body:JSON.stringify({type,title,body})});
+      toast?.('تم إرسال طلب الدعم ✓ — سنرد عليك قريباً');
       e.target.reset();
+      // افتح الشات مباشرة بعد إنشاء التيكت
+      if(res && res.ticket && typeof supportChat==='function'){
+        setTimeout(()=>supportChat(res.ticket.id), 400);
+      }
     }catch(err){ toast?.(err.message || 'تعذر إرسال طلب الدعم'); }
     finally{ if(btn){btn.disabled=false; btn.textContent='إرسال طلب الدعم';} }
   };
@@ -2596,7 +2682,19 @@ window.sendLocation = async function(id){
       content=(window.dashboardHero?dashboardHero('الإعدادات','عدّل بيانات حسابك.',[]): '') + settingsPage();
     }else{
       const j=await api('/api/requests').catch(()=>({requests:[]}));
-      content=(window.dashboardHero?dashboardHero('لوحة العميل','انشر طلبك واستقبل عروض الفنيين مباشرة.',window.v20CustomerStats?.(j.requests||[])||[]): '') + window.v33RequestJobsStrip() + `<div class="v20-main-grid v24-customer-grid"><div>${requestForm()}</div><div>${window.v20SearchPanel?window.v20SearchPanel():nearbyPage()}</div></div>`;
+      let openTickets=0;
+      try{ const st=await api('/api/support/my').catch(()=>null); if(st&&st.tickets) openTickets=st.tickets.filter(t=>t.status==='open').length; }catch(e){}
+      const supportCard = openTickets>0
+        ? `<div class="dash-card" style="border:2px solid rgba(124,58,237,.5);cursor:pointer;display:flex;align-items:center;gap:14px;padding:18px;margin-bottom:16px" onclick="state.tab='support';window.custDash()">
+            <span style="font-size:26px">🎧</span>
+            <div style="flex:1">
+              <b style="font-size:15px">الدعم الفني</b>
+              <p class="muted" style="margin:4px 0 0;font-size:13px">لديك <b style="color:#a855f7">${openTickets}</b> محادثة مفتوحة — اضغط للمتابعة</p>
+            </div>
+            <span style="font-size:18px;opacity:.6">←</span>
+           </div>`
+        : '';
+      content=(window.dashboardHero?dashboardHero('لوحة العميل','انشر طلبك واستقبل عروض الفنيين مباشرة.',window.v20CustomerStats?.(j.requests||[])||[]): '') + supportCard + window.v33RequestJobsStrip() + `<div class="v20-main-grid v24-customer-grid"><div>${requestForm()}</div><div>${window.v20SearchPanel?window.v20SearchPanel():nearbyPage()}</div></div>`;
     }
     window.layout('لوحة العميل', menu, content);
     if(['dash','near'].includes(state.tab)){ window.bindAreaSelect?.('qcity','qarea','qareaOtherWrap'); window.bindAreaSelect?.('searchCity','searchArea'); }
@@ -3511,11 +3609,13 @@ window.fpSendOtp = async function(e, resend){
   if(!email){ if(errBox){errMsg.textContent='أدخل البريد الإلكتروني';errBox.style.display='flex';} return; }
   if(btn){ btn.disabled=true; if(txt) txt.textContent='جاري الإرسال...'; }
   try{
-    await fetch('/api/auth/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    const res=await fetch('/api/auth/forgot-password',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({email})});
+    const data=await res.json();
+    if(!res.ok) throw new Error(data.error||'تعذر الإرسال');
     if(okBox){ okBox.textContent='✅ تم الإرسال! تحقق من بريدك وأدخل الكود.'; okBox.style.display='block'; }
     document.getElementById('fpStep1').style.display='none';
     document.getElementById('fpStep2').style.display='block';
-  }catch(err){ if(errBox){errMsg.textContent='تعذر الإرسال، حاول مرة أخرى';errBox.style.display='flex';} }
+  }catch(err){ if(errBox){errMsg.textContent=err.message;errBox.style.display='flex';} }
   finally{ if(btn){ btn.disabled=false; if(txt) txt.textContent='إرسال كود التحقق'; } }
 };
 
