@@ -1542,7 +1542,14 @@ app.post('/api/support/:id/status', auth, requireRole('admin'), (req,res)=>{
   const status = clean(req.body.status || 'open');
   if(!['open','closed'].includes(status)) return res.status(400).json({error:'حالة الدعم غير صحيحة'});
   db.prepare('UPDATE support_tickets SET status=? WHERE id=?').run(status, req.params.id);
-  res.json({ticket: db.prepare('SELECT * FROM support_tickets WHERE id=?').get(req.params.id)});
+  const ticket = db.prepare('SELECT * FROM support_tickets WHERE id=?').get(req.params.id);
+  // [REALTIME] أبلغ صاحب التذكرة فوراً بتغيّر الحالة (لإظهار/إخفاء اختصار الدعم).
+  if(ticket){
+    io.to(`user-${ticket.user_id}`).emit('support-status-updated', { ticket });
+    io.to(`user-${ticket.user_id}`).emit('support-message-refresh', { ticketId: ticket.id });
+    io.to('admin-room').emit('support-message-refresh', { ticketId: ticket.id });
+  }
+  res.json({ticket});
 });
 // ── FCM Token: يحفظ token الجهاز لإرسال إشعارات خارجية ──
 app.post('/api/fcm-token', auth, (req,res)=>{
