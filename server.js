@@ -183,7 +183,16 @@ app.use(helmet({
     }
   }
 }));
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, limit: process.env.NODE_ENV === 'production' ? 1500 : 100000, standardHeaders: true, legacyHeaders: false, skip: (req)=> req.path.startsWith('/uploads') || req.path.startsWith('/socket.io') || req.path==='/' || req.path.endsWith('.css') || req.path.endsWith('.js') }));
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: process.env.NODE_ENV === 'production' ? 3000 : 100000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // الطلبات الحساسة (تسجيل، دفع، رسائل...) عندها حدود خاصة أدق فوق (loginLimiter/messagesLimiter/...).
+  // هذا الحد العام غرضه منع إساءة استخدام عامة على السيرفر، فمش داعي يشمل طلبات القراءة (GET)
+  // متل فتح شاشة التذاكر أو المحفظة أو الدردشة، لأنها هي اللي كانت بتستهلك العداد بسرعة.
+  skip: (req)=> req.method === 'GET' || req.path.startsWith('/uploads') || req.path.startsWith('/socket.io') || req.path==='/' || req.path.endsWith('.css') || req.path.endsWith('.js')
+}));
 // [SEC-FIX-06] CSRF Protection — Origin/Referer validation for state-changing requests
 const ALLOWED_ORIGINS = process.env.NODE_ENV === 'production'
   ? ['https://sallehly.com', 'https://www.sallehly.com', 'https://sallehly.onrender.com']
