@@ -5,7 +5,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io } = deps.realtime;
   const { auth, requireRole, upload } = deps.middleware;
-  const { clean } = deps.utils;
+  const { clean, logAudit } = deps.utils;
   const { sendPush } = deps.services;
   const router = express.Router();
 
@@ -50,6 +50,12 @@ module.exports = function (deps) {
       db.prepare('UPDATE topups SET status=?, admin_note=?, reviewed_at=CURRENT_TIMESTAMP WHERE id=?').run(status, adminNote, t.id);
     });
     doReview();
+    logAudit({
+      adminId: req.user.id, actorName: req.user.name,
+      action: status === 'approved' ? 'الموافقة على شحن رصيد' : 'رفض طلب شحن',
+      targetType: 'topup', targetId: t.id,
+      details: { technician_id: t.technician_id, amount: t.amount, bonus: t.bonus, admin_note: adminNote }
+    });
     // [REALTIME] إبلاغ الفني فوراً بنتيجة الشحن وتحديث رصيده دون إعادة تشغيل
     if (status === 'approved') {
       const updated = db.prepare('SELECT balance, active_commission FROM users WHERE id=?').get(t.technician_id);

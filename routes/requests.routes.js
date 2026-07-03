@@ -70,7 +70,7 @@ module.exports = function (deps) {
       return res.status(400).json({ error: 'لا يمكن إلغاء الطلب بعد قبول عرض الفني. تواصل مع الدعم الفني إذا واجهت مشكلة.' });
     }
     db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(r.id);
-    db.prepare("UPDATE requests SET status='ملغي', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(r.id);
+    db.prepare("UPDATE requests SET status='ملغي', cancelled_by=?, cancelled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(req.user.id, r.id);
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);
     // [SEC-FIX-03] Targeted emit
     safeEmit(r.id, 'request-status-updated', { request });

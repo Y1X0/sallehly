@@ -172,6 +172,16 @@ CREATE TABLE IF NOT EXISTS support_messages(
   FOREIGN KEY(ticket_id) REFERENCES support_tickets(id),
   FOREIGN KEY(sender_id) REFERENCES users(id)
 );
+CREATE TABLE IF NOT EXISTS audit_logs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  admin_id INTEGER,
+  actor_name TEXT NOT NULL,
+  action TEXT NOT NULL,
+  target_type TEXT,
+  target_id INTEGER,
+  details TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `);
 
 // تحديث قواعد البيانات القديمة بدون حذف البيانات
@@ -182,6 +192,10 @@ try { db.prepare("ALTER TABLE support_tickets ADD COLUMN status TEXT DEFAULT 'op
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_technician ON requests(technician_id)').run(); } catch (e) {}
 try { db.prepare('ALTER TABLE users ADD COLUMN active_commission REAL DEFAULT 2').run(); } catch (e) {}
 try { db.prepare('ALTER TABLE users ADD COLUMN fcm_token TEXT').run(); } catch (e) {}
+try { db.prepare('ALTER TABLE requests ADD COLUMN cancel_reason TEXT').run(); } catch (e) {}
+try { db.prepare('ALTER TABLE requests ADD COLUMN cancelled_by INTEGER').run(); } catch (e) {}
+try { db.prepare('ALTER TABLE requests ADD COLUMN cancelled_at TEXT').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at)').run(); } catch (e) {}
 
 // جدول الشكاوى — منفصل عن الدعم العادي، للأدمن فقط
 db.prepare(`CREATE TABLE IF NOT EXISTS complaints (

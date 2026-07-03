@@ -26,7 +26,16 @@ function createDbHelpers(db) {
       ON CONFLICT(request_id,user_id) DO UPDATE SET last_read_message_id=excluded.last_read_message_id, updated_at=CURRENT_TIMESTAMP`).run(requestId, userId, last);
   }
 
-  return { calcRating, getMessages, markChatRead };
+  // يسجّل فعل إداري بجدول audit_logs. details ممكن يكون نص أو كائن (بيتحوّل لـ JSON تلقائياً).
+  function logAudit({ adminId, actorName, action, targetType = null, targetId = null, details = null }) {
+    try {
+      const detailsStr = details == null ? null : (typeof details === 'string' ? details : JSON.stringify(details));
+      db.prepare('INSERT INTO audit_logs(admin_id,actor_name,action,target_type,target_id,details) VALUES(?,?,?,?,?,?)')
+        .run(adminId || null, actorName || 'النظام', action, targetType, targetId || null, detailsStr);
+    } catch (e) { console.error('audit log failed:', e.message); }
+  }
+
+  return { calcRating, getMessages, markChatRead, logAudit };
 }
 
 module.exports = { createDbHelpers };
