@@ -43,7 +43,21 @@ module.exports = function (deps) {
 
   router.get('/requests', auth, (req, res) => {
     let rows;
-    if (req.user.role === 'admin') rows = db.prepare('SELECT r.*, c.name customer_name, t.name technician_name FROM requests r JOIN users c ON c.id=r.customer_id LEFT JOIN users t ON t.id=r.technician_id ORDER BY r.id DESC').all();
+    let total;
+    if (req.user.role === 'admin') {
+      const baseSql = 'SELECT r.*, c.name customer_name, t.name technician_name FROM requests r JOIN users c ON c.id=r.customer_id LEFT JOIN users t ON t.id=r.technician_id ORDER BY r.id DESC';
+
+      if (req.query.page == null && req.query.limit == null) {
+        // [FIX-09] السلوك الافتراضي القديم — بدون أي تغيير لو ما طُلبت صفحات
+        rows = db.prepare(baseSql).all();
+      } else {
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+        const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+        const offset = (page - 1) * limit;
+        total = db.prepare('SELECT COUNT(*) c FROM requests').get().c;
+        rows = db.prepare(`${baseSql} LIMIT ? OFFSET ?`).all(limit, offset);
+      }
+    }
     else if (req.user.role === 'customer') rows = db.prepare('SELECT r.*, t.name technician_name FROM requests r LEFT JOIN users t ON t.id=r.technician_id WHERE customer_id=? ORDER BY r.id DESC').all(req.user.id);
     else rows = [];
     if (req.user.role === 'technician') {
@@ -57,7 +71,7 @@ module.exports = function (deps) {
         return myOffer ? { ...r, _myOfferId: myOffer.id } : r;
       });
     }
-    res.json({ requests: rows });
+    res.json(total !== undefined ? { requests: rows, total } : { requests: rows });
   });
 
   router.delete('/requests/:id', auth, requireRole('customer'), (req, res) => {

@@ -2,7 +2,12 @@
 // نقطة الدخول فقط: يبني الـ deps ويشغّل السيرفر. ما في middleware ولا routes ولا منطق
 // أعمال هون — الـ Express نفسه بملف app.js، وكل route بملفه تحت routes/.
 
-require('dotenv').config?.();
+// [FIX-11] بيئة الاختبار الآلي (Playwright) يجب أن تكون معزولة بالكامل عن ملف .env الحقيقي —
+// خصوصاً حساب الأدمن (ADMIN_EMAIL/ADMIN_PASSWORD) الذي تعتمد عليه اختبارات المحفظة.
+// لا يُشغَّل .env إطلاقاً إلا إذا NODE_ENV مختلف عن 'test' — لا يغيّر أي شيء بالتطوير أو الإنتاج.
+if (process.env.NODE_ENV !== 'test') {
+  require('dotenv').config?.();
+}
 
 const path = require('path');
 const fs = require('fs');

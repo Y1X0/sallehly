@@ -21,7 +21,9 @@ const passwordLimiter = rateLimit({
 });
 const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: 10,
+  // [FIX-10] نفس نمط globalRateLimit: حد صارم بالإنتاج، مرتفع بالتطوير/الاختبار حتى لا تصطدم
+  // اختبارات Playwright الآلية بالحد الحقيقي أثناء تسجيل عدة حسابات اختبار متتالية.
+  max: IS_PROD ? 10 : 1000,
   message: { error: 'تم تجاوز حد إنشاء الحسابات، حاول بعد ساعة' },
   standardHeaders: true,
   legacyHeaders: false
@@ -42,7 +44,8 @@ const messagesLimiter = rateLimit({
 });
 const otpLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
-  max: 3,
+  // [FIX-10] نفس السبب أعلاه — otpLimiter يشارك /auth/register وأي تسجيل اختباري متكرر يصطدم به بسرعة
+  max: IS_PROD ? 3 : 1000,
   message: { error: 'طلبت كوداً كثيراً، انتظر 10 دقائق' },
   standardHeaders: true,
   legacyHeaders: false
@@ -61,7 +64,12 @@ const helmetMiddleware = helmet({
     useDefaults: true,
     directives: {
       "default-src": ["'self'"],
-      "script-src": ["'self'", "'unsafe-inline'", "https://unpkg.com"],
+      // [SEC-FIX-13b] أُزيلت 'unsafe-inline' من script-src فقط، بعد نقل السكربت الوحيد الـinline
+      // بـindex.html لملف خارجي (public/init.js). style-src أبقيناها كما هي عمداً — app.js فيه
+      // ~118 خاصية style="" مباشرة (تنسيق ديناميكي حقيقي بمولّد الواجهة)، وإزالتها بهالمرحلة
+      // ستكسر شكل الواجهة بالكامل؛ تحتاج إعادة هيكلة منفصلة مؤجّلة بثقة حاليًا.
+      // script-src-attr أبقيناها كذلك — app.js فيه ~107 onclick="" (نفس السبب، مؤجّلة بثقة).
+      "script-src": ["'self'", "https://unpkg.com"],
       "script-src-attr": ["'unsafe-inline'"],
       "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://unpkg.com"],
       "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],

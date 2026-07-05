@@ -6,6 +6,16 @@ const { RESEND_API_KEY, RESEND_FROM } = require('../config/env');
 
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
+// [SEC-FIX-14] Escape user-supplied name before interpolating into email HTML
+function escapeHtml(str) {
+  return String(str || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 async function sendOtpEmail(toEmail, otp, name) {
   if (!resend) {
     // Development fallback: print to console
@@ -23,7 +33,7 @@ async function sendOtpEmail(toEmail, otp, name) {
             <h1 style="color:#7c3aed;font-size:28px;margin:0;">صلّحلي</h1>
             <p style="color:#aaa;font-size:13px;margin:4px 0 0;">منصة الصيانة في الأردن</p>
           </div>
-          <p style="font-size:16px;">مرحباً <b>${name}</b>،</p>
+          <p style="font-size:16px;">مرحباً <b>${escapeHtml(name)}</b>،</p>
           <p style="color:#ccc;">استخدم الكود أدناه لتأكيد تسجيلك. صالح لمدة <b>10 دقائق</b>.</p>
           <div style="text-align:center;margin:28px 0;">
             <div style="display:inline-block;background:#1a1050;border:2px solid #7c3aed;border-radius:12px;padding:18px 40px;">

@@ -7,6 +7,7 @@ module.exports = function (deps) {
   const { auth, requireRole } = deps.middleware;
   const { clean } = deps.utils;
   const { sendPush } = deps.services;
+  const { messagesLimiter } = deps.limiters;
   const router = express.Router();
 
   router.post('/support', auth, (req, res) => {
@@ -71,14 +72,25 @@ module.exports = function (deps) {
   });
 
   // ── شكاوى العملاء — للأدمن فقط ──
+  // [FIX-07] الجدول الحقيقي بقاعدة البيانات أعمدته: user_id, subject(NOT NULL), body(NOT NULL), status
+  // (وليس customer_id/technician_id كما كان الكود يفترض خطأً — كان هذا يسبب فشل 500 على كل شكوى).
   router.post('/complaints', auth, requireRole('customer'), (req, res) => {
-    const { request_id, body } = req.body;
-    if (!body?.trim()) return res.status(400).json({ error: 'الشكوى فارغة' });
-    // جيب الـtechnician_id من الطلب
-    const request = request_id ? db.prepare('SELECT technician_id FROM requests WHERE id=? AND customer_id=?').get(request_id, req.user.id) : null;
-    const info = db.prepare('INSERT INTO complaints (request_id, customer_id, technician_id, body) VALUES (?,?,?,?)')
-      .run(request_id || null, req.user.id, request?.technician_id || null, body.trim());
+    const { request_id } = req.body;
+    const body = clean(req.body.body || '');
+    if (body.length < 1) return res.status(400).json({ error: 'الشكوى فارغة' });
+    if (body.length > 1000) return res.status(400).json({ error: 'الشكوى طويلة جداً، الحد الأقصى 1000 حرف' });
+
+    // تحقق أن الطلب فعلاً يخص هذا العميل (إن أُرسل request_id)
+    const request = request_id
+      ? db.prepare('SELECT id, service, technician_id FROM requests WHERE id=? AND customer_id=?').get(request_id, req.user.id)
+      : null;
+
+    const subject = request ? `شكوى على طلب: ${request.service}` : 'شكوى عامة';
+
+    const info = db.prepare('INSERT INTO complaints (user_id, request_id, subject, body) VALUES (?,?,?,?)')
+      .run(req.user.id, request_id || null, subject, body);
     const complaint = db.prepare('SELECT * FROM complaints WHERE id=?').get(info.lastInsertRowid);
+
     // إشعار للأدمن
     io.to('admin-room').emit('new-complaint', { complaint });
     // Push للأدمن
@@ -88,16 +100,34 @@ module.exports = function (deps) {
   });
 
   router.get('/complaints', auth, requireRole('admin'), (req, res) => {
+    // technician_id مش عمود موجود بجدول complaints — نجيبه عبر الربط مع جدول requests بدلاً منه.
     const complaints = db.prepare(`
-      SELECT c.*, 
+      SELECT c.*,
         cu.name as customer_name, cu.phone as customer_phone,
+        r.technician_id as technician_id,
         t.name as technician_name, t.phone as technician_phone
       FROM complaints c
-      LEFT JOIN users cu ON cu.id = c.customer_id
-      LEFT JOIN users t  ON t.id  = c.technician_id
+      LEFT JOIN users cu ON cu.id = c.user_id
+      LEFT JOIN requests r ON r.id = c.request_id
+      LEFT JOIN users t  ON t.id  = r.technician_id
       ORDER BY c.id DESC
     `).all();
     res.json({ complaints });
+  });
+
+  // ── تحديث حالة الشكوى (أدمن فقط) — يستخدم عمود status الموجود أصلاً بالجدول ──
+  router.post('/complaints/:id/status', auth, requireRole('admin'), (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    const status = clean(req.body.status || '');
+    const allowed = ['open', 'in_review', 'resolved', 'rejected'];
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة' });
+    const existing = db.prepare('SELECT id FROM complaints WHERE id=?').get(id);
+    if (!existing) return res.status(404).json({ error: 'الشكوى غير موجودة' });
+    db.prepare('UPDATE complaints SET status=? WHERE id=?').run(status, id);
+    const complaint = db.prepare('SELECT * FROM complaints WHERE id=?').get(id);
+    io.to('admin-room').emit('complaint-status-updated', { complaint });
+    res.json({ ok: true, complaint });
   });
 
   // endpoint جديد: يرجع تذاكر الدعم الخاصة بالمستخدم الحالي
@@ -133,7 +163,7 @@ module.exports = function (deps) {
     res.json({ ticket, messages });
   });
 
-  router.post('/support/:id/messages', auth, (req, res) => {
+  router.post('/support/:id/messages', auth, messagesLimiter, (req, res) => {
     const ticket = db.prepare('SELECT * FROM support_tickets WHERE id=?').get(req.params.id);
 
     if (!ticket) return res.status(404).json({ error: 'التذكرة غير موجودة' });
@@ -150,6 +180,9 @@ module.exports = function (deps) {
 
     if (body.length < 1) {
       return res.status(400).json({ error: 'اكتب رسالة' });
+    }
+    if (body.length > 1000) {
+      return res.status(400).json({ error: 'الرسالة طويلة جداً، الحد الأقصى 1000 حرف' });
     }
 
     db.prepare(`

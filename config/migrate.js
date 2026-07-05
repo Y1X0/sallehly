@@ -197,15 +197,11 @@ try { db.prepare('ALTER TABLE requests ADD COLUMN cancelled_by INTEGER').run(); 
 try { db.prepare('ALTER TABLE requests ADD COLUMN cancelled_at TEXT').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at)').run(); } catch (e) {}
 
-// جدول الشكاوى — منفصل عن الدعم العادي، للأدمن فقط
-db.prepare(`CREATE TABLE IF NOT EXISTS complaints (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  request_id INTEGER,
-  customer_id INTEGER NOT NULL,
-  technician_id INTEGER,
-  body TEXT NOT NULL,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-)`).run();
+// [FIX-CLEANUP-01] كان هنا سابقاً تعريف ثانٍ لجدول complaints بأعمدة مختلفة
+// (customer_id/technician_id بدل user_id/subject/status). بفضل IF NOT EXISTS
+// لم يكن له أي أثر فعلي إطلاقاً — الجدول الحقيقي المُستخدَم فعلياً بكل أرجاء
+// الكود (routes/support.routes.js) هو التعريف الأول أعلاه بعمود user_id.
+// أُزيل التعريف المكرر لأنه كود ميت ومضلِّل فقط، وليس له أي أثر وظيفي حالي.
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_support_tickets_user ON support_tickets(user_id)').run(); } catch (e) {}
 // تمت إزالة سطر إعادة تفعيل الفنيين الموقوفين تلقائياً عند كل تشغيل للسيرفر.
 // كان هذا السطر يلغي قرار إيقاف أي فني من الإدارة (بسبب شكوى أو مخالفة) في كل مرة يعاد تشغيل السيرفر أو يتم نشر تحديث جديد.
@@ -223,18 +219,25 @@ if (db.prepare('SELECT COUNT(*) c FROM payment_methods').get().c === 0) {
 }
 // إنشاء/تحديث حساب الإدارة من ملف .env بطريقة آمنة بدون حذف قاعدة البيانات أو الطلبات.
 // غيّر ADMIN_EMAIL و ADMIN_PASSWORD داخل .env ثم أعد تشغيل السيرفر.
-if (process.env.ADMIN_EMAIL && process.env.ADMIN_PASSWORD) {
-  const adminEmail = String(process.env.ADMIN_EMAIL).trim().toLowerCase();
-  const adminPass = bcrypt.hashSync(String(process.env.ADMIN_PASSWORD), 12);
+// [FIX-12] بيئة الاختبار الآلي (NODE_ENV=test) تحصل على قيم افتراضية ثابتة تلقائياً —
+// لا نعتمد على نجاح تمرير متغيرات البيئة من أداة الاختبار (ثبت عمليًا أنه غير موثوق على بعض الأنظمة)،
+// هذا الفرع لا يُفعَّل إطلاقاً خارج NODE_ENV=test فلا يؤثر على التطوير أو الإنتاج بأي شكل.
+const isTestEnv = process.env.NODE_ENV === 'test';
+const resolvedAdminEmail = process.env.ADMIN_EMAIL || (isTestEnv ? 'admin-test@example.com' : null);
+const resolvedAdminPassword = process.env.ADMIN_PASSWORD || (isTestEnv ? 'AdminTestPass123' : null);
+
+if (resolvedAdminEmail && resolvedAdminPassword) {
+  const adminEmail = String(resolvedAdminEmail).trim().toLowerCase();
+  const adminPass = bcrypt.hashSync(String(resolvedAdminPassword), 12);
   const existingAdmin = db.prepare('SELECT id FROM users WHERE role=?').get('admin');
   if (existingAdmin) {
     db.prepare('UPDATE users SET email=?, password_hash=?, is_active=1 WHERE id=?')
       .run(adminEmail, adminPass, existingAdmin.id);
-    console.log('Admin account updated from .env');
+    console.log('Admin account updated' + (isTestEnv ? ' (test defaults)' : ' from .env'));
   } else {
     db.prepare('INSERT INTO users(role,name,email,phone,password_hash,is_active) VALUES(?,?,?,?,?,1)')
       .run('admin','مدير صلّحلي',adminEmail,'0799999999',adminPass);
-    console.log('Admin account created from .env');
+    console.log('Admin account created' + (isTestEnv ? ' (test defaults)' : ' from .env'));
   }
 } else {
   console.warn('No admin account created/updated. Set ADMIN_EMAIL and ADMIN_PASSWORD in .env, then restart.');

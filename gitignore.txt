@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.*
+!.env.example
+data/
+public/uploads/
+npm-debug.log*
+.DS_Store
+
+# ملفات ومخرجات الاختبارات (Playwright) — قاعدة بيانات مؤقتة، لا تُرفع أبداً
+data-test/
+playwright-report/
+test-results/

@@ -38,7 +38,24 @@ module.exports = function (deps) {
     });
   });
 
-  router.get('/admin/users', auth, requireRole('admin'), (req, res) => res.json({ users: db.prepare('SELECT id,role,name,email,phone,national_number,city,areas,services,is_active,balance,free_orders_used,rating_avg,rating_count,completed_jobs,created_at FROM users ORDER BY id DESC').all() }));
+  // [FIX-09] Pagination اختيارية: لو ما أُرسل page/limit، السلوك يبقى بالضبط كما كان
+  // (يرجع كل المستخدمين) — حتى لا يخرب أي عميل حالي (تطبيق الموبايل) لا يرسل هذه المعاملات.
+  router.get('/admin/users', auth, requireRole('admin'), (req, res) => {
+    const baseSql = 'SELECT id,role,name,email,phone,national_number,city,areas,services,is_active,balance,free_orders_used,rating_avg,rating_count,completed_jobs,created_at FROM users ORDER BY id DESC';
+
+    if (req.query.page == null && req.query.limit == null) {
+      // السلوك الافتراضي القديم — بدون أي تغيير
+      return res.json({ users: db.prepare(baseSql).all() });
+    }
+
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const offset = (page - 1) * limit;
+
+    const total = db.prepare('SELECT COUNT(*) c FROM users').get().c;
+    const users = db.prepare(`${baseSql} LIMIT ? OFFSET ?`).all(limit, offset);
+    res.json({ users, total, page, limit });
+  });
 
   router.post('/admin/users/:id/toggle', auth, requireRole('admin'), (req, res) => {
     if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'لا يمكنك إيقاف حسابك الخاص' });
@@ -231,9 +248,16 @@ module.exports = function (deps) {
       const w = '%' + search.replace(/[%_\\]/g, c => '\\' + c) + '%';
       params.push(w, w, w, w);
     }
-    const total = db.prepare(`SELECT COUNT(*) c FROM audit_logs ${where}`).get(...params).c;
-    const logs = db.prepare(`SELECT * FROM audit_logs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
-    res.json({ logs, total });
+    // [FIX-08] حماية دفاعية: لو الجدول غير موجود بعد لأي سبب (مثلاً DB لم يُعَد تشغيلها بعد
+    // إضافة هذه الميزة)، أرجع سجلاً فارغاً بدل خطأ 500 خام.
+    try {
+      const total = db.prepare(`SELECT COUNT(*) c FROM audit_logs ${where}`).get(...params).c;
+      const logs = db.prepare(`SELECT * FROM audit_logs ${where} ORDER BY id DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+      res.json({ logs, total });
+    } catch (e) {
+      console.error('audit-logs query failed (هل تم إعادة تشغيل السيرفر بعد إضافة الجدول؟):', e.message);
+      res.json({ logs: [], total: 0 });
+    }
   });
 
   return router;
