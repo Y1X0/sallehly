@@ -3,23 +3,47 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  <!-- [FIX-UX-01] هذا هو السطر الذي يمنع أندرويد/المتصفح من "عكس" ألوان الصفحة
+       تلقائياً (Forced Dark Mode) — الموقع بالأساس بتصميم فاتح فقط بدون وضع
+       ليلي حقيقي، وبدون هذا التصريح كانت المتصفحات تفترض خطأً أنه يمكنها
+       تطبيق وضع داكن تلقائي فتنتج نصاً شبه غير مقروء (نفس المشكلة بالصورة). -->
+  <meta name="color-scheme" content="light only">
   <title>سياسة الخصوصية | صلّحلي</title>
+
   <link rel="icon" type="image/png" href="/logo.png">
+  <link rel="apple-touch-icon" href="/logo.png">
+  <meta name="description" content="سياسة الخصوصية لمنصة صلّحلي - كيف نجمع بياناتك ونستخدمها ونحميها.">
+  <link rel="canonical" href="https://sallehly.com/privacy.html">
+
   <link rel="stylesheet" href="/style.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800;900&display=swap" rel="stylesheet">
+
   <style>
-    .legal-wrap{max-width:820px;margin:0 auto;padding:50px 20px}
-    .legal-wrap h1{font-size:32px;margin-bottom:6px}
-    .legal-wrap .updated{color:var(--muted);margin-bottom:30px}
-    .legal-wrap section{margin-bottom:28px}
-    .legal-wrap h2{font-size:20px;color:var(--blue);margin-bottom:10px}
-    .legal-wrap p, .legal-wrap li{line-height:1.9;color:#334155}
-    .legal-wrap ul{padding-inline-start:20px;margin:0}
-    .legal-wrap table{width:100%;border-collapse:collapse;margin-top:10px}
-    .legal-wrap th, .legal-wrap td{border:1px solid var(--line);padding:10px;text-align:right;font-size:15px}
-    .legal-wrap th{background:var(--soft)}
+    /* [FIX-UX-01] نفس المتغيرات اللونية المستخدمة بباقي الموقع تماماً —
+       لا ألوان جديدة، فقط إعادة استخدام var(--blue)/var(--dark)/... */
+    :root{ color-scheme: light; }
+    .legal-hero{padding:54px 7% 10px}
+    .legal-hero h1{font-size:40px;margin:0 0 8px}
+    .legal-hero p.updated{color:var(--muted);font-weight:700;margin:0}
+    .legal-body{max-width:840px}
+    .legal-section{background:white;border:1px solid var(--line);border-radius:24px;padding:26px 28px;margin-bottom:20px;box-shadow:0 12px 36px rgba(15,23,42,.05)}
+    .legal-section h2{display:flex;align-items:center;gap:10px;font-size:20px;color:var(--blue);margin:0 0 14px}
+    .legal-section h2 .ic{font-size:22px;background:var(--soft);width:38px;height:38px;border-radius:12px;display:grid;place-items:center;flex-shrink:0}
+    .legal-section p, .legal-section li{line-height:1.9;color:#334155;margin:0 0 8px}
+    .legal-section ul{padding-inline-start:20px;margin:0}
+    .legal-divider{height:1px;background:var(--line);border:0;margin:18px 0}
+    .legal-table{width:100%;border-collapse:collapse;margin-top:6px}
+    .legal-table th,.legal-table td{border:1px solid var(--line);padding:10px;text-align:right;font-size:14.5px;vertical-align:top}
+    .legal-table th{background:var(--soft);color:#0f172a}
+    .legal-back{display:inline-flex;align-items:center;gap:6px;color:var(--blue);font-weight:900;margin-bottom:18px}
+    @media(max-width:700px){
+      .legal-hero h1{font-size:30px}
+      .legal-section{padding:20px}
+      .legal-table{display:block;overflow-x:auto;white-space:nowrap}
+      .legal-table td, .legal-table th{white-space:normal;min-width:120px}
+    }
   </style>
 </head>
 <body>
@@ -29,22 +53,36 @@
     <img src="/logo.png" alt="صلّحلي" style="width:32px;height:32px;border-radius:10px;object-fit:cover;margin-left:6px;">
     صلّحلي
   </a>
+  <button class="menu" onclick="document.body.classList.toggle('open')">☰</button>
+  <div class="links">
+    <a href="/#home">الرئيسية</a>
+    <a href="/#services">الخدمات</a>
+    <a href="/#how">طريقة الاستخدام</a>
+    <a href="/#tech">للفنيين</a>
+    <a href="/#contact">تواصل معنا</a>
+    <button class="btn ghost" onclick="location.href='/#login'">دخول</button>
+    <button class="btn" onclick="location.href='/#register'">إنشاء حساب</button>
+  </div>
 </nav>
 
-<main class="legal-wrap">
-  <h1>سياسة الخصوصية</h1>
-  <p class="updated">آخر تحديث: 2026</p>
+<main class="page legal-body" style="margin:0 auto;float:none">
+  <a class="legal-back" href="/">← العودة للرئيسية</a>
 
-  <section>
+  <div class="legal-hero" style="padding:0 0 20px">
+    <h1>سياسة الخصوصية</h1>
+    <p class="updated">آخر تحديث: 2026</p>
+  </div>
+
+  <section class="legal-section">
     <p>
       هذه السياسة توضّح كيف تجمع منصة "صلّحلي" بياناتك وتستخدمها وتحميها، عند استخدامك تطبيق صلّحلي
       (للعميل أو الفني) أو موقعنا. باستخدامك للتطبيق فإنك توافق على ما ورد بهذه السياسة.
     </p>
   </section>
 
-  <section>
-    <h2>1. البيانات التي نجمعها ولماذا</h2>
-    <table>
+  <section class="legal-section">
+    <h2><span class="ic">📋</span> البيانات التي نجمعها ولماذا</h2>
+    <table class="legal-table">
       <tr><th>البيانات</th><th>لماذا نجمعها</th><th>إلزامية؟</th></tr>
       <tr><td>الاسم، البريد الإلكتروني، رقم الهاتف</td><td>إنشاء الحساب والتواصل بخصوص طلباتك</td><td>نعم</td></tr>
       <tr><td>كلمة المرور</td><td>حماية حسابك (تُحفظ مشفّرة بصيغة لا يمكن استرجاعها)</td><td>نعم</td></tr>
@@ -58,8 +96,8 @@
     </table>
   </section>
 
-  <section>
-    <h2>2. أين تُخزَّن بياناتك وكيف تُحمى</h2>
+  <section class="legal-section">
+    <h2><span class="ic">🔒</span> أين تُخزَّن بياناتك وكيف تُحمى</h2>
     <p>
       تُخزَّن بياناتك على خوادمنا، ويكون كل اتصال بين التطبيق والخادم مشفّراً عبر HTTPS.
       كلمة مرورك تُحفظ بصيغة مشفّرة (Hash) لا يمكن لأحد بمن فيهم فريقنا استرجاعها. رسائل المحادثة
@@ -68,8 +106,8 @@
     </p>
   </section>
 
-  <section>
-    <h2>3. مشاركة البيانات مع أطراف ثالثة</h2>
+  <section class="legal-section">
+    <h2><span class="ic">🤝</span> مشاركة البيانات مع أطراف ثالثة</h2>
     <p>
       لا نبيع بياناتك ولا نشاركها مع أي جهة إعلانية. الاستثناء الوحيد هو خدمة
       <b>Firebase Cloud Messaging</b> (التابعة لـ Google) التي نستخدمها حصراً لإرسال الإشعارات
@@ -77,8 +115,8 @@
     </p>
   </section>
 
-  <section>
-    <h2>4. صلاحيات التطبيق ولماذا نطلبها</h2>
+  <section class="legal-section">
+    <h2><span class="ic">🔑</span> صلاحيات التطبيق ولماذا نطلبها</h2>
     <ul>
       <li><b>الموقع الجغرافي:</b> فقط عند ضغطك زر "مشاركة الموقع" داخل محادثة طلب — لن يُستخدم الموقع بأي وقت آخر ولا بالخلفية.</li>
       <li><b>الميكروفون:</b> فقط عند تسجيلك رسالة صوتية داخل محادثة طلب.</li>
@@ -87,33 +125,37 @@
     </ul>
   </section>
 
-  <section>
-    <h2>5. حقوقك</h2>
+  <section class="legal-section">
+    <h2><span class="ic">✅</span> حقوقك</h2>
     <ul>
       <li>الاطلاع على بياناتك وتعديلها في أي وقت من داخل التطبيق (الإعدادات).</li>
       <li>تغيير كلمة مرورك في أي وقت.</li>
       <li>طلب حذف حسابك وبياناتك بالكامل — راجع
-        <a href="/delete-account.html">صفحة حذف الحساب</a> لمعرفة الطريقة والتفاصيل.</li>
+        <a href="/delete-account.html" style="color:var(--blue);font-weight:900">صفحة حذف الحساب</a> لمعرفة الطريقة والتفاصيل.</li>
     </ul>
   </section>
 
-  <section>
-    <h2>6. الاحتفاظ بالبيانات</h2>
+  <section class="legal-section">
+    <h2><span class="ic">🗄️</span> الاحتفاظ بالبيانات</h2>
     <p>
       نحتفظ ببياناتك طالما حسابك فعّال. عند حذف حسابك، تُحذف بياناتك الشخصية نهائياً من قاعدة
       بياناتنا فوراً (راجع صفحة حذف الحساب للتفاصيل والاستثناءات المرتبطة بطلبات نشطة أو رصيد غير مصفّى).
     </p>
   </section>
 
-  <section>
-    <h2>7. تواصل معنا</h2>
+  <section class="legal-section">
+    <h2><span class="ic">✉️</span> تواصل معنا</h2>
     <p>لأي استفسار بخصوص هذه السياسة أو بياناتك، تواصل معنا عبر الدعم الفني داخل التطبيق.</p>
   </section>
 </main>
 
 <footer>
   <b>صلّحلي</b>
-  <p>منصة أردنية تربط العميل بالفني الموثوق.</p>
+  <p>منصة أردنية تربط العميل بالفني الموثوق. الدفع كاش، ورصيد الفني يدار من الإدارة.</p>
+  <p style="margin-top:14px;display:flex;gap:18px;flex-wrap:wrap">
+    <a href="/privacy.html" style="color:#cbd5e1;font-weight:800">سياسة الخصوصية</a>
+    <a href="/delete-account.html" style="color:#cbd5e1;font-weight:800">حذف الحساب</a>
+  </p>
 </footer>
 
 </body>
