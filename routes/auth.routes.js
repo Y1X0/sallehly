@@ -7,6 +7,7 @@ const bcrypt = require('bcryptjs');
 
 module.exports = function (deps) {
   const { db } = deps;
+  const { io } = deps.realtime;
   const { auth, upload } = deps.middleware;
   const { sign, sendOtpEmail } = deps.services;
   const { clean, userPublic } = deps.utils;
@@ -223,6 +224,40 @@ module.exports = function (deps) {
     if (next.length > 72) return res.status(400).json({ error: 'كلمة السر طويلة جداً، الحد الأقصى 72 حرف' });
     db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(bcrypt.hashSync(next, 12), req.user.id);
     res.json({ ok: true });
+  });
+
+  // ── حذف الحساب الذاتي (متطلّب سياسة Google Play لحذف الحساب) ──────────
+  // نفس شرطَي حذف الأدمن اليدوي بالضبط (routes/admin.routes.js): لا حذف
+  // بوجود طلب نشط أو رصيد متبقٍّ — لحماية الطرف الآخر (فني/عميل) من انقطاع
+  // مفاجئ بمنتصف عمل، ولحماية المستخدم نفسه من فقدان رصيد لم يُصرف.
+  // بالإضافة لذلك: نطلب كلمة السر الحالية للتأكيد (مثل /me/password تماماً)
+  // لأن هذا إجراء نهائي لا رجعة فيه.
+  router.delete('/me', auth, (req, res) => {
+    const id = req.user.id;
+    const password = String(req.body.password || '');
+    const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    if (!u) return res.status(404).json({ error: 'الحساب غير موجود' });
+    if (!bcrypt.compareSync(password, u.password_hash)) {
+      return res.status(401).json({ error: 'كلمة السر غير صحيحة' });
+    }
+    const activeRequest = db.prepare(
+      "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+    ).get(id, id);
+    if (activeRequest) {
+      return res.status(409).json({
+        error: `لا يمكن حذف حسابك حالياً — عندك طلب نشط رقم ${activeRequest.id}. أنهِ أو ألغِ الطلب أولاً.`,
+      });
+    }
+    if (Number(u.balance || 0) > 0) {
+      return res.status(409).json({
+        error: `لا يمكن حذف حسابك حالياً — رصيدك الحالي ${u.balance} د.أ. تواصل مع الدعم لتصفيته أولاً.`,
+      });
+    }
+    db.prepare('DELETE FROM users WHERE id=?').run(id);
+    // اقطع أي اتصال Socket.IO حي بهذا الحساب فوراً (بدل انتظار انقطاعه لحاله).
+    try { io.in(`user-${id}`).disconnectSockets(); } catch (e) {}
+    res.clearCookie('token');
+    res.json({ ok: true, message: 'تم حذف حسابك بنجاح' });
   });
 
   return router;

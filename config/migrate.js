@@ -126,6 +126,27 @@ CREATE TABLE IF NOT EXISTS chat_reads(
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(request_id,user_id)
 );
+-- [FIX-UGC-01] الإبلاغ عن رسالة مسيئة (Google Play User Generated Content policy)
+CREATE TABLE IF NOT EXISTS message_reports(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  request_id INTEGER NOT NULL,
+  message_id INTEGER,
+  reporter_id INTEGER NOT NULL,
+  reported_user_id INTEGER,
+  reason TEXT NOT NULL,
+  message_body TEXT,
+  status TEXT DEFAULT 'قيد المراجعة',
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+-- [FIX-UGC-01] حظر مستخدم لمستخدم آخر — يمنع التراسل بالاتجاهين بمجرد وجود
+-- سجل حظر من أي طرف (راجع الفحص بـ routes/chat.routes.js).
+CREATE TABLE IF NOT EXISTS user_blocks(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  blocker_id INTEGER NOT NULL,
+  blocked_id INTEGER NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(blocker_id, blocked_id)
+);
 CREATE TABLE IF NOT EXISTS ratings(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id INTEGER NOT NULL UNIQUE,
@@ -203,6 +224,9 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_log
 // الكود (routes/support.routes.js) هو التعريف الأول أعلاه بعمود user_id.
 // أُزيل التعريف المكرر لأنه كود ميت ومضلِّل فقط، وليس له أي أثر وظيفي حالي.
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_support_tickets_user ON support_tickets(user_id)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_message_reports_created ON message_reports(created_at)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_user_blocks_blocker ON user_blocks(blocker_id)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)').run(); } catch (e) {}
 // تمت إزالة سطر إعادة تفعيل الفنيين الموقوفين تلقائياً عند كل تشغيل للسيرفر.
 // كان هذا السطر يلغي قرار إيقاف أي فني من الإدارة (بسبب شكوى أو مخالفة) في كل مرة يعاد تشغيل السيرفر أو يتم نشر تحديث جديد.
 // إيقاف/تفعيل الفنيين أصبح بالكامل بيد الإدارة فقط عبر /api/admin/users/:id/toggle.
@@ -242,6 +266,40 @@ if (resolvedAdminEmail && resolvedAdminPassword) {
 } else {
   console.warn('No admin account created/updated. Set ADMIN_EMAIL and ADMIN_PASSWORD in .env, then restart.');
 }
+
+// [FIX-REVIEW-01] حسابات مراجعة اختيارية لمراجعي Google Play (عميل + فني).
+// لا تُنشأ إطلاقاً إلا لو حددت متغيرات البيئة صراحة — آمنة تماماً حتى
+// بالإنتاج (لا تؤثر على أي مستخدم حقيقي، ولا تُنشأ بدون قرار واعٍ منك).
+// اضبط بلوحة Render: REVIEWER_CUSTOMER_EMAIL/PASSWORD وREVIEWER_TECH_EMAIL/PASSWORD.
+function seedReviewerAccount(role, emailEnvVar, passwordEnvVar, name) {
+  const email = process.env[emailEnvVar];
+  const password = process.env[passwordEnvVar];
+  if (!email || !password) return;
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const passHash = bcrypt.hashSync(String(password), 12);
+  const existing = db.prepare('SELECT id FROM users WHERE email=?').get(normalizedEmail);
+
+  if (existing) {
+    db.prepare('UPDATE users SET password_hash=?, role=?, is_active=1 WHERE id=?')
+      .run(passHash, role, existing.id);
+    console.log(`Reviewer ${role} account updated (${emailEnvVar})`);
+    return;
+  }
+
+  const phone = role === 'technician' ? '0798888802' : '0798888801';
+  if (role === 'technician') {
+    db.prepare(`INSERT INTO users(role,name,email,phone,password_hash,city,services,areas,is_active) VALUES(?,?,?,?,?,?,?,?,1)`)
+      .run(role, name, normalizedEmail, phone, passHash, 'عمان', 'كهربائي,سباك,فني تكييف,صيانة عامة', 'عمان');
+  } else {
+    db.prepare(`INSERT INTO users(role,name,email,phone,password_hash,city,is_active) VALUES(?,?,?,?,?,?,1)`)
+      .run(role, name, normalizedEmail, phone, passHash, 'عمان');
+  }
+  console.log(`Reviewer ${role} account created (${emailEnvVar})`);
+}
+
+seedReviewerAccount('customer', 'REVIEWER_CUSTOMER_EMAIL', 'REVIEWER_CUSTOMER_PASSWORD', 'حساب مراجعة - عميل');
+seedReviewerAccount('technician', 'REVIEWER_TECH_EMAIL', 'REVIEWER_TECH_PASSWORD', 'حساب مراجعة - فني');
 
 // V9 demo technicians: ONLY in development. Never seeded in production.
 if (!IS_PROD) {

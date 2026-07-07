@@ -52,6 +52,20 @@ module.exports = function (deps) {
   const { messagesLimiter } = deps.limiters;
   const router = express.Router();
 
+  // [FIX-UGC-01] الطرف الآخر بمحادثة طلب معيّن، بنفس منطق تنبيه الرسائل تماماً.
+  function getOtherPartyId(r, userId) {
+    return Number(userId) === Number(r.customer_id) ? r.technician_id : r.customer_id;
+  }
+
+  // [FIX-UGC-01] هل يوجد حظر بين مستخدمين بأي اتجاه؟ (حظر أحدهما كافٍ لمنع التراسل بالاتجاهين).
+  function isBlockedEitherWay(userA, userB) {
+    if (!userA || !userB) return false;
+    const row = db.prepare(
+      'SELECT id FROM user_blocks WHERE (blocker_id=? AND blocked_id=?) OR (blocker_id=? AND blocked_id=?) LIMIT 1'
+    ).get(userA, userB, userB, userA);
+    return !!row;
+  }
+
   function rejectBlockedChat(req, res, r, body) {
     const reason = chatViolationReason(body);
     if (!reason) return false;
@@ -65,6 +79,9 @@ module.exports = function (deps) {
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق' });
+    if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
+      return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين' });
+    }
     const body = clean(req.body.body); if (body.length < 1) return res.status(400).json({ error: 'الرسالة فارغة' });
     if (body.length > 1000) return res.status(400).json({ error: 'الرسالة طويلة جداً، الحد الأقصى 1000 حرف' });
     if (rejectBlockedChat(req, res, r, body)) return;
@@ -110,6 +127,9 @@ module.exports = function (deps) {
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق' });
+    if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
+      return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين' });
+    }
     if (!req.file) return res.status(400).json({ error: 'لم يتم استقبال التسجيل الصوتي' });
     const url = '/uploads/audios/' + req.file.filename;
     const body = '[audio]' + url;
@@ -131,6 +151,9 @@ module.exports = function (deps) {
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق' });
+    if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
+      return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين' });
+    }
     if (!req.file) return res.status(400).json({ error: 'لم يتم استقبال الصورة' });
     const url = '/uploads/requests/' + req.file.filename;
     const body = '[image]' + url;
@@ -160,9 +183,74 @@ module.exports = function (deps) {
     res.json({ messages: readMessages });
   });
 
+  // [FIX-UGC-01] الإبلاغ عن رسالة مسيئة (Google Play UGC policy)
+  router.post('/requests/:id/report-message', auth, (req, res) => {
+    const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
+    const messageId = parseInt(req.body.messageId, 10) || null;
+    const reason = clean(req.body.reason);
+    if (!reason || reason.length < 2) return res.status(400).json({ error: 'الرجاء اختيار سبب البلاغ' });
+    if (reason.length > 200) return res.status(400).json({ error: 'سبب البلاغ طويل جداً' });
+    let messageBody = null;
+    let reportedUserId = null;
+    if (messageId) {
+      const msg = db.prepare('SELECT * FROM messages WHERE id=? AND request_id=?').get(messageId, r.id);
+      if (msg) { messageBody = String(msg.body || '').slice(0, 500); reportedUserId = msg.sender_id; }
+    }
+    if (!reportedUserId) reportedUserId = getOtherPartyId(r, req.user.id);
+    db.prepare('INSERT INTO message_reports(request_id,message_id,reporter_id,reported_user_id,reason,message_body) VALUES(?,?,?,?,?,?)')
+      .run(r.id, messageId, req.user.id, reportedUserId, reason, messageBody);
+    io.to('admin-room').emit('new-message-report', { requestId: Number(r.id) });
+    res.json({ ok: true, message: 'تم إرسال البلاغ للإدارة، شكراً لك' });
+  });
+
+  // [FIX-UGC-01] حظر الطرف الآخر بهذا الطلب — يمنع التراسل بالاتجاهين فوراً.
+  router.post('/requests/:id/block', auth, (req, res) => {
+    const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
+    const otherPartyId = getOtherPartyId(r, req.user.id);
+    if (!otherPartyId) return res.status(400).json({ error: 'لا يوجد طرف آخر لحظره بعد بهذا الطلب' });
+    db.prepare('INSERT OR IGNORE INTO user_blocks(blocker_id,blocked_id) VALUES(?,?)').run(req.user.id, otherPartyId);
+    res.json({ ok: true, blocked: true });
+  });
+
+  // [FIX-UGC-01] إلغاء حظر الطرف الآخر بهذا الطلب.
+  router.delete('/requests/:id/block', auth, (req, res) => {
+    const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    const otherPartyId = getOtherPartyId(r, req.user.id);
+    if (otherPartyId) db.prepare('DELETE FROM user_blocks WHERE blocker_id=? AND blocked_id=?').run(req.user.id, otherPartyId);
+    res.json({ ok: true, blocked: false });
+  });
+
+  // [FIX-UGC-01] هل أنا حاظر الطرف الآخر، أو هو حاظرني؟ (لعرض الحالة الصحيحة بالواجهة)
+  router.get('/requests/:id/block-status', auth, (req, res) => {
+    const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    const otherPartyId = getOtherPartyId(r, req.user.id);
+    if (!otherPartyId) return res.json({ blockedByMe: false, blockedMe: false, otherUserId: null });
+    const blockedByMe = !!db.prepare('SELECT id FROM user_blocks WHERE blocker_id=? AND blocked_id=?').get(req.user.id, otherPartyId);
+    const blockedMe = !!db.prepare('SELECT id FROM user_blocks WHERE blocker_id=? AND blocked_id=?').get(otherPartyId, req.user.id);
+    res.json({ blockedByMe, blockedMe, otherUserId: Number(otherPartyId) });
+  });
+
   router.get('/chat-violations', auth, requireRole('admin'), (req, res) => {
     const rows = db.prepare(`SELECT v.*,u.name user_name,u.email user_email,r.service,r.status FROM chat_violations v LEFT JOIN users u ON u.id=v.user_id LEFT JOIN requests r ON r.id=v.request_id ORDER BY v.id DESC LIMIT 200`).all();
     res.json({ violations: rows });
+  });
+
+  // [FIX-UGC-01] قائمة بلاغات الرسائل للإدارة (نفس نمط chat-violations تماماً)
+  router.get('/message-reports', auth, requireRole('admin'), (req, res) => {
+    const rows = db.prepare(`SELECT mr.*, reporter.name reporter_name, reported.name reported_name, reported.email reported_email
+      FROM message_reports mr
+      LEFT JOIN users reporter ON reporter.id=mr.reporter_id
+      LEFT JOIN users reported ON reported.id=mr.reported_user_id
+      ORDER BY mr.id DESC LIMIT 200`).all();
+    res.json({ reports: rows });
   });
 
   // V13 chats center and support center
