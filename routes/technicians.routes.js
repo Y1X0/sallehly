@@ -13,6 +13,9 @@ module.exports = function (deps) {
     if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
     const tech = db.prepare(`SELECT id,name,city,areas,services,avatar_url,rating_avg,rating_count,completed_jobs,is_active,created_at FROM users WHERE id=? AND role='technician'`).get(id);
     if (!tech) return res.status(404).json({ error: 'الفني غير موجود' });
+    // [FIX-DELETE-01] فني محذوف (حساب مُجهَّل الهوية) لا يظهر ملفه الشخصي
+    // بعد الآن، حتى بمعرفة الرابط المباشر — يطابق ما تصفه صفحة حذف الحساب.
+    if (!tech.is_active) return res.status(404).json({ error: 'هذا الحساب لم يعد متاحاً' });
     const reviews = db.prepare(`SELECT r.stars,r.comment,r.created_at,u.name customer_name FROM ratings r JOIN users u ON u.id=r.customer_id WHERE r.technician_id=? ORDER BY r.id DESC LIMIT 10`).all(id);
     res.json({ tech, reviews });
   });

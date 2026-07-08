@@ -141,6 +141,12 @@ module.exports = function (deps) {
     res.json({ ok: true });
   });
 
+  // [FIX-SERVICES-01] كل المهن (فعّالة وغير فعّالة) — لشاشة إدارة الأدمن فقط،
+  // بعكس /meta العام الذي يُظهر الفعّالة فقط.
+  router.get('/admin/services', auth, requireRole('admin'), (req, res) => {
+    res.json({ services: db.prepare('SELECT * FROM service_categories ORDER BY name').all() });
+  });
+
   router.post('/admin/services', auth, requireRole('admin'), (req, res) => {
     const name = clean(req.body.name);
     const icon = clean(req.body.icon) || '🔧';
@@ -150,10 +156,77 @@ module.exports = function (deps) {
     try {
       const info = db.prepare('INSERT INTO service_categories(name,icon) VALUES(?,?)').run(name, icon);
       logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'إضافة مهنة', targetType: 'service', targetId: info.lastInsertRowid, details: { name, icon } });
+      // [FIX-SERVICES-01] بث فوري لكل المستخدمين المتصلين (عملاء وفنيين) —
+      // مهنة جديدة تفعّل تظهر بدون إعادة فتح التطبيق.
+      io.emit('services-updated', { type: 'created', name });
       res.json({ service: db.prepare('SELECT * FROM service_categories WHERE id=?').get(info.lastInsertRowid) });
     } catch (e) {
       if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'هذه المهنة موجودة مسبقاً' });
       res.status(500).json({ error: 'تعذر إضافة المهنة' });
+    }
+  });
+
+  // [FIX-SERVICES-01] تفعيل/تعطيل مهنة — البديل الآمن للحذف النهائي. مهنة
+  // معطّلة تختفي فوراً من /meta (تسجيل الفنيين + إنشاء الطلبات) لكن تبقى
+  // بقاعدة البيانات (لا تُفقد بيانات الفنيين الحاليين المرتبطين بها كنص).
+  // [FIX-SERVICES-03] نقطة واحدة تغطي كلا الحالتين: تبديل الحالة فقط، أو
+  // تعديل الاسم/الأيقونة كاملاً (مع إمكانية تغيير الحالة بنفس الطلب أيضاً).
+  // لا يوجد endpoint منفصل مكرر — نفس المسار PATCH /admin/services/:id.
+  router.patch('/admin/services/:id', auth, requireRole('admin'), (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    const svc = db.prepare('SELECT * FROM service_categories WHERE id=?').get(id);
+    if (!svc) return res.status(404).json({ error: 'المهنة غير موجودة' });
+
+    const editingNameOrIcon = req.body.name !== undefined || req.body.icon !== undefined;
+
+    // ── الحالة 1: تبديل الحالة فقط (نفس السلوك القديم، بدون أي تغيير) ──
+    if (!editingNameOrIcon) {
+      const isActive = req.body.is_active ? 1 : 0;
+      db.prepare('UPDATE service_categories SET is_active=? WHERE id=?').run(isActive, id);
+      logAudit({
+        adminId: req.user.id,
+        actorName: req.user.name,
+        action: isActive ? 'تفعيل مهنة' : 'تعطيل مهنة',
+        targetType: 'service',
+        targetId: id,
+        details: { name: svc.name },
+      });
+      io.emit('services-updated', { type: 'toggled', id, name: svc.name, is_active: !!isActive });
+      return res.json({ service: db.prepare('SELECT * FROM service_categories WHERE id=?').get(id) });
+    }
+
+    // ── الحالة 2: تعديل الاسم/الأيقونة (والحالة اختيارياً بنفس الطلب) ──
+    const name = clean(req.body.name ?? svc.name);
+    const icon = clean(req.body.icon ?? svc.icon) || '🔧';
+    if (name.length < 2) return res.status(400).json({ error: 'اسم المهنة قصير' });
+    if (name.length > 50) return res.status(400).json({ error: 'اسم المهنة طويل جداً، الحد الأقصى 50 حرف' });
+    if (icon.length > 10) return res.status(400).json({ error: 'رمز المهنة طويل جداً' });
+
+    // معرّف نفس المهنة يبقى كما هو (نُحدّث بنفس id)، والحالة الفعّالة تبقى
+    // كما كانت إلا لو صرّح الطلب بتغييرها صراحة.
+    const isActive = req.body.is_active !== undefined ? (req.body.is_active ? 1 : 0) : svc.is_active;
+
+    try {
+      const dup = db.prepare('SELECT id FROM service_categories WHERE name=? AND id<>?').get(name, id);
+      if (dup) return res.status(409).json({ error: 'هذه المهنة موجودة مسبقاً' });
+
+      db.prepare('UPDATE service_categories SET name=?, icon=?, is_active=? WHERE id=?').run(name, icon, isActive, id);
+      logAudit({
+        adminId: req.user.id,
+        actorName: req.user.name,
+        action: 'تعديل مهنة',
+        targetType: 'service',
+        targetId: id,
+        details: { old_name: svc.name, name, icon },
+      });
+      // [FIX-SERVICES-03] بث فوري لكل المتصلين — العميل والفني، شاشة التسجيل،
+      // تعديل الملف الشخصي، وإنشاء الطلب، كلها تعتمد على نفس هذا الحدث.
+      io.emit('services-updated', { type: 'edited', id, name, icon, is_active: !!isActive });
+      res.json({ service: db.prepare('SELECT * FROM service_categories WHERE id=?').get(id) });
+    } catch (e) {
+      if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'هذه المهنة موجودة مسبقاً' });
+      res.status(500).json({ error: 'تعذر تعديل المهنة' });
     }
   });
 
@@ -164,6 +237,7 @@ module.exports = function (deps) {
     if (!svc) return res.status(404).json({ error: 'المهنة غير موجودة' });
     db.prepare('DELETE FROM service_categories WHERE id=?').run(id);
     logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'حذف مهنة', targetType: 'service', targetId: id, details: { name: svc.name } });
+    io.emit('services-updated', { type: 'deleted', name: svc.name });
     res.json({ ok: true });
   });
 
