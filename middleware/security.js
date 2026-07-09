@@ -83,9 +83,15 @@ const helmetMiddleware = helmet({
 
 const globalRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
-  limit: IS_PROD ? 1500 : 100000,
+  // [FIX-RATE-LIMIT] رُفع الحد من 1500 إلى 3000 كهامش أمان إضافي بجانب إصلاح الـ polling
+  // بالفرونت اند (public/app.js). الحد القديم كان يُستهلك بسرعة بسبب نداءات v24RefreshBadges
+  // المتكدسة كل 3 ثواني بدون انتظار الرد، خصوصاً وقت بطء/تأخر السيرفر (مثل Render spin-down).
+  limit: IS_PROD ? 3000 : 100000,
   standardHeaders: true,
   legacyHeaders: false,
+  // [FIX-RATE-LIMIT] أضيفت رسالة عربية مخصصة بدل الرسالة الإنجليزية الافتراضية
+  // ("Too many requests, please try again later.") حتى تكون تجربة المستخدم متسقة مع بقية الليميترز.
+  message: { error: 'عدد كبير من الطلبات، حاول بعد قليل' },
   skip: (req) => req.path.startsWith('/uploads') || req.path.startsWith('/socket.io') || req.path === '/' || req.path.endsWith('.css') || req.path.endsWith('.js')
 });
 

@@ -15,6 +15,19 @@ function createApp() {
   // can read X-Forwarded-For safely without throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
   app.set('trust proxy', 1);
 
+  // TEMPORARY DIAGNOSTIC — TODO: remove after verifying real hop count from Render logs.
+  // Logs the raw X-Forwarded-For header plus what Express resolves req.ip/req.ips to under
+  // the current `trust proxy: 1` setting, so we can confirm the actual proxy chain length
+  // before changing that setting (see BUG-003 rate-limit investigation).
+  app.use((req, res, next) => {
+    console.log('[XFF-DEBUG]', {
+      'x-forwarded-for': req.headers['x-forwarded-for'],
+      'resolved req.ip': req.ip,
+      'req.ips (trust proxy chain)': req.ips,
+    });
+    next();
+  });
+
   app.use(security.helmetMiddleware);
   app.use(security.globalRateLimit);
   app.use(security.csrfCheck);
