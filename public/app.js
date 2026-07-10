@@ -2637,7 +2637,24 @@ setTimeout(renderBellBadge,200);
   // [FIX-RATE-03] رفعنا فترة الـ polling الاحتياطي من 3 ثواني لـ 15 ثانية — التحديث اللحظي
   // الفعلي أصلاً صاير عبر socket.io (v24BindRealtime)، وهاد الـ interval غرضه بس شبكة احتياطية
   // (fallback) لو انقطع الاتصال اللحظي، مش المصدر الأساسي للتحديث.
-  window.init=async function(){ await oldInit(); v24BindRealtime(); setInterval(()=>{ if(state.user && !activeChatId) v24RefreshBadges(); },15000); };
+  // [FIX-RATE-03] + [FIX-RATE-LIMIT] دمج الحلّين: التحديث اللحظي الفعلي أصلاً صاير عبر socket.io
+  // (v24BindRealtime)، وهاد الـ interval غرضه بس شبكة احتياطية (fallback) لو انقطع الاتصال اللحظي.
+  // خفّفنا الفريكونسي من 3 ثواني إلى 8 ثواني (كافي جدًا لتحديث بادجات الإشعارات)، وأبقينا حماية
+  // badgesInFlight المحلية حتى ما يبدأ نداء جديد قبل ما يخلص السابق — بالإضافة لحماية عامة مشابهة
+  // موجودة أصلاً جوا v24RefreshBadges نفسها (بتحمي كمان من التكدس اللي سببه أحداث socket.io
+  // المتزامنة زي new-request-created و offer-created و request-status-updated).
+  window.init=async function(){
+    await oldInit();
+    v24BindRealtime();
+    let badgesInFlight = false;
+    setInterval(async ()=>{
+      if(state.user && !activeChatId && !badgesInFlight){
+        badgesInFlight = true;
+        try { await v24RefreshBadges(); }
+        finally { badgesInFlight = false; }
+      }
+    }, 8000);
+  };
 
   const css=`
   .mobile-menu-open,.mobile-menu-close{display:none}.v24-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.v24-chat-card{max-width:980px;margin:auto}.v24-chat-head{display:flex;justify-content:space-between;align-items:center;gap:14px}.v24-live-pill{display:inline-flex;gap:8px;align-items:center;background:#eef8ff;border:1px solid #bdd9ff;color:#1d47d8;padding:8px 12px;border-radius:999px;font-weight:900}.v24-live-pill i{width:9px;height:9px;background:#16c784;border-radius:50%;box-shadow:0 0 0 5px rgba(22,199,132,.12)}.v24-chat-box{height:430px}.blocked-input{animation:v24Shake .35s;border-color:#f43f5e!important}@keyframes v24Shake{0%,100%{transform:translateX(0)}25%{transform:translateX(6px)}75%{transform:translateX(-6px)}}.v24-badge{vertical-align:middle}.v24-content{min-width:0}.v24-grid .dash-card{cursor:pointer}.chat-protection-note{margin:12px 0;padding:12px;border-radius:16px;background:#eef6ff;border:1px solid #cfe0ff;color:#1640a6;font-weight:800}.chat-input-row input{min-height:54px}.chat-input-row button{min-height:54px}.v24-sidebar .sidebtn{cursor:pointer}.v24-sidebar .sidebtn:hover{transform:translateX(-2px)}.problem-img,.problem-preview{max-width:320px;width:100%;border-radius:18px;object-fit:cover;border:1px solid #d9e5f8}.v22-upload{transition:.2s}.v22-upload:hover{transform:translateY(-2px);box-shadow:0 18px 44px rgba(47,104,255,.14)}

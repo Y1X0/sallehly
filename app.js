@@ -13,7 +13,14 @@ function createApp() {
 
   // Render/Proxy fix: trust the first reverse proxy so express-rate-limit
   // can read X-Forwarded-For safely without throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
-  app.set('trust proxy', 1);
+  // [FIX-XFF] كان مضبوط على 1، بس XFF-DEBUG logs أثبتت إنه في هوبين فعلياً قبل ما الطلب يوصل
+  // للتطبيق: Cloudflare edge (172.69.x/172.71.x) ثم بروكسي Render الداخلي (10.x.x.x).
+  // بـ trust proxy=1 كان req.ip بيتوقف عند عنوان Render الداخلي (10.x.x.x) بدل الـ IP الحقيقي
+  // للمستخدم — وبما إنه عناوين Render الداخلية محدودة العدد وبتتوزع (round-robin) بين كل
+  // المستخدمين، كان express-rate-limit (اللي بيحسب الحد حسب req.ip) عم يحط عشرات المستخدمين
+  // المختلفين بنفس "صندوق" الحد الأقصى بالغلط، وهاد السبب الجذري وراء ظهور 429 بشكل متكرر
+  // وغير منطقي حتى لمستخدم واحد.
+  app.set('trust proxy', 2);
 
   app.use(security.helmetMiddleware);
   // [FIX-RATE-01] cookieParser لازم يشتغل قبل globalRateLimit عشان الـ rate limiter يقدر

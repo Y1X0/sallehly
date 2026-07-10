@@ -183,6 +183,17 @@ module.exports = function (deps) {
   });
 
   router.post('/me/profile', auth, upload.single('avatar'), (req, res) => {
+    // [FIX-UPLOAD-01] أي ملف وصل عبر multer ولم يُستخدم فعلياً (رُفض بسبب
+    // فشل تحقق آخر، أو لأن الدور ليس "فني") يُحذف فوراً من القرص عند انتهاء
+    // الطلب — بغض النظر عن أي مسار Return تم أخذه. هذا يمنع بقاء ملفات
+    // يتيمة بمجلد uploads دون الحاجة لتعديل أي منطق تحقق موجود.
+    let fileConsumed = false;
+    res.on('finish', () => {
+      if (req.file && !fileConsumed) {
+        try { fs.unlinkSync(req.file.path); } catch (e) {}
+      }
+    });
+
     const name = clean(req.body.name);
     const phone = clean(req.body.phone);
     const city = clean(req.body.city);
@@ -198,6 +209,7 @@ module.exports = function (deps) {
     let avatarUpdate = '';
     let avatarParams = [];
     if (req.file && req.user.role === 'technician') {
+      fileConsumed = true;
       const newAvatarUrl = '/uploads/avatars/' + req.file.filename;
       // حذف الصورة القديمة
       const oldUser = db.prepare('SELECT avatar_url FROM users WHERE id=?').get(req.user.id);
