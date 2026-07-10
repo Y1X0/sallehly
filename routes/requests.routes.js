@@ -6,7 +6,7 @@ module.exports = function (deps) {
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, upload } = deps.middleware;
   const { clean, calcRating } = deps.utils;
-  const { requestsLimiter } = deps.limiters;
+  const { requestsLimiter, pollingLimiter } = deps.limiters;
   const router = express.Router();
 
   router.post('/requests', auth, requireRole('customer'), requestsLimiter, upload.single('problem_image'), (req, res) => {
@@ -41,7 +41,7 @@ module.exports = function (deps) {
     res.json({ request });
   });
 
-  router.get('/requests', auth, (req, res) => {
+  router.get('/requests', auth, pollingLimiter, (req, res) => {
     let rows;
     let total;
     if (req.user.role === 'admin') {

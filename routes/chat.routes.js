@@ -49,7 +49,7 @@ module.exports = function (deps) {
   const { auth, requireRole, upload, uploadAudio } = deps.middleware;
   const { clean, getMessages, markChatRead } = deps.utils;
   const { sendPush } = deps.services;
-  const { messagesLimiter } = deps.limiters;
+  const { messagesLimiter, pollingLimiter } = deps.limiters;
   const router = express.Router();
 
   // [FIX-UGC-01] الطرف الآخر بمحادثة طلب معيّن، بنفس منطق تنبيه الرسائل تماماً.
@@ -254,7 +254,7 @@ module.exports = function (deps) {
   });
 
   // V13 chats center and support center
-  router.get('/chats', auth, (req, res) => {
+  router.get('/chats', auth, pollingLimiter, (req, res) => {
     let rows = [];
     if (req.user.role === 'customer') {
       rows = db.prepare(`SELECT r.id request_id,r.service,r.status,u.name other_name,

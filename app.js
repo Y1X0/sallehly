@@ -16,12 +16,14 @@ function createApp() {
   app.set('trust proxy', 1);
 
   app.use(security.helmetMiddleware);
+  // [FIX-RATE-01] cookieParser لازم يشتغل قبل globalRateLimit عشان الـ rate limiter يقدر
+  // يقرأ توكن تسجيل الدخول (JWT) من الكوكيز ويحدد هوية الطالب بالمستخدم بدل الـ IP الخام.
+  app.use(cookieParser());
   app.use(security.globalRateLimit);
   app.use(security.csrfCheck);
 
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
-  app.use(cookieParser());
   app.use(express.static(path.join(env.BASE, 'public')));
   // قدّم الملفات المرفوعة من القرص الدائم (إن وُجد) حتى تظهر الصور بعد الـ deploy.
   if (process.env.DATA_DIR) {

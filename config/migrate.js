@@ -216,6 +216,9 @@ try { db.prepare('ALTER TABLE users ADD COLUMN fcm_token TEXT').run(); } catch (
 try { db.prepare('ALTER TABLE requests ADD COLUMN cancel_reason TEXT').run(); } catch (e) {}
 try { db.prepare('ALTER TABLE requests ADD COLUMN cancelled_by INTEGER').run(); } catch (e) {}
 try { db.prepare('ALTER TABLE requests ADD COLUMN cancelled_at TEXT').run(); } catch (e) {}
+// [FIX-SERVICES-01] يسمح للأدمن بتعطيل مهنة دون حذفها نهائياً — القيمة
+// الافتراضية 1 تحافظ على كل المهن الموجودة فعّالة كما كانت قبل هذا التعديل.
+try { db.prepare('ALTER TABLE service_categories ADD COLUMN is_active INTEGER DEFAULT 1').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at)').run(); } catch (e) {}
 
 // [FIX-CLEANUP-01] كان هنا سابقاً تعريف ثانٍ لجدول complaints بأعمدة مختلفة

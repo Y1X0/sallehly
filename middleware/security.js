@@ -3,7 +3,30 @@
 
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
-const { IS_PROD, ALLOWED_ORIGINS } = require('../config/env');
+const jwt = require('jsonwebtoken');
+const { IS_PROD, ALLOWED_ORIGINS, JWT_SECRET } = require('../config/env');
+
+// [FIX-RATE-01] مفتاح تحديد هوية الطالب لأغراض الـ rate limiting.
+// المشكلة القديمة: الاعتماد فقط على req.ip بيخلي كل المستخدمين المسجلين دخول اللي عم
+// يشاركوا نفس IP (شبكات الموبايل 4G/5G بتستخدم CGNAT وبتشارك نفس IP العام بين كذا مستخدم
+// بنفس الوقت) ينحسبوا كأنهم "طالب واحد" — فلما حمل كذا مستخدم يتجمع، الكل ينحظر مع بعض
+// برسالة "Too many requests" حتى لو كل وحدة لحاله ما تجاوز الحد المعقول له.
+// الحل: لو في توكن JWT صالح (مستخدم مسجل دخول) نستخدم معرف المستخدم نفسه كمفتاح، وهيك كل
+// حساب إله سقفه المستقل بغض النظر عن الشبكة. لو ما في توكن (زائر/قبل تسجيل الدخول) نرجع
+// لاعتماد الـ IP الحقيقي.
+function identifyRequester(req) {
+  try {
+    const h = req.headers.authorization || '';
+    const token = h.startsWith('Bearer ') ? h.slice(7) : req.cookies?.token;
+    if (token) {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      if (decoded && decoded.id) return `user:${decoded.id}`;
+    }
+  } catch { /* توكن غير صالح/منتهي — نكمل ونعتمد على الـ IP بدل ما نفشل الطلب هون */ }
+  // نفس منطق express-rate-limit الافتراضي (v7.5.1): الاعتماد المباشر على request.ip
+  // (المحسوب أصلاً بشكل صحيح بفضل app.set('trust proxy', 1) بملف app.js).
+  return `ip:${req.ip}`;
+}
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -86,7 +109,25 @@ const globalRateLimit = rateLimit({
   limit: IS_PROD ? 1500 : 100000,
   standardHeaders: true,
   legacyHeaders: false,
+  // [FIX-RATE-01] مفتاح بالمستخدم بدل IP الخام — يمنع انهيار التطبيق لكل المستخدمين لما
+  // كذا حساب يشتركوا بنفس IP (CGNAT بشبكات الموبايل).
+  keyGenerator: identifyRequester,
   skip: (req) => req.path.startsWith('/uploads') || req.path.startsWith('/socket.io') || req.path === '/' || req.path.endsWith('.css') || req.path.endsWith('.js')
+    // [FIX-RATE-02] استثناء مسارات القراءة اللي بتتحدّث تلقائيًا وبكثرة (شارة الإشعارات/قائمة
+    // الطلبات) من السقف العام — إلها limiter خاص فيها بالأسفل (pollingLimiter) بدل ما تُحسب
+    // على نفس سقف باقي الـ API وتستهلكه بسرعة.
+    || (req.method === 'GET' && (req.path === '/api/requests' || req.path === '/api/chats'))
+});
+
+// [FIX-RATE-02] limiter مستقل وسخي لمسارات "الاستعلام الدوري" (badges/طلباتي) — سقف عالي لكل
+// مستخدم (وليس لكل الشبكة) لإنها قراءة عادية ومتوقّعة، لكن برضه محدود لمنع أي انفلات فعلي
+// (تبويبات متعددة مفتوحة بنفس الوقت، أو أي حلقة لا نهائية بالواجهة مستقبلاً).
+const pollingLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  limit: 300, // ~ طلب واحد بالثانية لمدة 5 دقائق لكل مستخدم — أعلى بكثير من أي استخدام طبيعي
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: identifyRequester
 });
 
 // [SEC-FIX-06] CSRF Protection — Origin/Referer validation for state-changing requests
@@ -125,5 +166,6 @@ function apiErrorHandler(err, req, res, next) {
 
 module.exports = {
   helmetMiddleware, globalRateLimit, csrfCheck, apiErrorHandler,
-  loginLimiter, passwordLimiter, registerLimiter, requestsLimiter, messagesLimiter, otpLimiter
+  loginLimiter, passwordLimiter, registerLimiter, requestsLimiter, messagesLimiter, otpLimiter,
+  pollingLimiter
 };

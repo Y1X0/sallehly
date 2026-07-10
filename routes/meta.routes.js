@@ -8,7 +8,9 @@ module.exports = function (deps) {
 
   router.get('/meta', (req, res) => {
     res.json({
-      services: db.prepare('SELECT * FROM service_categories ORDER BY name').all(),
+      // [FIX-SERVICES-01] فقط المهن الفعّالة تظهر للتسجيل/إنشاء الطلبات —
+      // هذا الفلتر بالضبط هو الفرق بين "موجودة بالقاعدة" و"ظاهرة للمستخدم".
+      services: db.prepare('SELECT * FROM service_categories WHERE is_active=1 ORDER BY name').all(),
       packages: db.prepare('SELECT id,name,amount,bonus FROM packages WHERE is_active=1 ORDER BY amount').all(),
       cities: ['عمان','الزرقاء','إربد','البلقاء','المفرق','جرش','عجلون','مادبا','الكرك','الطفيلة','معان','العقبة']
     });

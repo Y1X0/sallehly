@@ -2466,6 +2466,14 @@ previewProblemImage=function(){
 
   window.v24RefreshBadges = async function(){
     if(!state.user) return;
+    // [FIX-RATE-03] منع التكرار المتراكم: لو في نداء شغال أصلاً أو تم نداء قبل أقل من ثانيتين
+    // (بسبب تزامن أحداث الـ realtime مع الـ interval الدوري)، نتجاهل النداء الزائد بدل ما
+    // نرسل طلبات مكررة لنفس الـ endpoints بنفس اللحظة.
+    const now = Date.now();
+    if(window.__v24BadgeBusy) return;
+    if(window.__v24LastBadge && (now - window.__v24LastBadge) < 2000) return;
+    window.__v24BadgeBusy = true;
+    window.__v24LastBadge = now;
     try{
       const c=await api('/api/chats'); state.chatCount=Number(c.total_unread||0);
       syncChatBell();
@@ -2485,7 +2493,7 @@ setTimeout(renderBellBadge,200);
       renderBellBadge();
       setTimeout(renderBellBadge,100);
       setTimeout(renderBellBadge,300);
-        }catch(_){ }
+        }catch(_){ } finally { window.__v24BadgeBusy = false; }
   };
 
   window.v24MenuIcon = function(k){ return ({dash:'🏠',near:'📍',orders:'🛒',chats:'💬',balance:'💳',topups:'🚚',ledger:'📘',settings:'⚙️',support:'🎧'}[k]||'•'); };
@@ -2626,7 +2634,10 @@ setTimeout(renderBellBadge,200);
   const oldDashboard=window.dashboard;
   window.dashboard=function(){ v24BindRealtime(); return oldDashboard(); };
   const oldInit=window.init;
-  window.init=async function(){ await oldInit(); v24BindRealtime(); setInterval(()=>{ if(state.user && !activeChatId) v24RefreshBadges(); },3000); };
+  // [FIX-RATE-03] رفعنا فترة الـ polling الاحتياطي من 3 ثواني لـ 15 ثانية — التحديث اللحظي
+  // الفعلي أصلاً صاير عبر socket.io (v24BindRealtime)، وهاد الـ interval غرضه بس شبكة احتياطية
+  // (fallback) لو انقطع الاتصال اللحظي، مش المصدر الأساسي للتحديث.
+  window.init=async function(){ await oldInit(); v24BindRealtime(); setInterval(()=>{ if(state.user && !activeChatId) v24RefreshBadges(); },15000); };
 
   const css=`
   .mobile-menu-open,.mobile-menu-close{display:none}.v24-head{display:flex;justify-content:space-between;align-items:center;gap:12px}.v24-chat-card{max-width:980px;margin:auto}.v24-chat-head{display:flex;justify-content:space-between;align-items:center;gap:14px}.v24-live-pill{display:inline-flex;gap:8px;align-items:center;background:#eef8ff;border:1px solid #bdd9ff;color:#1d47d8;padding:8px 12px;border-radius:999px;font-weight:900}.v24-live-pill i{width:9px;height:9px;background:#16c784;border-radius:50%;box-shadow:0 0 0 5px rgba(22,199,132,.12)}.v24-chat-box{height:430px}.blocked-input{animation:v24Shake .35s;border-color:#f43f5e!important}@keyframes v24Shake{0%,100%{transform:translateX(0)}25%{transform:translateX(6px)}75%{transform:translateX(-6px)}}.v24-badge{vertical-align:middle}.v24-content{min-width:0}.v24-grid .dash-card{cursor:pointer}.chat-protection-note{margin:12px 0;padding:12px;border-radius:16px;background:#eef6ff;border:1px solid #cfe0ff;color:#1640a6;font-weight:800}.chat-input-row input{min-height:54px}.chat-input-row button{min-height:54px}.v24-sidebar .sidebtn{cursor:pointer}.v24-sidebar .sidebtn:hover{transform:translateX(-2px)}.problem-img,.problem-preview{max-width:320px;width:100%;border-radius:18px;object-fit:cover;border:1px solid #d9e5f8}.v22-upload{transition:.2s}.v22-upload:hover{transform:translateY(-2px);box-shadow:0 18px 44px rgba(47,104,255,.14)}

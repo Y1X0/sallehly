@@ -44,7 +44,8 @@ const deps = {
     registerLimiter: security.registerLimiter,
     requestsLimiter: security.requestsLimiter,
     messagesLimiter: security.messagesLimiter,
-    otpLimiter: security.otpLimiter
+    otpLimiter: security.otpLimiter,
+    pollingLimiter: security.pollingLimiter
   },
   constants: { COOKIE_OPTS: env.COOKIE_OPTS, BASE: env.BASE },
   path, fs
