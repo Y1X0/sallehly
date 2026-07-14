@@ -49,22 +49,7 @@ module.exports = function (deps) {
   const { auth, requireRole, upload, uploadAudio } = deps.middleware;
   const { clean, getMessages, markChatRead } = deps.utils;
   const { sendPush } = deps.services;
-  const { messagesLimiter, pollingLimiter } = deps.limiters;
   const router = express.Router();
-
-  // [FIX-CHAT-01] دالة مركزية واحدة لفحص "هل لدى هذا الفني عرض ما زال ساري
-  // المفعول (لم يُرفض بعد) على هذا الطلب؟". كان هذا الفحص مكرراً 6 مرات بكل
-  // نقاط الشات، وكلها بلا استثناء الحالة (status) — فأي فني قُدِّم عرضه ثم
-  // رُفض (لأن العميل اختار فنياً آخر) كان يحتفظ بصلاحية دائمة لقراءة/إرسال
-  // رسائل بمحادثة خاصة بين العميل والفني المُختار فعلياً، والانضمام لغرفتها
-  // اللحظية عبر Socket.IO أيضاً (نفس الفحص مكرر بـservices/socket.js).
-  // وجود الدالة هنا مركزياً يمنع تكرار نفس الخطأ عند إضافة أي مسار جديد
-  // مستقبلاً يحتاج نفس فحص الصلاحية.
-  function hasActiveOffer(requestId, technicianId) {
-    return db.prepare(
-      "SELECT id FROM offers WHERE request_id=? AND technician_id=? AND status IN ('pending','accepted') LIMIT 1"
-    ).get(requestId, technicianId);
-  }
 
   // [FIX-UGC-01] الطرف الآخر بمحادثة طلب معيّن، بنفس منطق تنبيه الرسائل تماماً.
   function getOtherPartyId(r, userId) {
@@ -87,10 +72,10 @@ module.exports = function (deps) {
     return res.status(400).json({ error: '⚠️ الرسائل العادية مسموحة. الممنوع فقط مشاركة رقم هاتف أو واتساب أو تيليجرام أو إيميل أو روابط تواصل خارجية.' });
   }
 
-  router.post('/requests/:id/messages', auth, messagesLimiter, (req, res) => {
+  router.post('/requests/:id/messages', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
-    const hasOffer = req.user.role === 'technician' ? hasActiveOffer(r.id, req.user.id) : null;
+    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
@@ -135,10 +120,10 @@ module.exports = function (deps) {
     res.json({ messages });
   });
 
-  router.post('/requests/:id/audio', auth, messagesLimiter, uploadAudio.single('audio'), (req, res) => {
+  router.post('/requests/:id/audio', auth, uploadAudio.single('audio'), (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
-    const hasOffer = req.user.role === 'technician' ? hasActiveOffer(r.id, req.user.id) : null;
+    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
@@ -159,10 +144,10 @@ module.exports = function (deps) {
   });
 
   // ── إرسال صورة في الشات (يستخدم نفس حماية ونمط مسار الصوت) ──
-  router.post('/requests/:id/images', auth, messagesLimiter, upload.single('image'), (req, res) => {
+  router.post('/requests/:id/images', auth, upload.single('image'), (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
-    const hasOffer = req.user.role === 'technician' ? hasActiveOffer(r.id, req.user.id) : null;
+    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
@@ -181,19 +166,19 @@ module.exports = function (deps) {
     res.json({ messages });
   });
 
-  router.get('/requests/:id/messages', auth, pollingLimiter, (req, res) => {
+  router.get('/requests/:id/messages', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
-    const hasOffer = req.user.role === 'technician' ? hasActiveOffer(r.id, req.user.id) : null;
+    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     markChatRead(r.id, req.user.id);
     // [SEC-FIX-03] Targeted badges updated on read
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
     if (r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId: r.id });
     io.to('admin-room').emit('chat-badges-updated', { requestId: r.id });
-    // القراءة لا تطلق messages-updated. سابقاً كان GET يولّد حدث Socket يحمل
-    // القائمة كاملة، والواجهة قد تعيد الجلب بسببه، فتتكوّن حلقة طلبات وتنتهي بـ429.
+    // [FIX-02] تحديث حالة "تمت المشاهدة" لدى الطرف الآخر فوراً
     const readMessages = getMessages(req.params.id);
+    safeEmit(r.id, 'messages-updated', { requestId: r.id, messages: readMessages, senderId: Number(req.user.id) });
     res.json({ messages: readMessages });
   });
 
@@ -201,7 +186,7 @@ module.exports = function (deps) {
   router.post('/requests/:id/report-message', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
-    const hasOffer = req.user.role === 'technician' ? hasActiveOffer(r.id, req.user.id) : null;
+    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     const messageId = parseInt(req.body.messageId, 10) || null;
     const reason = clean(req.body.reason);
@@ -224,7 +209,7 @@ module.exports = function (deps) {
   router.post('/requests/:id/block', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
-    const hasOffer = req.user.role === 'technician' ? hasActiveOffer(r.id, req.user.id) : null;
+    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
     if (!otherPartyId) return res.status(400).json({ error: 'لا يوجد طرف آخر لحظره بعد بهذا الطلب' });
@@ -236,11 +221,6 @@ module.exports = function (deps) {
   router.delete('/requests/:id/block', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
-    // [FIX-CHAT-01] هذا المسار لم يكن فيه أي فحص صلاحية إطلاقاً (بعكس نظيره
-    // POST /block الذي يتحقق من customer_id/technician_id/admin/hasActiveOffer)
-    // — أي مستخدم مسجَّل دخول كان يستطيع استدعاءه لأي requestId عشوائي.
-    const hasOffer = req.user.role === 'technician' ? hasActiveOffer(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
     if (otherPartyId) db.prepare('DELETE FROM user_blocks WHERE blocker_id=? AND blocked_id=?').run(req.user.id, otherPartyId);
     res.json({ ok: true, blocked: false });
@@ -250,11 +230,6 @@ module.exports = function (deps) {
   router.get('/requests/:id/block-status', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
-    // [FIX-CHAT-01] هذا المسار لم يكن فيه أي فحص صلاحية إطلاقاً — أي مستخدم
-    // مسجَّل دخول كان يستطيع الاستعلام عن حالة الحظر بين طرفَي أي طلب عشوائي
-    // لا علاقة له به. نفس فحص باقي مسارات الشات.
-    const hasOffer = req.user.role === 'technician' ? hasActiveOffer(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
     if (!otherPartyId) return res.json({ blockedByMe: false, blockedMe: false, otherUserId: null });
     const blockedByMe = !!db.prepare('SELECT id FROM user_blocks WHERE blocker_id=? AND blocked_id=?').get(req.user.id, otherPartyId);
@@ -278,7 +253,7 @@ module.exports = function (deps) {
   });
 
   // V13 chats center and support center
-  router.get('/chats', auth, pollingLimiter, (req, res) => {
+  router.get('/chats', auth, (req, res) => {
     let rows = [];
     if (req.user.role === 'customer') {
       rows = db.prepare(`SELECT r.id request_id,r.service,r.status,u.name other_name,

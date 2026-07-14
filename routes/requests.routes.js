@@ -6,10 +6,9 @@ module.exports = function (deps) {
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, upload } = deps.middleware;
   const { clean, calcRating } = deps.utils;
-  const { requestsLimiter, pollingLimiter } = deps.limiters;
   const router = express.Router();
 
-  router.post('/requests', auth, requireRole('customer'), requestsLimiter, upload.single('problem_image'), (req, res) => {
+  router.post('/requests', auth, requireRole('customer'), upload.single('problem_image'), (req, res) => {
     const { service, city, area, description, preferred_time } = req.body;
     const lat = req.body.lat ? Number(req.body.lat) : null;
     const lng = req.body.lng ? Number(req.body.lng) : null;
@@ -41,7 +40,7 @@ module.exports = function (deps) {
     res.json({ request });
   });
 
-  router.get('/requests', auth, pollingLimiter, (req, res) => {
+  router.get('/requests', auth, (req, res) => {
     let rows;
     let total;
     if (req.user.role === 'admin') {

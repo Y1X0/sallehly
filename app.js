@@ -23,10 +23,7 @@ function createApp() {
   app.set('trust proxy', 2);
 
   app.use(security.helmetMiddleware);
-  // [FIX-RATE-01] cookieParser لازم يشتغل قبل globalRateLimit عشان الـ rate limiter يقدر
-  // يقرأ توكن تسجيل الدخول (JWT) من الكوكيز ويحدد هوية الطالب بالمستخدم بدل الـ IP الخام.
   app.use(cookieParser());
-  app.use(security.globalRateLimit);
   app.use(security.csrfCheck);
 
   app.use(express.json({ limit: '1mb' }));

@@ -7,7 +7,6 @@ module.exports = function (deps) {
   const { auth, requireRole } = deps.middleware;
   const { clean } = deps.utils;
   const { sendPush } = deps.services;
-  const { messagesLimiter } = deps.limiters;
   const router = express.Router();
 
   router.post('/support', auth, (req, res) => {
@@ -163,7 +162,7 @@ module.exports = function (deps) {
     res.json({ ticket, messages });
   });
 
-  router.post('/support/:id/messages', auth, messagesLimiter, (req, res) => {
+  router.post('/support/:id/messages', auth, (req, res) => {
     const ticket = db.prepare('SELECT * FROM support_tickets WHERE id=?').get(req.params.id);
 
     if (!ticket) return res.status(404).json({ error: 'التذكرة غير موجودة' });

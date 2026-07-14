@@ -40,12 +40,7 @@ const deps = {
   utils: { ...utilsHelpers, ...dbHelpers },
   limiters: {
     loginLimiter: security.loginLimiter,
-    passwordLimiter: security.passwordLimiter,
-    registerLimiter: security.registerLimiter,
-    requestsLimiter: security.requestsLimiter,
-    messagesLimiter: security.messagesLimiter,
-    otpLimiter: security.otpLimiter,
-    pollingLimiter: security.pollingLimiter
+    registerLimiter: security.registerLimiter
   },
   constants: { COOKIE_OPTS: env.COOKIE_OPTS, BASE: env.BASE },
   path, fs

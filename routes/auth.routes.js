@@ -12,11 +12,11 @@ module.exports = function (deps) {
   const { sign, sendOtpEmail } = deps.services;
   const { clean, userPublic } = deps.utils;
   const { COOKIE_OPTS, BASE } = deps.constants;
-  const { registerLimiter, otpLimiter, loginLimiter, passwordLimiter } = deps.limiters;
+  const { registerLimiter, loginLimiter } = deps.limiters;
   const router = express.Router();
 
   // ── STEP 1: تقبّل البيانات، تحقق منها، ابعث OTP ──────────────────────────
-  router.post('/auth/register', registerLimiter, otpLimiter, upload.single('avatar'), async (req, res) => {
+  router.post('/auth/register', registerLimiter, upload.single('avatar'), async (req, res) => {
     const role = clean(req.body.role);
     const name = clean(req.body.name || req.body.full_name || req.body.fullName || req.body.username);
     const email = clean(req.body.email).toLowerCase();
@@ -117,7 +117,7 @@ module.exports = function (deps) {
   router.post('/auth/logout', (req, res) => { res.clearCookie('token'); res.json({ ok: true }); });
 
   // ── Forgot Password: خطوة 1 — إرسال OTP لإعادة التعيين ──────────────────
-  router.post('/auth/forgot-password', otpLimiter, async (req, res) => {
+  router.post('/auth/forgot-password', async (req, res) => {
     const email = clean(req.body.email || '').toLowerCase();
     if (!validator.isEmail(email)) return res.status(400).json({ error: 'البريد الإلكتروني غير صحيح' });
     const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
@@ -227,7 +227,7 @@ module.exports = function (deps) {
     res.json({ user: userPublic(db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id)) });
   });
 
-  router.post('/me/password', auth, passwordLimiter, (req, res) => {
+  router.post('/me/password', auth, (req, res) => {
     const current = String(req.body.current_password || '');
     const next = String(req.body.new_password || '');
     const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
