@@ -18,7 +18,17 @@ function createSocket(app) {
     try {
       const token = socket.handshake.auth?.token || socket.handshake.headers?.cookie?.match(/token=([^;]+)/)?.[1];
       if (!token) return next(new Error('غير مصرح'));
-      socket.user = jwt.verify(token, JWT_SECRET);
+      const decoded = jwt.verify(token, JWT_SECRET);
+      // [FIX-AUTH-01] نفس فحص is_active الحي المطبَّق أصلاً على كل طلب REST
+      // بـmiddleware/auth.js — بدونه، حساب أُوقف بينما اتصال Socket.IO لا يزال
+      // مفتوحاً فعلياً يستمر بإرسال/استقبال رسائل رغم رفض كل REST endpoint له.
+      const liveUser = db.prepare('SELECT id, role, is_active FROM users WHERE id=?').get(decoded.id);
+      if (!liveUser || !liveUser.is_active) return next(new Error('الجلسة منتهية أو الحساب موقوف'));
+      // [FIX-AUTH-03] socket.user كان يُبنى من decoded (بيانات التوكن وقت
+      // إصداره، تبقى كما هي حتى 7 أيام) بدل liveUser (بيانات القاعدة الحية) —
+      // فلو تغيّر دور المستخدم بعد إصدار التوكن، يبقى السوكت يستخدم الدور
+      // القديم طوال عمر التوكن. الآن يُبنى socket.user من القيم الحية دائماً.
+      socket.user = { id: liveUser.id, role: liveUser.role };
       next();
     } catch { next(new Error('جلسة غير صالحة')); }
   });
@@ -35,8 +45,11 @@ function createSocket(app) {
       // Only allow joining rooms for requests the user is part of
       const r = db.prepare('SELECT * FROM requests WHERE id=?').get(requestId);
       if (!r) return;
+      // [FIX-CHAT-01] نفس فحص حالة العرض المُضاف بـchat.routes.js — بدونه هنا
+      // تحديداً، فني رُفض عرضه (status='rejected') يبقى قادراً على الانضمام
+      // للغرفة اللحظية واستقبال كل رسالة جديدة، حتى لو مُنع من REST.
       const isAllowed = socket.user.role === 'admin' || r.customer_id === socket.user.id || r.technician_id === socket.user.id ||
-        (socket.user.role === 'technician' && db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(requestId, socket.user.id));
+        (socket.user.role === 'technician' && db.prepare("SELECT id FROM offers WHERE request_id=? AND technician_id=? AND status IN ('pending','accepted') LIMIT 1").get(requestId, socket.user.id));
       if (isAllowed) socket.join(String(requestId));
     });
     socket.on('leave-request', (requestId) => { if (requestId) socket.leave(String(requestId)); });
