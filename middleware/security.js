@@ -109,7 +109,7 @@ const globalRateLimit = rateLimit({
   // [FIX-RATE-LIMIT] رفعنا الحد من 1500 إلى 3000 كهامش أمان إضافي بجانب إصلاح الـ polling
   // بالفرونت اند (public/app.js). الحد القديم كان يُستهلك بسرعة بسبب نداءات v24RefreshBadges
   // المتكدسة كل 3 ثواني بدون انتظار الرد، خصوصاً وقت بطء/تأخر السيرفر (مثل Render spin-down).
-  limit: IS_PROD ? 3000 : 100000,
+  limit: IS_PROD ? 5000 : 100000,
   standardHeaders: true,
   legacyHeaders: false,
   // [FIX-RATE-01] مفتاح بالمستخدم بدل IP الخام — يمنع انهيار التطبيق لكل المستخدمين لما
@@ -118,11 +118,32 @@ const globalRateLimit = rateLimit({
   // [FIX-RATE-LIMIT] رسالة عربية مخصصة بدل الرسالة الإنجليزية الافتراضية
   // ("Too many requests, please try again later.") حتى تكون تجربة المستخدم متسقة مع بقية الليميترز.
   message: { error: 'عدد كبير من الطلبات، حاول بعد قليل' },
-  skip: (req) => req.path.startsWith('/uploads') || req.path.startsWith('/socket.io') || req.path === '/' || req.path.endsWith('.css') || req.path.endsWith('.js')
-    // [FIX-RATE-02] استثناء مسارات القراءة اللي بتتحدّث تلقائيًا وبكثرة (شارة الإشعارات/قائمة
-    // الطلبات) من السقف العام — إلها limiter خاص فيها بالأسفل (pollingLimiter) بدل ما تُحسب
-    // على نفس سقف باقي الـ API وتستهلكه بسرعة.
-    || (req.method === 'GET' && (req.path === '/api/requests' || req.path === '/api/chats'))
+  skip: (req) => {
+    const path = req.path || '';
+
+    if (
+      path.startsWith('/uploads') ||
+      path.startsWith('/socket.io') ||
+      path === '/' ||
+      path.endsWith('.css') ||
+      path.endsWith('.js')
+    ) return true;
+
+    // مسارات القراءة الحية لها pollingLimiter مستقل، لذلك لا نحسبها مرتين
+    // ضمن الحد العام. هذا يمنع تعطّل المحفظة والباقات والدردشة معاً بسبب
+    // تحديثات الواجهة الدورية أو أحداث Socket المتقاربة.
+    if (req.method === 'GET') {
+      return path === '/api/requests' ||
+        path === '/api/chats' ||
+        /^\/api\/requests\/\d+\/messages$/.test(path) ||
+        path.startsWith('/api/wallet') ||
+        path.startsWith('/api/topups') ||
+        path.startsWith('/api/packages') ||
+        path.startsWith('/api/notifications');
+    }
+
+    return false;
+  }
 });
 
 // [FIX-RATE-02] limiter مستقل وسخي لمسارات "الاستعلام الدوري" (badges/طلباتي) — سقف عالي لكل
@@ -130,10 +151,11 @@ const globalRateLimit = rateLimit({
 // (تبويبات متعددة مفتوحة بنفس الوقت، أو أي حلقة لا نهائية بالواجهة مستقبلاً).
 const pollingLimiter = rateLimit({
   windowMs: 5 * 60 * 1000,
-  limit: 300, // ~ طلب واحد بالثانية لمدة 5 دقائق لكل مستخدم — أعلى بكثير من أي استخدام طبيعي
+  limit: 600, // حد مستقل وسخي لطلبات القراءة الحية لكل مستخدم
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: identifyRequester
+  keyGenerator: identifyRequester,
+  message: { error: 'طلبات تحديث كثيرة، حاول بعد لحظات' }
 });
 
 // [SEC-FIX-06] CSRF Protection — Origin/Referer validation for state-changing requests

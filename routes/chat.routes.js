@@ -181,7 +181,7 @@ module.exports = function (deps) {
     res.json({ messages });
   });
 
-  router.get('/requests/:id/messages', auth, (req, res) => {
+  router.get('/requests/:id/messages', auth, pollingLimiter, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
     const hasOffer = req.user.role === 'technician' ? hasActiveOffer(r.id, req.user.id) : null;
@@ -191,9 +191,9 @@ module.exports = function (deps) {
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
     if (r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId: r.id });
     io.to('admin-room').emit('chat-badges-updated', { requestId: r.id });
-    // [FIX-02] تحديث حالة "تمت المشاهدة" لدى الطرف الآخر فوراً
+    // القراءة لا تطلق messages-updated. سابقاً كان GET يولّد حدث Socket يحمل
+    // القائمة كاملة، والواجهة قد تعيد الجلب بسببه، فتتكوّن حلقة طلبات وتنتهي بـ429.
     const readMessages = getMessages(req.params.id);
-    safeEmit(r.id, 'messages-updated', { requestId: r.id, messages: readMessages, senderId: Number(req.user.id) });
     res.json({ messages: readMessages });
   });
 

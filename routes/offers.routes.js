@@ -100,6 +100,9 @@ module.exports = function (deps) {
     safeEmit(offer.request_id, 'request-status-updated', { request });
     io.to(`user-${request.customer_id}`).emit('requests-updated', { request });
     if (request.technician_id) io.to(`user-${request.technician_id}`).emit('requests-updated', { request });
+    // جميع الفنيين يرون قائمة الطلبات الجديدة؛ عند قبول عرض يجب أن يصلهم الحدث
+    // كي يختفي الطلب فوراً من القائمة ويتحدّث العداد بدون تحديث يدوي.
+    io.to('technicians-room').emit('requests-updated', { request });
     io.to('admin-room').emit('requests-updated', { request });
     if (decision === 'accepted') {
       io.to(`user-${offer.technician_id}`).emit('offer-accepted', {
