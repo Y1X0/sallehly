@@ -1,5 +1,5 @@
 // middleware/security.js
-// الحماية العامة + Rate Limit فقط لتسجيل الدخول وإنشاء الحساب.
+// الحماية العامة + Rate Limit لتسجيل الدخول وإنشاء الحساب وإعادة تعيين كلمة السر.
 
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -21,6 +21,21 @@ const registerLimiter = rateLimit({
   legacyHeaders: false
 });
 
+// [SEC-FIX-17] /auth/forgot-password و /auth/reset-password كانا بدون أي حد
+// طلبات — بعكس login/register. forgot-password يبعث إيميل حقيقي عبر Resend
+// بكل نداء ناجح، فبدون هذا الحد كان أي طرف يقدر يرسل عدد غير محدود إيميلات
+// إعادة التعيين لنفس البريد (إزعاج/Harassment) ويستهلك حصة Resend المجانية أو
+// المدفوعة بلا أي كلفة عليه. الحماية من تخمين الـOTP نفسه موجودة أصلاً بشكل
+// منفصل (5 محاولات لكل طلب معلّق قبل حذفه — routes/auth.routes.js) وتبقى كما
+// هي دون تغيير؛ هذا الحد إضافي على مستوى معدل الطلبات نفسه.
+const passwordResetLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: IS_PROD ? 5 : 1000,
+  message: { error: 'محاولات كثيرة جداً لإعادة تعيين كلمة السر، حاول بعد 15 دقيقة' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 // [SEC-FIX-13] Helmet with explicit frameguard DENY + CSP hardened
 const helmetMiddleware = helmet({
   frameguard: { action: 'deny' },
@@ -37,7 +52,7 @@ const helmetMiddleware = helmet({
       // [SEC-FIX-13b] أُزيلت 'unsafe-inline' من script-src فقط، بعد نقل السكربت الوحيد الـinline
       // بـindex.html لملف خارجي (public/init.js). style-src أبقيناها كما هي عمداً — app.js فيه
       // ~118 خاصية style="" مباشرة (تنسيق ديناميكي حقيقي بمولّد الواجهة)، وإزالتها بهالمرحلة
-      // ستكسر شكل الواجهة بالكامل؛ تحتاج إعادة هيكلة منفصلة مؤجّلة بثقة حاليًا.
+      // ستكسر شكل الواجهة بالكامل؛ تحتاج إعادة هيكلة منفصلة مؤجّلة بثقة حالياً.
       // script-src-attr أبقيناها كذلك — app.js فيه ~107 onclick="" (نفس السبب، مؤجّلة بثقة).
       "script-src": ["'self'", "https://unpkg.com"],
       "script-src-attr": ["'unsafe-inline'"],
@@ -90,5 +105,6 @@ module.exports = {
   csrfCheck,
   apiErrorHandler,
   loginLimiter,
-  registerLimiter
+  registerLimiter,
+  passwordResetLimiter
 };
