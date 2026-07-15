@@ -1,0 +1,51 @@
+name: Post-deploy smoke test
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for Render deploy and verify liveness
+        run: |
+          set -e
+          URL="https://sallehly.com"
+          API_URL="https://sallehly.com/api/requests"
+          MAX_WAIT_SECONDS=600
+          INTERVAL=15
+          ELAPSED=0
+          STATUS="000"
+
+          echo "Waiting up to ${MAX_WAIT_SECONDS}s for $URL to come up healthy after deploy..."
+
+          until [ "$ELAPSED" -ge "$MAX_WAIT_SECONDS" ]; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL" || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "Root ($URL) responded 200 after ${ELAPSED}s."
+              break
+            fi
+            echo "  [${ELAPSED}s] $URL -> $STATUS, retrying in ${INTERVAL}s..."
+            sleep "$INTERVAL"
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ "$STATUS" != "200" ]; then
+            echo "::error::$URL did not return 200 within ${MAX_WAIT_SECONDS}s (last status: $STATUS)"
+            exit 1
+          fi
+
+          echo "Checking API layer: $API_URL (expect 401 = routing + auth middleware alive)"
+          API_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$API_URL" || echo "000")
+          if [ "$API_STATUS" != "401" ]; then
+            echo "::error::$API_URL returned $API_STATUS, expected 401 (auth middleware should reject an unauthenticated request)"
+            exit 1
+          fi
+          echo "API layer healthy (401 as expected)."
+
+          echo "Smoke test passed: frontend serving, API routing + auth middleware alive."
