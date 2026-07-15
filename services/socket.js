@@ -22,8 +22,14 @@ function createSocket(app) {
       // [FIX-AUTH-01] نفس فحص is_active الحي المطبَّق أصلاً على كل طلب REST
       // بـmiddleware/auth.js — بدونه، حساب أُوقف بينما اتصال Socket.IO لا يزال
       // مفتوحاً فعلياً يستمر بإرسال/استقبال رسائل رغم رفض كل REST endpoint له.
-      const liveUser = db.prepare('SELECT id, role, is_active FROM users WHERE id=?').get(decoded.id);
+      const liveUser = db.prepare('SELECT id, role, is_active, token_version FROM users WHERE id=?').get(decoded.id);
       if (!liveUser || !liveUser.is_active) return next(new Error('الجلسة منتهية أو الحساب موقوف'));
+      // [SEC-FIX-09] نفس فحص token_version المطبَّق بـmiddleware/auth.js —
+      // توكن أُبطل بتسجيل خروج/تغيير كلمة سر لا يجوز أن يفتح اتصال Socket.IO
+      // جديداً، تماماً كما لا يجوز أن يمرّ أي طلب REST به.
+      if ((decoded.tokenVersion || 0) !== (liveUser.token_version || 0)) {
+        return next(new Error('الجلسة منتهية أو الحساب موقوف'));
+      }
       // [FIX-AUTH-03] socket.user كان يُبنى من decoded (بيانات التوكن وقت
       // إصداره، تبقى كما هي حتى 7 أيام) بدل liveUser (بيانات القاعدة الحية) —
       // فلو تغيّر دور المستخدم بعد إصدار التوكن، يبقى السوكت يستخدم الدور

@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const validator = require('validator');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { JWT_SECRET } = require('../config/env');
 
 module.exports = function (deps) {
   const { db } = deps;
@@ -114,7 +116,24 @@ module.exports = function (deps) {
     if (!user.is_active) return res.status(403).json({ error: 'الحساب موقوف' });
     const token = sign(user); res.cookie('token', token, COOKIE_OPTS); res.json({ user: userPublic(user), token });
   });
-  router.post('/auth/logout', (req, res) => { res.clearCookie('token'); res.json({ ok: true }); });
+  // [SEC-FIX-09] لا يشترط auth() صراحة (يبقى نفس السلوك السابق تماماً حتى لو
+  // كان التوكن منتهياً/غير صالح أصلاً — يرجع {ok:true} دائماً)، لكن لو كان
+  // التوكن قابلاً لفك تشفيره فعلاً، نُبطل كل نسخه فوراً عبر token_version
+  // (يشمل أي نسخة مسروقة كانت لا تزال صالحة حتى الآن) ونقطع أي اتصال
+  // Socket.IO حي بهذا الحساب، بدل الانتظار حتى انتهاء صلاحية التوكن (7 أيام).
+  router.post('/auth/logout', (req, res) => {
+    const h = req.headers.authorization || '';
+    const token = h.startsWith('Bearer ') ? h.slice(7) : req.cookies.token;
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        db.prepare('UPDATE users SET token_version = token_version + 1 WHERE id=?').run(decoded.id);
+        io.in(`user-${decoded.id}`).disconnectSockets(true);
+      } catch (e) {}
+    }
+    res.clearCookie('token');
+    res.json({ ok: true });
+  });
 
   // ── Forgot Password: خطوة 1 — إرسال OTP لإعادة التعيين ──────────────────
   router.post('/auth/forgot-password', async (req, res) => {
@@ -234,8 +253,16 @@ module.exports = function (deps) {
     if (!bcrypt.compareSync(current, user.password_hash)) return res.status(400).json({ error: 'كلمة السر الحالية غير صحيحة' });
     if (next.length < 8) return res.status(400).json({ error: 'كلمة السر الجديدة يجب أن تكون 8 أحرف على الأقل' });
     if (next.length > 72) return res.status(400).json({ error: 'كلمة السر طويلة جداً، الحد الأقصى 72 حرف' });
-    db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(bcrypt.hashSync(next, 12), req.user.id);
-    res.json({ ok: true });
+    // [SEC-FIX-09] token_version+1 يُبطل فوراً أي توكن آخر صادر قبل هذه اللحظة
+    // (مثلاً نسخة مسروقة، أو جهاز آخر مسجَّل دخوله بنفس الحساب) — لكن نُصدر
+    // توكناً جديداً لهذا الجهاز نفسه فوراً حتى لا يُسجَّل خروجه هو أيضاً بعد
+    // تغيير كلمة سره بنجاح (تجربة مستخدم سيئة لولا هذا).
+    db.prepare('UPDATE users SET password_hash=?, token_version=token_version+1 WHERE id=?')
+      .run(bcrypt.hashSync(next, 12), req.user.id);
+    const updated = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
+    const token = sign(updated);
+    res.cookie('token', token, COOKIE_OPTS);
+    res.json({ ok: true, token });
   });
 
   // ── حذف الحساب الذاتي (متطلّب سياسة Google Play لحذف الحساب) ──────────

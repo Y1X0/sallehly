@@ -63,6 +63,13 @@ module.exports = function (deps) {
     if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
     const newStatus = u.is_active ? 0 : 1;
     db.prepare('UPDATE users SET is_active=? WHERE id=?').run(newStatus, u.id);
+    // [SEC-FIX-10] الإيقاف كان يمنع REST فوراً (auth.js يتحقق من is_active حياً
+    // بكل طلب) لكن أي اتصال Socket.IO مفتوح مسبقاً كان يبقى شغّالاً (لا يُعاد
+    // التحقق إلا عند الاتصال). نفس النمط المستخدم أصلاً بحذف الحساب الذاتي
+    // (routes/auth.routes.js) — اقطع فوراً أي اتصال حي بهذا الحساب عند إيقافه.
+    if (!newStatus) {
+      try { io.in(`user-${u.id}`).disconnectSockets(true); } catch (e) {}
+    }
     logAudit({
       adminId: req.user.id, actorName: req.user.name,
       action: newStatus ? 'تفعيل مستخدم' : 'إيقاف مستخدم',

@@ -21,7 +21,9 @@ function clean(s) { return String(s || '').trim(); }
 
 function userPublic(u) {
   if (!u) return null;
-  const { password_hash, ...x } = u;
+  // [SEC-FIX-09] token_version تفصيل داخلي لآلية إبطال الجلسات، لا فائدة منه
+  // للعميل ولا يجوز تسريبه بأي استجابة تحتوي بيانات المستخدم.
+  const { password_hash, token_version, ...x } = u;
   return x;
 }
 

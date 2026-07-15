@@ -220,6 +220,10 @@ try { db.prepare('ALTER TABLE requests ADD COLUMN cancelled_at TEXT').run(); } c
 // الافتراضية 1 تحافظ على كل المهن الموجودة فعّالة كما كانت قبل هذا التعديل.
 try { db.prepare('ALTER TABLE service_categories ADD COLUMN is_active INTEGER DEFAULT 1').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at)').run(); } catch (e) {}
+// [SEC-FIX-09] عدّاد يُستخدم لإبطال كل توكنات JWT الصادرة قبل لحظة معيّنة فوراً
+// (تسجيل خروج أو تغيير كلمة سر) دون انتظار انتهاء صلاحية التوكن (7 أيام).
+// القيمة الافتراضية 0 تُبقي كل التوكنات الحالية صالحة كما هي (توافق رجعي كامل).
+try { db.prepare('ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0').run(); } catch (e) {}
 
 // [FIX-CLEANUP-01] كان هنا سابقاً تعريف ثانٍ لجدول complaints بأعمدة مختلفة
 // (customer_id/technician_id بدل user_id/subject/status). بفضل IF NOT EXISTS
