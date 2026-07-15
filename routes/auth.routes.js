@@ -14,7 +14,7 @@ module.exports = function (deps) {
   const { sign, sendOtpEmail } = deps.services;
   const { clean, userPublic } = deps.utils;
   const { COOKIE_OPTS, BASE } = deps.constants;
-  const { registerLimiter, loginLimiter } = deps.limiters;
+  const { registerLimiter, loginLimiter, passwordResetLimiter } = deps.limiters;
   const router = express.Router();
 
   // ── STEP 1: تقبّل البيانات، تحقق منها، ابعث OTP ──────────────────────────
@@ -136,7 +136,7 @@ module.exports = function (deps) {
   });
 
   // ── Forgot Password: خطوة 1 — إرسال OTP لإعادة التعيين ──────────────────
-  router.post('/auth/forgot-password', async (req, res) => {
+  router.post('/auth/forgot-password', passwordResetLimiter, async (req, res) => {
     const email = clean(req.body.email || '').toLowerCase();
     if (!validator.isEmail(email)) return res.status(400).json({ error: 'البريد الإلكتروني غير صحيح' });
     const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
@@ -157,7 +157,7 @@ module.exports = function (deps) {
   });
 
   // ── Forgot Password: خطوة 2 — التحقق وإعادة التعيين ─────────────────────
-  router.post('/auth/reset-password', (req, res) => {
+  router.post('/auth/reset-password', passwordResetLimiter, (req, res) => {
     const email = clean(req.body.email || '').toLowerCase();
     const otp = clean(req.body.otp || '');
     const newPassword = String(req.body.new_password || '');
