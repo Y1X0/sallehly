@@ -83,6 +83,11 @@ module.exports = function (deps) {
     if (offer.customer_id !== req.user.id) return res.status(403).json({ error: 'هذا العرض لا يخصك' });
     const decision = clean(req.body.decision);
     if (!['accepted', 'rejected'].includes(decision)) return res.status(400).json({ error: 'قرار غير صحيح' });
+    // [SEC-FIX-15] لازم العرض يكون لسا 'pending' — بدون هذا الفحص، عرض سبق رفضه
+    // (تلقائياً عند قبول عرض تاني على نفس الطلب) أو سبق قبوله كان ممكن يُعاد اتخاذ
+    // قرار "قبول" عليه من جديد، وهذا كان يعيد تعيين الطلب لفني مختلف عن الفني
+    // المؤكَّد فعلياً حالياً (r.technician_id) بصمت وبدون أي تنبيه للفني الأول.
+    if (offer.status !== 'pending') return res.status(400).json({ error: 'تم اتخاذ قرار على هذا العرض مسبقاً' });
     if (decision === 'rejected') {
       db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.id);
       const pending = db.prepare("SELECT COUNT(*) c FROM offers WHERE request_id=? AND status='pending'").get(offer.request_id).c;
@@ -124,7 +129,7 @@ module.exports = function (deps) {
     res.json({ request, offers });
   });
 
-  // ── سحب العرض: الفني يسحب عرضه قبل قبول العميل ─────────────────────────
+  // ── سحب العرض: الفني يسحب عرضه قبل قبول العميل ─────────────────
   router.delete('/offers/:id', auth, requireRole('technician'), (req, res) => {
     const offer = db.prepare('SELECT o.*, r.status request_status, r.technician_id request_tech FROM offers o JOIN requests r ON r.id=o.request_id WHERE o.id=?').get(req.params.id);
     if (!offer) return res.status(404).json({ error: 'العرض غير موجود' });
