@@ -4,7 +4,7 @@
 
 // [FIX-11] بيئة الاختبار الآلي (Playwright) يجب أن تكون معزولة بالكامل عن ملف .env الحقيقي —
 // خصوصاً حساب الأدمن (ADMIN_EMAIL/ADMIN_PASSWORD) الذي تعتمد عليه اختبارات المحفظة.
-// لا يُشغَّل .env إطلاقاً إلا إذا NODE_ENV مختلف عن 'test' — لا يغيّر أي شيء بالتطوير أو الإنتاج.
+// لا يُشغّل .env إطلاقاً إلا إذا NODE_ENV مختلف عن 'test' — لا يغيّر أي شيء بالتطوير أو الإنتاج.
 if (process.env.NODE_ENV !== 'test') {
   require('dotenv').config?.();
 }
@@ -40,7 +40,8 @@ const deps = {
   utils: { ...utilsHelpers, ...dbHelpers },
   limiters: {
     loginLimiter: security.loginLimiter,
-    registerLimiter: security.registerLimiter
+    registerLimiter: security.registerLimiter,
+    passwordResetLimiter: security.passwordResetLimiter
   },
   constants: { COOKIE_OPTS: env.COOKIE_OPTS, BASE: env.BASE },
   path, fs

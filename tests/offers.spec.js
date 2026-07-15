@@ -216,3 +216,72 @@ test.describe.serial('دورة العروض ومنطق العمولة المال
     expect(body.free_quota_used).toBeGreaterThanOrEqual(2);
   });
 });
+
+// [SEC-FIX-15] بعد قبول عرض على طلب، لا يجوز اتخاذ قرار "قبول" جديد على عرض
+// آخر لنفس الطلب (سواء كان مرفوضاً تلقائياً أو غير ذلك) — هذا كان يعيد تعيين
+// الطلب لفني مختلف بصمت ويسحب التعيين من الفني الأول بدون أي تنبيه له.
+test.describe.serial('[SEC-FIX-15] منع إعادة اتخاذ قرار على عرض بعد حسمه', () => {
+  let customer;
+  let techA;
+  let techB;
+  let requestId;
+  let offerAId;
+  let offerBId;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار حسم العروض', city: CITY } });
+    techA = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { ...technicianRegisterExtra, name: 'فني أ - اختبار حسم العروض', national_number: uniqueNationalNumber() },
+      multipart: technicianAvatar,
+    });
+    techB = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { ...technicianRegisterExtra, name: 'فني ب - اختبار حسم العروض', national_number: uniqueNationalNumber() },
+      multipart: technicianAvatar,
+    });
+    await request.dispose();
+  });
+
+  test('تجهيز: فنيان يرسلان عرضاً، والعميل يقبل عرض الفني الأول', async ({ request }) => {
+    requestId = (await createRequest(request, customer.token, { description: 'طلب لاختبار منع إعادة قبول عرض محسوم مسبقاً' })).id;
+
+    const offerARes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(techA.token),
+      form: { offer_price: '20', duration: 'فوري' },
+    });
+    expect(offerARes.status()).toBe(200);
+
+    const offerBRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(techB.token),
+      form: { offer_price: '15', duration: 'فوري' },
+    });
+    expect(offerBRes.status()).toBe(200);
+
+    const offersRes = await request.get(`/api/requests/${requestId}/offers`, { headers: authHeader(customer.token) });
+    const offers = (await offersRes.json()).offers;
+    offerAId = offers.find((o) => o.price === 20).id;
+    offerBId = offers.find((o) => o.price === 15).id;
+
+    const acceptRes = await request.post(`/api/offers/${offerAId}/decision`, {
+      headers: authHeader(customer.token),
+      form: { decision: 'accepted' },
+    });
+    expect(acceptRes.status()).toBe(200);
+    expect((await acceptRes.json()).request.technician_id).toBe(techA.user.id);
+  });
+
+  test('[SEC-FIX-15] قبول العرض الثاني (المرفوض تلقائياً) يُرفض ولا يُعيد تعيين الطلب', async ({ request }) => {
+    const res = await request.post(`/api/offers/${offerBId}/decision`, {
+      headers: authHeader(customer.token),
+      form: { decision: 'accepted' },
+    });
+    expect(res.status()).toBe(400);
+
+    const checkRes = await request.get(`/api/requests/${requestId}/offers`, { headers: authHeader(customer.token) });
+    const checkBody = await checkRes.json();
+    expect(checkBody.request.technician_id).toBe(techA.user.id);
+    expect(checkBody.request.offer_price).toBe(20);
+  });
+});

@@ -100,6 +100,15 @@ module.exports = function (deps) {
     const allowed = ['قيد التنفيذ', 'بانتظار تأكيد الدفع', 'مكتمل', 'ملغي'];
     if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة' });
     if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية' });
+    // [SEC-FIX-16] طلب "مكتمل" أو "ملغي" حالة نهائية — بدون هذا الفحص، العميل
+    // أو الفني صاحب الطلب كان يقدر "يحيي" طلباً قديماً منتهياً (مهما كان قديماً)
+    // بإعادته لحالة "قيد التنفيذ"، وهذا كان يُفعّل بالخطأ قيد "طلب نشط واحد فقط"
+    // بمسار العروض (routes/offers.routes.js) ويمنع الفني من قبول أي طلب جديد
+    // تماماً، رغم إنه ما إله علاقة فعلية بأي عمل نشط حقيقي. القيمة نفسها (نداء
+    // متكرر بنفس الحالة الحالية) تبقى مسموحة كعملية بلا أثر إضافي.
+    if (['مكتمل', 'ملغي'].includes(r.status) && status !== r.status) {
+      return res.status(409).json({ error: 'هذا الطلب مغلق أصلاً (مكتمل أو ملغي) ولا يمكن تعديل حالته' });
+    }
     if (status === 'ملغي' && req.user.role !== 'admin' && req.user.id !== r.customer_id) return res.status(403).json({ error: 'إلغاء الطلب يكون من العميل أو الإدارة فقط' });
     if (status === 'ملغي' && req.user.role === 'customer' && ['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'].includes(r.status)) {
       return res.status(400).json({ error: 'لا يمكن إلغاء الطلب بعد قبول عرض الفني. تواصل مع الدعم الفني إذا واجهت مشكلة.' });
