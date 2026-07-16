@@ -47,7 +47,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, upload, uploadAudio } = deps.middleware;
-  const { clean, getMessages, markChatRead } = deps.utils;
+  const { clean, getMessages, markChatRead, logAudit } = deps.utils;
   const { sendPush } = deps.services;
   const router = express.Router();
 
@@ -243,8 +243,30 @@ module.exports = function (deps) {
   });
 
   router.get('/chat-violations', auth, requireRole('admin'), (req, res) => {
-    const rows = db.prepare(`SELECT v.*,u.name user_name,u.email user_email,r.service,r.status FROM chat_violations v LEFT JOIN users u ON u.id=v.user_id LEFT JOIN requests r ON r.id=v.request_id ORDER BY v.id DESC LIMIT 200`).all();
+    // [FIX-MODERATION-01] v.* الآن يتضمّن v.status (حالة متابعة المخالفة نفسها،
+    // العمود الجديد) — لازم تسمية صريحة لـr.status (حالة الطلب) حتى لا يبتلع
+    // أحدهما الآخر بصمت بنفس اسم الحقل بالنتيجة النهائية (كلاهما اسمه status).
+    const rows = db.prepare(`SELECT v.*,u.name user_name,u.email user_email,r.service,r.status request_status FROM chat_violations v LEFT JOIN users u ON u.id=v.user_id LEFT JOIN requests r ON r.id=v.request_id ORDER BY v.id DESC LIMIT 200`).all();
     res.json({ violations: rows });
+  });
+
+  // [FIX-MODERATION-01] تحديث حالة متابعة مخالفة شات — نفس نمط complaints/:id/status
+  // تماماً. لا تحذف أي محتوى ولا تحظر أي حساب من هنا؛ فقط توثّق أن الأدمن راجعها.
+  router.post('/chat-violations/:id/status', auth, requireRole('admin'), (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    const status = clean(req.body.status || '');
+    const allowed = ['مفتوح', 'تمت المراجعة', 'تم اتخاذ إجراء'];
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة' });
+    const existing = db.prepare('SELECT id FROM chat_violations WHERE id=?').get(id);
+    if (!existing) return res.status(404).json({ error: 'المخالفة غير موجودة' });
+    db.prepare('UPDATE chat_violations SET status=? WHERE id=?').run(status, id);
+    logAudit({
+      adminId: req.user.id, actorName: req.user.name,
+      action: 'تحديث حالة مخالفة شات', targetType: 'chat_violation', targetId: id,
+      details: { status }
+    });
+    res.json({ ok: true, violation: db.prepare('SELECT * FROM chat_violations WHERE id=?').get(id) });
   });
 
   // [FIX-UGC-01] قائمة بلاغات الرسائل للإدارة (نفس نمط chat-violations تماماً)
@@ -255,6 +277,25 @@ module.exports = function (deps) {
       LEFT JOIN users reported ON reported.id=mr.reported_user_id
       ORDER BY mr.id DESC LIMIT 200`).all();
     res.json({ reports: rows });
+  });
+
+  // [FIX-MODERATION-01] تحديث حالة متابعة بلاغ رسالة — الجدول أصلاً فيه عمود
+  // status ('قيد المراجعة' افتراضياً) لم يكن أي مسار يحدّثه إطلاقاً.
+  router.post('/message-reports/:id/status', auth, requireRole('admin'), (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    const status = clean(req.body.status || '');
+    const allowed = ['قيد المراجعة', 'تم اتخاذ إجراء', 'مرفوض'];
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة' });
+    const existing = db.prepare('SELECT id FROM message_reports WHERE id=?').get(id);
+    if (!existing) return res.status(404).json({ error: 'البلاغ غير موجود' });
+    db.prepare('UPDATE message_reports SET status=? WHERE id=?').run(status, id);
+    logAudit({
+      adminId: req.user.id, actorName: req.user.name,
+      action: 'تحديث حالة بلاغ رسالة', targetType: 'message_report', targetId: id,
+      details: { status }
+    });
+    res.json({ ok: true, report: db.prepare('SELECT * FROM message_reports WHERE id=?').get(id) });
   });
 
   // V13 chats center and support center

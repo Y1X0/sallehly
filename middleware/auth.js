@@ -24,7 +24,7 @@ function auth(req, res, next) {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     // Revocation check: ensure account still active in DB
-    const liveUser = db.prepare('SELECT id, role, name, is_active, token_version FROM users WHERE id=?').get(decoded.id);
+    const liveUser = db.prepare('SELECT id, role, name, is_active, token_version, is_super_admin FROM users WHERE id=?').get(decoded.id);
     if (!liveUser || !liveUser.is_active) return res.status(401).json({ error: 'الجلسة منتهية أو الحساب موقوف' });
     // [SEC-FIX-09] توكن صادر قبل آخر تسجيل خروج/تغيير كلمة سر لهذا الحساب —
     // decoded.tokenVersion غير موجود أصلاً بالتوكنات القديمة الموقّعة قبل هذا
@@ -36,7 +36,9 @@ function auth(req, res, next) {
     // req.user من بيانات القاعدة الحيّة (role/name) بدل القيم المجمّدة داخل
     // التوكن وقت إصداره، حتى لا يبقى اسم قديم (بعد تعديل بروفايل) أو دور قديم
     // مستخدَماً بأي مكان بالسيرفر (سجلّات التدقيق، إشعارات Push، صلاحيات).
-    req.user = { id: liveUser.id, role: liveUser.role, name: liveUser.name };
+    // [FIX-SUPERADMIN-01] isSuperAdmin تُقرأ حيّة من القاعدة بنفس منطق role
+    // تماماً — لا تُشتق أبداً من التوكن نفسه (لا يحمل هذه القيمة أصلاً).
+    req.user = { id: liveUser.id, role: liveUser.role, name: liveUser.name, isSuperAdmin: !!liveUser.is_super_admin };
     next();
   } catch { return res.status(401).json({ error: 'جلسة غير صالحة' }); }
 }
@@ -45,4 +47,14 @@ function requireRole(...roles) {
   return (req, res, next) => roles.includes(req.user.role) ? next() : res.status(403).json({ error: 'لا تملك صلاحية' });
 }
 
-module.exports = { auth, requireRole, sign };
+// [FIX-SUPERADMIN-01] أشد صرامة من requireRole('admin') — لصلاحيات حسّاسة
+// إضافياً (مثل تغيير دور مستخدم). كل حسابات admin الحالية (وهي دائماً حساب
+// واحد فقط اليوم) هي super admin تلقائياً بفضل ترحيل قاعدة البيانات، فلا
+// يتأثر أي إجراء admin موجود مسبقاً بهذا التغيير — فقط قدرات جديدة تُقفَل خلفه.
+function requireSuperAdmin(req, res, next) {
+  return req.user.role === 'admin' && req.user.isSuperAdmin
+    ? next()
+    : res.status(403).json({ error: 'هذا الإجراء يتطلب صلاحية المدير الأعلى (Super Admin)' });
+}
+
+module.exports = { auth, requireRole, requireSuperAdmin, sign };

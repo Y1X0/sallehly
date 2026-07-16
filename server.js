@@ -15,7 +15,7 @@ const fs = require('fs');
 const env = require('./config/env');
 const { db, createDbBackup } = require('./config/db');
 const createApp = require('./app');
-const { auth, requireRole, sign } = require('./middleware/auth');
+const { auth, requireRole, requireSuperAdmin, sign } = require('./middleware/auth');
 const utilsHelpers = require('./utils/helpers');
 const { createDbHelpers } = require('./utils/db-helpers');
 const { upload, uploadAudio } = require('./middleware/upload');
@@ -35,7 +35,7 @@ const dbHelpers = createDbHelpers(db);
 const deps = {
   db,
   realtime: { io, safeEmit },
-  middleware: { auth, requireRole, upload, uploadAudio },
+  middleware: { auth, requireRole, requireSuperAdmin, upload, uploadAudio },
   services: { sendOtpEmail, sendPush, createDbBackup, sign },
   utils: { ...utilsHelpers, ...dbHelpers },
   limiters: {

@@ -4,7 +4,7 @@ const express = require('express');
 module.exports = function (deps) {
   const { db, path } = deps;
   const { io, safeEmit } = deps.realtime;
-  const { auth, requireRole } = deps.middleware;
+  const { auth, requireRole, requireSuperAdmin } = deps.middleware;
   const { clean, logAudit } = deps.utils;
   const { createDbBackup } = deps.services;
   const router = express.Router();
@@ -22,6 +22,13 @@ module.exports = function (deps) {
     const total = one('SELECT COUNT(*) c FROM requests');
     const topServices = db.prepare("SELECT service, COUNT(*) cnt FROM requests GROUP BY service ORDER BY cnt DESC LIMIT 5").all();
     const topTechs = db.prepare("SELECT u.name, u.completed_jobs, u.rating_avg FROM users u WHERE u.role='technician' AND u.is_active=1 ORDER BY u.completed_jobs DESC, u.rating_avg DESC LIMIT 5").all();
+    // [FIX-STATS-01] نشاط الفترات الزمنية — عدّادات إضافية فقط (لا تُبدّل أي
+    // حقل موجود مسبقاً، فلا يتأثر أي طرف يقرأ الشكل القديم لهذا الرد).
+    const activity = window => ({
+      newRequests: one(`SELECT COUNT(*) c FROM requests WHERE created_at >= datetime('now','-${window} days')`),
+      newUsers: one(`SELECT COUNT(*) c FROM users WHERE created_at >= datetime('now','-${window} days')`),
+      revenue: Number(db.prepare(`SELECT COALESCE(SUM(ABS(amount)),0) total FROM ledger WHERE type='خصم عمولة طلب' AND created_at >= datetime('now','-${window} days')`).get().total || 0).toFixed(2)
+    });
     res.json({
       stats: {
         customers: one("SELECT COUNT(*) c FROM users WHERE role='customer'"),
@@ -33,9 +40,31 @@ module.exports = function (deps) {
         cancelRate: total > 0 ? ((cancelled / total) * 100).toFixed(1) : '0',
         revenue: Number(revenue).toFixed(2),
         topServices,
-        topTechs
+        topTechs,
+        suspendedUsers: one('SELECT COUNT(*) c FROM users WHERE is_active=0'),
+        pendingVerification: one("SELECT COUNT(*) c FROM users WHERE role='technician' AND verification_status='pending'"),
+        activity: { daily: activity(1), weekly: activity(7), monthly: activity(30) }
       }
     });
+  });
+
+  // [FIX-LEDGER-01] سجل حركات مالية عبر المنصة كاملة — قراءة فقط، لا يعدّل أي
+  // منطق مالي. GET /api/ledger الحالي مقصور على مستخدم واحد فقط (?user_id)؛
+  // هذا يجمع كل السجل بصفحات، لأي مستخدم، لعرضه دفعة واحدة بلوحة الأدمن.
+  router.get('/admin/ledger', auth, requireRole('admin'), (req, res) => {
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const userId = req.query.user_id ? parseInt(req.query.user_id, 10) : null;
+    const type = clean(req.query.type || '');
+    let where = '';
+    const params = [];
+    const conditions = [];
+    if (userId) { conditions.push('l.user_id=?'); params.push(userId); }
+    if (type) { conditions.push('l.type=?'); params.push(type); }
+    if (conditions.length) where = 'WHERE ' + conditions.join(' AND ');
+    const total = db.prepare(`SELECT COUNT(*) c FROM ledger l ${where}`).get(...params).c;
+    const entries = db.prepare(`SELECT l.*, u.name user_name, u.role user_role FROM ledger l LEFT JOIN users u ON u.id=l.user_id ${where} ORDER BY l.id DESC LIMIT ? OFFSET ?`).all(...params, limit, offset);
+    res.json({ entries, total });
   });
 
   // [FIX-09] Pagination اختيارية: لو ما أُرسل page/limit، السلوك يبقى بالضبط كما كان
@@ -57,12 +86,22 @@ module.exports = function (deps) {
     res.json({ users, total, page, limit });
   });
 
+  // [FIX-SUSPEND-01] reason اختياري تماماً — لا يكسر أي طرف حالي لا يرسله بعد.
+  // عند التفعيل (newStatus=1) تُصفَّر بيانات التوقيف تلقائياً — حساب فعّال
+  // لا معنى لبقاء "سبب توقيف" ظاهراً عليه من إيقاف سابق.
   router.post('/admin/users/:id/toggle', auth, requireRole('admin'), (req, res) => {
     if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'لا يمكنك إيقاف حسابك الخاص' });
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
     if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
     const newStatus = u.is_active ? 0 : 1;
-    db.prepare('UPDATE users SET is_active=? WHERE id=?').run(newStatus, u.id);
+    const reason = clean(req.body.reason || '');
+    if (reason.length > 300) return res.status(400).json({ error: 'سبب الإيقاف طويل جداً، الحد الأقصى 300 حرف' });
+    if (newStatus === 0) {
+      db.prepare('UPDATE users SET is_active=0, suspension_reason=?, suspended_at=CURRENT_TIMESTAMP, suspended_by=? WHERE id=?')
+        .run(reason || null, req.user.id, u.id);
+    } else {
+      db.prepare('UPDATE users SET is_active=1, suspension_reason=NULL, suspended_at=NULL, suspended_by=NULL WHERE id=?').run(u.id);
+    }
     // [SEC-FIX-10] الإيقاف كان يمنع REST فوراً (auth.js يتحقق من is_active حياً
     // بكل طلب) لكن أي اتصال Socket.IO مفتوح مسبقاً كان يبقى شغّالاً (لا يُعاد
     // التحقق إلا عند الاتصال). نفس النمط المستخدم أصلاً بحذف الحساب الذاتي
@@ -74,9 +113,59 @@ module.exports = function (deps) {
       adminId: req.user.id, actorName: req.user.name,
       action: newStatus ? 'تفعيل مستخدم' : 'إيقاف مستخدم',
       targetType: 'user', targetId: u.id,
+      details: newStatus ? { name: u.name, email: u.email } : { name: u.name, email: u.email, reason: reason || null }
+    });
+    res.json({ ok: true });
+  });
+
+  // [FIX-VERIFY-01] توثيق فني — عرض/تصفية فقط، لا يمنع أي فني (موثّق أو لا)
+  // من العمل بأي شيء آخر بالنظام (راجع تعليق الترحيل بـconfig/migrate.js).
+  router.post('/admin/users/:id/verify', auth, requireRole('admin'), (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+    if (u.role !== 'technician') return res.status(400).json({ error: 'التوثيق مخصّص لحسابات الفنيين فقط' });
+    db.prepare("UPDATE users SET verification_status='verified' WHERE id=?").run(id);
+    logAudit({
+      adminId: req.user.id, actorName: req.user.name,
+      action: 'توثيق فني', targetType: 'user', targetId: id,
       details: { name: u.name, email: u.email }
     });
     res.json({ ok: true });
+  });
+
+  // [FIX-ADMINPROFILE-01] بروفايل كامل لمستخدم واحد لشاشة الأدمن — يجمّع كل ما
+  // كان يتطلّب عدة طلبات منفصلة (طلبات كعميل/عروض كفني، دفتر الحساب، بلاغات
+  // ومخالفات ضده) في استدعاء واحد. قراءة فقط، لا يعدّل أي شيء.
+  router.get('/admin/users/:id', auth, requireRole('admin'), (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    const user = db.prepare('SELECT id,role,name,email,phone,national_number,city,areas,services,is_active,balance,free_orders_used,free_offers_used,rating_avg,rating_count,completed_jobs,verification_status,suspension_reason,suspended_at,suspended_by,is_super_admin,created_at FROM users WHERE id=?').get(id);
+    if (!user) return res.status(404).json({ error: 'المستخدم غير موجود' });
+
+    const requestsAsCustomer = db.prepare(
+      "SELECT id,service,status,created_at FROM requests WHERE customer_id=? ORDER BY id DESC LIMIT 50"
+    ).all(id);
+    const requestsAsTechnician = user.role === 'technician'
+      ? db.prepare("SELECT id,service,status,created_at FROM requests WHERE technician_id=? ORDER BY id DESC LIMIT 50").all(id)
+      : [];
+    const offers = user.role === 'technician'
+      ? db.prepare("SELECT id,request_id,price,status,created_at FROM offers WHERE technician_id=? ORDER BY id DESC LIMIT 50").all(id)
+      : [];
+    const ledger = db.prepare('SELECT id,type,amount,balance_after,note,created_at FROM ledger WHERE user_id=? ORDER BY id DESC LIMIT 50').all(id);
+    const violationsCount = db.prepare('SELECT COUNT(*) c FROM chat_violations WHERE user_id=?').get(id).c;
+    const reportsAgainstCount = db.prepare('SELECT COUNT(*) c FROM message_reports WHERE reported_user_id=?').get(id).c;
+    const complaintsFiledCount = db.prepare('SELECT COUNT(*) c FROM complaints WHERE user_id=?').get(id).c;
+
+    res.json({
+      user,
+      requestsAsCustomer,
+      requestsAsTechnician,
+      offers,
+      ledger,
+      moderation: { violationsCount, reportsAgainstCount, complaintsFiledCount }
+    });
   });
 
   // ── تعديل بيانات مستخدم من لوحة الأدمن (الاسم والمدينة فقط) ──
@@ -125,6 +214,73 @@ module.exports = function (deps) {
     });
     io.to(`user-${id}`).emit('balance-updated', { balance: after, status: 'admin-adjusted' });
     res.json({ balance: after });
+  });
+
+  // [FIX-ROLECHANGE-01] تغيير دور مستخدم — أشد إجراءات المستخدمين حساسية بهذا
+  // الملف، لذا requireSuperAdmin بدل requireRole('admin') العادي. محظور كلياً
+  // لو للحساب تاريخ عمل حقيقي (رصيد، أعمال مكتملة، عروض، طلب نشط) بنفس فلسفة
+  // حظر حذف الحساب (DELETE /admin/users/:id وDELETE /me) — لا نفقد أي تاريخ
+  // مالي أو تقييمات بتحويل صامت، الأدمن لازم يصفّي الوضع أولاً بنفس الأدوات
+  // الموجودة (تعديل الرصيد، إلغاء الطلب) قبل التحويل.
+  router.post('/admin/users/:id/role', auth, requireSuperAdmin, (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    if (id === req.user.id) return res.status(400).json({ error: 'لا يمكنك تغيير دور حسابك الخاص' });
+    const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
+    if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+    const newRole = clean(req.body.role);
+    if (!['customer', 'technician'].includes(newRole)) return res.status(400).json({ error: 'يمكن التحويل فقط بين عميل وفني' });
+    if (u.role === newRole) return res.status(400).json({ error: 'الحساب من هذا النوع أصلاً' });
+    if (u.role === 'admin') return res.status(400).json({ error: 'لا يمكن تغيير دور حساب إدارة' });
+
+    if (u.role === 'technician') {
+      // فني → عميل: يجب تصفية أي تاريخ عمل حقيقي أولاً.
+      if (Number(u.balance || 0) > 0) return res.status(409).json({ error: `لا يمكن التحويل — رصيده الحالي ${u.balance} د.أ. صفّر الرصيد أولاً.` });
+      if (Number(u.completed_jobs || 0) > 0) return res.status(409).json({ error: 'لا يمكن التحويل — لديه أعمال مكتملة وتاريخ تقييمات حقيقي.' });
+      const activeAsTech = db.prepare(
+        "SELECT id FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+      ).get(id);
+      if (activeAsTech) return res.status(409).json({ error: `لا يمكن التحويل — لديه طلب نشط رقم ${activeAsTech.id} كفني.` });
+      const pendingOffers = db.prepare("SELECT id FROM offers WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
+      if (pendingOffers) return res.status(409).json({ error: 'لا يمكن التحويل — لديه عروض معلّقة على طلبات. اسحبها أو انتظر حسمها أولاً.' });
+
+      db.prepare(`UPDATE users SET role='customer', national_number=NULL, services=NULL, areas=NULL,
+        active_commission=2, free_offers_used=0, free_orders_used=0, verification_status='verified' WHERE id=?`).run(id);
+    } else {
+      // عميل → فني: يحتاج نفس الحقول التي يتطلّبها التسجيل ككل فني بالضبط.
+      const activeAsCustomer = db.prepare(
+        "SELECT id FROM requests WHERE customer_id=? AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+      ).get(id);
+      if (activeAsCustomer) return res.status(409).json({ error: `لا يمكن التحويل — لديه طلب نشط رقم ${activeAsCustomer.id} كعميل. أنهِ أو ألغِ الطلب أولاً.` });
+
+      const national_number = clean(req.body.national_number);
+      const services = Array.isArray(req.body.services) ? req.body.services.join(',') : clean(req.body.services);
+      const areas = Array.isArray(req.body.areas) ? req.body.areas.join(',') : clean(req.body.areas);
+      if (!/^\d{10}$/.test(national_number)) return res.status(400).json({ error: 'الرقم الوطني يجب أن يكون 10 أرقام' });
+      if (!services) return res.status(400).json({ error: 'يجب تحديد خدمة واحدة على الأقل' });
+      if (!areas) return res.status(400).json({ error: 'يجب تحديد منطقة واحدة على الأقل' });
+      if (services.length > 500) return res.status(400).json({ error: 'الخدمات طويلة جداً' });
+      if (areas.length > 500) return res.status(400).json({ error: 'المناطق طويلة جداً' });
+      if (!u.avatar_url) return res.status(400).json({ error: 'يجب أن يكون لدى الحساب صورة شخصية قبل تحويله لفني — اطلب منه تحديث الصورة أولاً.' });
+      const dupNational = db.prepare('SELECT id FROM users WHERE national_number=? AND id<>?').get(national_number, id);
+      if (dupNational) return res.status(409).json({ error: 'الرقم الوطني مستخدم مسبقاً لحساب آخر' });
+
+      db.prepare(`UPDATE users SET role='technician', national_number=?, services=?, areas=?,
+        verification_status='verified' WHERE id=?`).run(national_number, services, areas, id);
+    }
+
+    // [SEC-FIX-09] بنفس منطق تغيير كلمة السر — دور الحساب تغيّر جوهرياً،
+    // فأي توكن صادر قبل هذه اللحظة (يحمل الدور القديم) يجب أن يُبطَل فوراً.
+    db.prepare('UPDATE users SET token_version=token_version+1 WHERE id=?').run(id);
+    try { io.in(`user-${id}`).disconnectSockets(true); } catch (e) {}
+
+    const updated = db.prepare('SELECT id,role,name,email FROM users WHERE id=?').get(id);
+    logAudit({
+      adminId: req.user.id, actorName: req.user.name,
+      action: 'تغيير دور مستخدم', targetType: 'user', targetId: id,
+      details: { name: u.name, email: u.email, old_role: u.role, new_role: newRole }
+    });
+    res.json({ ok: true, user: updated });
   });
 
   // ── حذف مستخدم نهائياً — محظور لو عنده طلب نشط أو رصيد أكبر من صفر (لازم يتصفّى وضعه أول) ──

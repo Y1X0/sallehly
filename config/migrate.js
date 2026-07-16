@@ -246,6 +246,43 @@ try {
   `).run();
 } catch (e) {}
 
+// [FIX-SUPERADMIN-01] طبقة صلاحية أعلى من 'admin' العادي، بدون إضافة قيمة جديدة
+// لعمود role (كان سيتطلب إعادة بناء الجدول كاملاً بسبب قيد CHECK في SQLite —
+// خطر غير ضروري على بيانات إنتاج حقيقية). عمود منفصل بسيط بدلاً من ذلك: أي
+// حساب role='admin' يبقى يعمل بكل صلاحياته الحالية تماماً كما هي (لا رجعة أو
+// تعطيل لأي شيء موجود)؛ is_super_admin فقط يفتح صلاحيات جديدة أشد حساسية
+// (تغيير الأدوار). الحساب الوحيد الحالي (المُهيَّأ من .env) يصبح super admin
+// تلقائياً — لا يوجد اليوم أي طريقة لإنشاء أكثر من حساب admin واحد أصلاً
+// (POST /auth/register يرفض role='admin' صراحة)، فهذا لا يغيّر أي صلاحية
+// فعلية موجودة، فقط يُسمّي الحساب الوحيد الموجود بدقة أكبر.
+try {
+  db.prepare('ALTER TABLE users ADD COLUMN is_super_admin INTEGER NOT NULL DEFAULT 0').run();
+  db.prepare("UPDATE users SET is_super_admin=1 WHERE role='admin'").run();
+} catch (e) {}
+
+// [FIX-VERIFY-01] حالة توثيق الفني — عرض/تصفية فقط بلوحة الأدمن، لا تمنع أي
+// فني موجود أو جديد من العمل (القرار: لا حجب — راجع نقاش الجلسة). كل الحسابات
+// الموجودة مسبقاً (بكل الأدوار) تُعتبر "موثّقة" فوراً حتى لا يظهر أي فني يعمل
+// فعلاً بشارة "قيد المراجعة" بالخطأ؛ فقط من يسجّل بعد هذا التحديث يبدأ pending.
+try {
+  db.prepare("ALTER TABLE users ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'pending'").run();
+  db.prepare("UPDATE users SET verification_status='verified'").run();
+} catch (e) {}
+
+// [FIX-SUSPEND-01] بيانات إضافية فقط تُرفَق مع is_active=0 الحالي (السبب/الوقت/
+// من أوقف) — لا تُضاف كآلية إنفاذ موازية. كل فحص is_active الحالي (auth.js،
+// socket، ظهور الفني بالبحث) يبقى بلا أي تعديل؛ suspended يبقى NULL دائماً
+// لحساب فعّال، فلا فرق سلوكي عن اليوم لأي شيء غير شاشة الأدمن نفسها.
+try { db.prepare('ALTER TABLE users ADD COLUMN suspension_reason TEXT').run(); } catch (e) {}
+try { db.prepare('ALTER TABLE users ADD COLUMN suspended_at TEXT').run(); } catch (e) {}
+try { db.prepare('ALTER TABLE users ADD COLUMN suspended_by INTEGER').run(); } catch (e) {}
+
+// [FIX-MODERATION-01] مخالفات الشات لم يكن لها أي حالة متابعة (بعكس complaints
+// و message_reports اللذين لديهما status أصلاً) — الأدمن يقدر يشوفها بس مش
+// يوثّق أنه راجعها أو اتخذ إجراء. DEFAULT يُطبَّق تلقائياً على كل الصفوف
+// الموجودة (سلوك ADD COLUMN القياسي بـ SQLite)، فلا حاجة لـUPDATE إضافي.
+try { db.prepare("ALTER TABLE chat_violations ADD COLUMN status TEXT NOT NULL DEFAULT 'مفتوح'").run(); } catch (e) {}
+
 // [FIX-CLEANUP-01] كان هنا سابقاً تعريف ثانٍ لجدول complaints بأعمدة مختلفة
 // (customer_id/technician_id بدل user_id/subject/status). بفضل IF NOT EXISTS
 // لم يكن له أي أثر فعلي إطلاقاً — الجدول الحقيقي المُستخدَم فعلياً بكل أرجاء
@@ -283,11 +320,16 @@ if (resolvedAdminEmail && resolvedAdminPassword) {
   const adminPass = bcrypt.hashSync(String(resolvedAdminPassword), 12);
   const existingAdmin = db.prepare('SELECT id FROM users WHERE role=?').get('admin');
   if (existingAdmin) {
-    db.prepare('UPDATE users SET email=?, password_hash=?, is_active=1 WHERE id=?')
+    // [FIX-SUPERADMIN-01] يبقى الحساب المُهيَّأ من .env super admin دائماً حتى
+    // لو تصفّرت is_super_admin بأي طريقة يدوية — نفس منطق فرض is_active=1 هنا تماماً.
+    db.prepare('UPDATE users SET email=?, password_hash=?, is_active=1, is_super_admin=1 WHERE id=?')
       .run(adminEmail, adminPass, existingAdmin.id);
     console.log('Admin account updated' + (isTestEnv ? ' (test defaults)' : ' from .env'));
   } else {
-    db.prepare('INSERT INTO users(role,name,email,phone,password_hash,is_active) VALUES(?,?,?,?,?,1)')
+    // [FIX-VERIFY-01] على تنصيب جديد (لا يوجد مستخدمون أصلاً وقت الترحيل أعلاه)،
+    // verification_status الافتراضي بالعمود هو 'pending' — لا معنى له لحساب
+    // الإدارة نفسه، فنحدّده صراحة هنا بدل تركه 'pending' بالخطأ.
+    db.prepare("INSERT INTO users(role,name,email,phone,password_hash,is_active,is_super_admin,verification_status) VALUES(?,?,?,?,?,1,1,'verified')")
       .run('admin','مدير صلّحلي',adminEmail,'0799999999',adminPass);
     console.log('Admin account created' + (isTestEnv ? ' (test defaults)' : ' from .env'));
   }

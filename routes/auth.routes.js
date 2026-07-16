@@ -230,9 +230,12 @@ module.exports = function (deps) {
     if (services && services.length > 500) return res.status(400).json({ error: 'الخدمات طويلة جداً، الحد الأقصى 500 حرف' });
     if (!/^07\d{8}$/.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام' });
     // معالجة الصورة الجديدة
+    // [FIX-AVATAR-01] كان مقصوراً على الفنيين فقط — العميل لم يكن يقدر يضيف
+    // أو يغيّر صورته الشخصية إطلاقاً من التطبيق، رغم أن التسجيل نفسه يسمح
+    // برفعها اختيارياً للعميل أيضاً (فقط إلزامية للفني). أي دور الآن يقدر يحدّثها.
     let avatarUpdate = '';
     let avatarParams = [];
-    if (req.file && req.user.role === 'technician') {
+    if (req.file) {
       fileConsumed = true;
       const newAvatarUrl = '/uploads/avatars/' + req.file.filename;
       // حذف الصورة القديمة

@@ -118,6 +118,22 @@ test.describe.serial('تعديل البروفايل وتغيير كلمة الس
     expect(body.user.city).toBe('إربد');
   });
 
+  // [FIX-AVATAR-01] كان تحديث الصورة الشخصية عبر هذا المسار مقصوراً على
+  // الفنيين فقط بالخطأ — العميل يرفع الملف لكنه يُتجاهل تماماً بصمت.
+  test('POST /me/profile — العميل يقدر يضيف/يغيّر صورته الشخصية أيضاً (وليس الفني فقط)', async ({ request }) => {
+    const res = await request.post('/api/me/profile', {
+      headers: authHeader(customer.token),
+      multipart: {
+        name: 'عميل بصورة', phone: customer.phone, city: CITY,
+        avatar: { name: 'avatar.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
+      },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.user.avatar_url).toBeTruthy();
+    expect(body.user.avatar_url).toMatch(/^\/uploads\/avatars\//);
+  });
+
   test('POST /me/password — يرفض كلمة سر حالية خاطئة', async ({ request }) => {
     const res = await request.post('/api/me/password', {
       headers: authHeader(customer.token),
