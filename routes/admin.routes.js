@@ -419,6 +419,11 @@ module.exports = function (deps) {
   });
 
   // ── تعديل باقة موجودة ──
+  // [FIX-PACKAGEACTIVE-01] عمود packages.is_active موجود أصلاً بالجدول
+  // ومُستخدَم فعلياً بتصفية /meta العامة (WHERE is_active=1) — لكن لم يكن أي
+  // مسار يقدر يُعيّنه غير القيمة الافتراضية 1 عند الإنشاء. نفس فلسفة تعطيل
+  // مهنة بدل حذفها: باقة معطّلة تختفي فوراً من شاشة الشحن للفنيين لكن تبقى
+  // بقاعدة البيانات (لا تُفقد طلبات الشحن القديمة المرتبطة بها).
   router.put('/admin/packages/:id', auth, requireRole('admin'), (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
@@ -428,13 +433,14 @@ module.exports = function (deps) {
     const amount = Number(req.body.amount);
     const bonusVal = Number(req.body.bonus || 0);
     const commission = Number(req.body.commission_per_order ?? req.body.commissionPerOrder ?? 2);
+    const isActive = req.body.is_active !== undefined ? (req.body.is_active ? 1 : 0) : pkg.is_active;
     if (!name || name.length < 2) return res.status(400).json({ error: 'اسم الباقة مطلوب' });
     if (!amount || amount <= 0) return res.status(400).json({ error: 'قيمة الباقة يجب أن تكون أكبر من صفر' });
     if (bonusVal < 0) return res.status(400).json({ error: 'البونص لا يمكن أن يكون سالباً' });
     if (commission < 0) return res.status(400).json({ error: 'العمولة لا يمكن أن تكون سالبة' });
-    db.prepare('UPDATE packages SET name=?, amount=?, bonus=?, commission_per_order=? WHERE id=?')
-      .run(name, amount, bonusVal, commission, id);
-    logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'تعديل باقة', targetType: 'package', targetId: id, details: { name, amount, bonus: bonusVal, commission } });
+    db.prepare('UPDATE packages SET name=?, amount=?, bonus=?, commission_per_order=?, is_active=? WHERE id=?')
+      .run(name, amount, bonusVal, commission, isActive, id);
+    logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'تعديل باقة', targetType: 'package', targetId: id, details: { name, amount, bonus: bonusVal, commission, is_active: isActive } });
     res.json({ package: db.prepare('SELECT * FROM packages WHERE id=?').get(id) });
   });
 

@@ -207,10 +207,40 @@ test.describe.serial('لوحة الأدمن', () => {
       form: { name: pkg.name, amount: '20', bonus: '2', commission_per_order: '3' },
     });
     expect(updateRes.status()).toBe(200);
-    expect((await updateRes.json()).package.amount).toBe(20);
+    const updated = (await updateRes.json()).package;
+    expect(updated.amount).toBe(20);
+    // [FIX-PACKAGEACTIVE-01] is_active غير مُرسَل بهذا الطلب — يجب أن يبقى
+    // كما كان (1 افتراضياً عند الإنشاء)، وليس أن يُصفَّر بصمت.
+    expect(updated.is_active).toBe(1);
 
     const deleteRes = await request.delete(`/api/admin/packages/${pkg.id}`, { headers: authHeader(adminToken) });
     expect(deleteRes.status()).toBe(200);
+  });
+
+  test('PUT /admin/packages/:id — تعطيل باقة يخفيها من /meta العامة فوراً', async ({ request }) => {
+    const createRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      form: { name: `باقة للتعطيل ${Date.now()}`, amount: '30', bonus: '3', commission_per_order: '2' },
+    });
+    const pkg = (await createRes.json()).package;
+
+    const metaBefore = await request.get('/api/meta', { headers: authHeader(technician.token) });
+    expect((await metaBefore.json()).packages.some((p) => p.id === pkg.id)).toBe(true);
+
+    // [FIX-PACKAGEACTIVE-01] is_active يُرسَل كـboolean JSON فعلي (مثل Flutter
+    // تماماً — Dio يُرسل Map كـJSON افتراضياً) لا كنص form عبر form-urlencoded؛
+    // نص "false" سيُقيَّم truthy بجافاسكربت لو أُرسل بذاك الشكل.
+    const disableRes = await request.put(`/api/admin/packages/${pkg.id}`, {
+      headers: authHeader(adminToken),
+      data: { name: pkg.name, amount: 30, bonus: 3, commission_per_order: 2, is_active: false },
+    });
+    expect(disableRes.status()).toBe(200);
+    expect((await disableRes.json()).package.is_active).toBe(0);
+
+    const metaAfter = await request.get('/api/meta', { headers: authHeader(technician.token) });
+    expect((await metaAfter.json()).packages.some((p) => p.id === pkg.id)).toBe(false);
+
+    await request.delete(`/api/admin/packages/${pkg.id}`, { headers: authHeader(adminToken) });
   });
 
   test('POST /admin/requests/:id/cancel — يتطلب سبباً، وينجح ويغلق الطلب', async ({ request }) => {
