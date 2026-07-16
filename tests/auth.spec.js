@@ -165,3 +165,63 @@ test.describe.serial('تسجيل ودخول عميل جديد', () => {
     expect(body.user.email).toBe(email);
   });
 });
+
+// [PERF-04] bcrypt.compareSync -> bcrypt.compare (async) أضاف أول نقطة await
+// فعلية داخل هذه الـhandlers — قبلها كان الطلب بأكمله يُنفَّذ ذرّياً (بلا أي
+// فرصة لتداخل طلب آخر) لأن Node أحادي الخيط ولا شيء غير متزامن بالمنتصف.
+// هذا الاختبار يثبت أن نافذة الـawait الجديدة لا تسبب أي تسرّب/تداخل بين
+// طلبين متزامنين لحسابين مختلفين على /me/password (يستخدم نفس await
+// bcrypt.compare المُضاف بتسجيل الدخول تماماً) — كل مستخدم يجب أن تُحدَّث
+// كلمة سره هو فقط، بتوكن جلسته هو فقط.
+// (يتعمّد تجنّب /auth/login: loginLimiter مشترك بمفتاح IP الواحد عبر كل
+// ملفات هذه المجموعة، وميزانيته مستهلكة بالكامل تقريباً أصلاً من الاختبارات
+// الحالية — /me/password يمرّ بنفس نقطة الـawait دون استهلاك تلك الحصة.)
+test.describe('[PERF-04] تحديث كلمة سر متزامن لحسابين مختلفين — بلا تداخل', () => {
+  async function registerVerifyAndGetToken(request, { email, phone, password }) {
+    const registerRes = await request.post('/api/auth/register', {
+      form: { role: 'customer', name: 'مستخدم تزامن', email, phone, password, city: 'عمان' },
+    });
+    if (!registerRes.ok()) throw new Error(`فشل التسجيل: ${registerRes.status()} ${await registerRes.text()}`);
+    const otp = getPendingOtp(email);
+    const verifyRes = await request.post('/api/auth/verify-otp', { form: { email, otp } });
+    if (!verifyRes.ok()) throw new Error(`فشل verify-otp: ${verifyRes.status()} ${await verifyRes.text()}`);
+    return (await verifyRes.json()).token;
+  }
+
+  test('طلبا /me/password متزامنان لحسابين مختلفين: كل حساب يُحدَّث بكلمة سره هو فقط', async ({ request }) => {
+    const userA = { email: uniqueEmail(), phone: uniquePhone(), password: 'PasswordAAA111' };
+    const userB = { email: uniqueEmail(), phone: uniquePhone(), password: 'PasswordBBB222' };
+
+    const tokenA = await registerVerifyAndGetToken(request, userA);
+    const tokenB = await registerVerifyAndGetToken(request, userB);
+
+    // متزامنان فعلياً (بلا await بينهما) — كلاهما يمر عبر await bcrypt.compare
+    // ثم await bcrypt.hash بنفس اللحظة تقريباً، على حسابين مختلفين كلياً.
+    const [resA, resB] = await Promise.all([
+      request.post('/api/me/password', {
+        headers: { Authorization: `Bearer ${tokenA}` },
+        form: { current_password: userA.password, new_password: 'NewPasswordAAA999' },
+      }),
+      request.post('/api/me/password', {
+        headers: { Authorization: `Bearer ${tokenB}` },
+        form: { current_password: userB.password, new_password: 'NewPasswordBBB999' },
+      }),
+    ]);
+
+    expect(resA.status()).toBe(200);
+    expect(resB.status()).toBe(200);
+
+    const [bodyA, bodyB] = await Promise.all([resA.json(), resB.json()]);
+    expect(bodyA.token).toBeTruthy();
+    expect(bodyB.token).toBeTruthy();
+    expect(bodyA.token).not.toBe(bodyB.token);
+
+    // كل توكن جديد يجب أن يعمل فقط لصاحبه فعلياً — لا تداخل بين الحسابين.
+    const [meA, meB] = await Promise.all([
+      request.get('/api/me', { headers: { Authorization: `Bearer ${bodyA.token}` } }),
+      request.get('/api/me', { headers: { Authorization: `Bearer ${bodyB.token}` } }),
+    ]);
+    expect((await meA.json()).user.email).toBe(userA.email);
+    expect((await meB.json()).user.email).toBe(userB.email);
+  });
+});

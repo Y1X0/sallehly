@@ -49,7 +49,13 @@ module.exports = function (deps) {
     if (db.prepare('SELECT id FROM users WHERE phone=?').get(phone))
       return res.status(409).json({ error: 'رقم الهاتف مستخدم مسبقاً' });
 
-    const hash = bcrypt.hashSync(password, 12);
+    // [PERF-04] bcrypt.hashSync كانت تحجز حلقة الحدث بالكامل (~350ms لكل
+    // استدعاء عند cost=12) — أي طلب آخر لأي مستخدم آخر على المنصة يتوقف
+    // تماماً خلال هذه المدة. bcrypt.hash غير المتزامنة (bcryptjs) تُقسّم
+    // نفس الحساب على دفعات عبر setImmediate داخلياً، فتسمح لحلقة الحدث
+    // بمعالجة طلبات أخرى بينها — نفس النتيجة الأمنية والتكلفة الحسابية
+    // تماماً (cost factor 12 بلا تغيير)، فقط بدون حجز العملية بأكملها.
+    const hash = await bcrypt.hash(password, 12);
     const otp = String(Math.floor(100000 + Math.random() * 900000));
     const otp_expires = Date.now() + 10 * 60 * 1000;
 
@@ -103,7 +109,7 @@ module.exports = function (deps) {
     }
   });
 
-  router.post('/auth/login', loginLimiter, (req, res) => {
+  router.post('/auth/login', loginLimiter, async (req, res) => {
     const email = clean(req.body.email).toLowerCase();
     const password = String(req.body.password || '');
     if (password.length > 72) return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
@@ -111,7 +117,10 @@ module.exports = function (deps) {
     const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
     // Always run bcrypt to prevent user enumeration via timing difference
     const hashToCheck = user ? user.password_hash : DUMMY_HASH;
-    const valid = bcrypt.compareSync(password, hashToCheck);
+    // [PERF-04] هذا تحديداً أهم موقع بالكامل: bcrypt يُشغَّل على كل محاولة
+    // دخول (بما فيها الفاشلة، عمداً لمنع timing attack) — كان يحجز الخادم
+    // بأكمله لكل مستخدم آخر ~350ms لكل محاولة دخول تحدث على المنصة.
+    const valid = await bcrypt.compare(password, hashToCheck);
     if (!user || !valid) return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
     if (!user.is_active) return res.status(403).json({ error: 'الحساب موقوف' });
     const token = sign(user); res.cookie('token', token, COOKIE_OPTS); res.json({ user: userPublic(user), token });
@@ -157,7 +166,7 @@ module.exports = function (deps) {
   });
 
   // ── Forgot Password: خطوة 2 — التحقق وإعادة التعيين ─────────────────────
-  router.post('/auth/reset-password', passwordResetLimiter, (req, res) => {
+  router.post('/auth/reset-password', passwordResetLimiter, async (req, res) => {
     const email = clean(req.body.email || '').toLowerCase();
     const otp = clean(req.body.otp || '');
     const newPassword = String(req.body.new_password || '');
@@ -182,7 +191,7 @@ module.exports = function (deps) {
     try {
       const d = JSON.parse(pending.data);
       if (d.type !== 'reset') return res.status(400).json({ error: 'طلب غير صحيح' });
-      const hash = bcrypt.hashSync(newPassword, 12);
+      const hash = await bcrypt.hash(newPassword, 12);
       db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash, d.userId);
       db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
       res.json({ ok: true, message: 'تم تغيير كلمة السر بنجاح. يمكنك الدخول الآن.' });
@@ -254,11 +263,11 @@ module.exports = function (deps) {
     res.json({ user: userPublic(db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id)) });
   });
 
-  router.post('/me/password', auth, (req, res) => {
+  router.post('/me/password', auth, async (req, res) => {
     const current = String(req.body.current_password || '');
     const next = String(req.body.new_password || '');
     const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
-    if (!bcrypt.compareSync(current, user.password_hash)) return res.status(400).json({ error: 'كلمة السر الحالية غير صحيحة' });
+    if (!(await bcrypt.compare(current, user.password_hash))) return res.status(400).json({ error: 'كلمة السر الحالية غير صحيحة' });
     if (next.length < 8) return res.status(400).json({ error: 'كلمة السر الجديدة يجب أن تكون 8 أحرف على الأقل' });
     if (next.length > 72) return res.status(400).json({ error: 'كلمة السر طويلة جداً، الحد الأقصى 72 حرف' });
     // [SEC-FIX-09] token_version+1 يُبطل فوراً أي توكن آخر صادر قبل هذه اللحظة
@@ -266,7 +275,7 @@ module.exports = function (deps) {
     // توكناً جديداً لهذا الجهاز نفسه فوراً حتى لا يُسجَّل خروجه هو أيضاً بعد
     // تغيير كلمة سره بنجاح (تجربة مستخدم سيئة لولا هذا).
     db.prepare('UPDATE users SET password_hash=?, token_version=token_version+1 WHERE id=?')
-      .run(bcrypt.hashSync(next, 12), req.user.id);
+      .run(await bcrypt.hash(next, 12), req.user.id);
     const updated = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
     const token = sign(updated);
     res.cookie('token', token, COOKIE_OPTS);
@@ -279,12 +288,12 @@ module.exports = function (deps) {
   // مفاجئ بمنتصف عمل، ولحماية المستخدم نفسه من فقدان رصيد لم يُصرف.
   // بالإضافة لذلك: نطلب كلمة السر الحالية للتأكيد (مثل /me/password تماماً)
   // لأن هذا إجراء نهائي لا رجعة فيه.
-  router.delete('/me', auth, (req, res) => {
+  router.delete('/me', auth, async (req, res) => {
     const id = req.user.id;
     const password = String(req.body.password || '');
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
     if (!u) return res.status(404).json({ error: 'الحساب غير موجود' });
-    if (!bcrypt.compareSync(password, u.password_hash)) {
+    if (!(await bcrypt.compare(password, u.password_hash))) {
       return res.status(401).json({ error: 'كلمة السر غير صحيحة' });
     }
     const activeRequest = db.prepare(
