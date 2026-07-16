@@ -1300,7 +1300,9 @@ function messageBody(body){
   body = String(body || '');
 
   if(body.startsWith('[audio]')){
-    let u = escapeHtml(body.replace('[audio]',''));
+    // [FIX-AUDIODUR-01] الجسم قد يحمل '|<duration>' بعد الرابط — يجب قطعه
+    // قبل استخدامه كـsrc، وإلا يفشل تحميل الصوت بالكامل.
+    let u = escapeHtml(body.replace('[audio]','').split('|')[0]);
     return `<audio controls src="${u}"></audio>`;
   }
 
@@ -2435,7 +2437,7 @@ previewProblemImage=function(){
   // If message body is plain, escape it. Only internal [audio]/[location] render specially.
   window.messageBody = function(body){
     body=String(body||'');
-    if(body.startsWith('[audio]')){let u=body.replace('[audio]','');return `<audio controls src="${v24Safe(u)}"></audio>`;}
+    if(body.startsWith('[audio]')){let u=body.replace('[audio]','').split('|')[0];return `<audio controls src="${v24Safe(u)}"></audio>`;}
     if(body.startsWith('[location]')){let p=body.replace('[location]','').split(',');let lat=p[0],lng=p[1];return `📍 <a target="_blank" href="https://www.google.com/maps?q=${encodeURIComponent(lat)},${encodeURIComponent(lng)}">فتح الموقع على الخريطة</a><div>${mapBox(lat,lng)}</div>`;}
     return v24Safe(body).replace(/(https?:\/\/\S+)/g,'<span class="muted">[رابط خارجي محجوب]</span>');
   };

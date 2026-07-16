@@ -63,9 +63,12 @@ function cleanupOrphanUploads() {
       db.prepare("SELECT body FROM messages WHERE body LIKE '[image]%'").all()
         .map(r => path.basename(String(r.body).replace('[image]', '')))
     );
+    // [FIX-AUDIODUR-01] الجسم الآن قد يحمل '|<duration>' بعد الرابط
+    // (مثلاً '[audio]/uploads/audios/x.wav|42') — يجب قطعه قبل path.basename،
+    // وإلا يظن هذا الفحص أن اسم الملف الحقيقي غير مُستخدَم فيحذفه لاحقاً.
     const usedAudioFiles = new Set(
       db.prepare("SELECT body FROM messages WHERE body LIKE '[audio]%'").all()
-        .map(r => path.basename(String(r.body).replace('[audio]', '')))
+        .map(r => path.basename(String(r.body).replace('[audio]', '').split('|')[0]))
     );
     const usedByFolder = {
       avatars: new Set([...usedAvatarFiles, ...usedPendingAvatarFiles]),

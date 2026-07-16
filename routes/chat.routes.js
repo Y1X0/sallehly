@@ -131,7 +131,12 @@ module.exports = function (deps) {
     }
     if (!req.file) return res.status(400).json({ error: 'لم يتم استقبال التسجيل الصوتي' });
     const url = '/uploads/audios/' + req.file.filename;
-    const body = '[audio]' + url;
+    // [FIX-AUDIODUR-01] مدة التسجيل الفعلية بالثواني (يرسلها العميل — يعرفها
+    // بدقة من مؤقّت التسجيل نفسه). اختيارية ومُتحقَّق منها: عدد صحيح موجب
+    // ضمن حد معقول (10 دقائق)، وإلا تُهمَل بصمت بدل رفض الرفع كله لأجل حقل ثانوي.
+    const durationRaw = parseInt(req.body.duration, 10);
+    const duration = Number.isInteger(durationRaw) && durationRaw > 0 && durationRaw <= 600 ? durationRaw : null;
+    const body = '[audio]' + url + (duration ? '|' + duration : '');
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
     markChatRead(r.id, req.user.id);
     const messages = getMessages(r.id);

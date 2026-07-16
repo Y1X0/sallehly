@@ -227,4 +227,51 @@ test.describe.serial('الدردشة على الطلبات', () => {
     });
     expect(res.status()).toBe(403);
   });
+
+  // [FIX-AUDIODUR-01] المدة المُرسَلة مع التسجيل تُخزَّن وتُرجَع ضمن body،
+  // والرابط المُرجَع يبقى قابلاً للجلب فعلياً رغم إضافة '|<duration>' له
+  // (نفس فحص "الرابط الحقيقي يعمل" المُطبَّق أعلاه على الصور).
+  test('POST /requests/:id/audio — المدة المُرسَلة تُخزَّن وتُرجَع، والرابط يبقى صالحاً', async ({ request }) => {
+    const uploadRes = await request.post(`/api/requests/${acceptedRequest.id}/audio`, {
+      headers: authHeader(customer.token),
+      multipart: {
+        audio: { name: 'voice.wav', mimeType: 'audio/wav', buffer: Buffer.from([0x52, 0x49, 0x46, 0x46]) },
+        duration: '42',
+      },
+    });
+    expect(uploadRes.status()).toBe(200);
+    const messages = (await uploadRes.json()).messages;
+    const audioMessage = messages.findLast((m) => m.body.startsWith('[audio]'));
+    expect(audioMessage).toBeTruthy();
+    expect(audioMessage.body).toMatch(/\|42$/);
+
+    const audioUrl = audioMessage.body.replace('[audio]', '').split('|')[0];
+    expect(audioUrl).toMatch(/^\/uploads\/audios\//);
+
+    const fetchRes = await request.get(audioUrl);
+    expect(fetchRes.status()).toBe(200);
+  });
+
+  test('POST /requests/:id/audio — بلا مدة (توافق قديم)، أو بمدة غير صالحة: لا يُضاف أي لاحقة كسر الرابط', async ({ request }) => {
+    const noDuration = await request.post(`/api/requests/${acceptedRequest.id}/audio`, {
+      headers: authHeader(technician.token),
+      multipart: { audio: { name: 'voice.wav', mimeType: 'audio/wav', buffer: Buffer.from([0x52, 0x49, 0x46, 0x46]) } },
+    });
+    expect(noDuration.status()).toBe(200);
+    const msgs1 = (await noDuration.json()).messages;
+    const m1 = msgs1.findLast((m) => m.body.startsWith('[audio]'));
+    expect(m1.body).not.toContain('|');
+
+    const invalidDuration = await request.post(`/api/requests/${acceptedRequest.id}/audio`, {
+      headers: authHeader(technician.token),
+      multipart: {
+        audio: { name: 'voice.wav', mimeType: 'audio/wav', buffer: Buffer.from([0x52, 0x49, 0x46, 0x46]) },
+        duration: '99999',
+      },
+    });
+    expect(invalidDuration.status()).toBe(200);
+    const msgs2 = (await invalidDuration.json()).messages;
+    const m2 = msgs2.findLast((m) => m.body.startsWith('[audio]'));
+    expect(m2.body).not.toContain('|');
+  });
 });
