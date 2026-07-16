@@ -62,13 +62,41 @@ module.exports = function (deps) {
     if (req.user.role === 'technician') {
       const me = db.prepare('SELECT services,city,areas FROM users WHERE id=?').get(req.user.id);
       const sv = (me.services || '').split(',').filter(Boolean);
-      rows = db.prepare('SELECT r.*, c.name customer_name FROM requests r JOIN users c ON c.id=r.customer_id ORDER BY r.id DESC').all()
-        .filter(r => r.technician_id === req.user.id || (['بانتظار العروض', 'وصلت عروض'].includes(r.status) && sv.includes(r.service) && ((me.areas || '').includes(r.city) || (r.area && (me.areas || '').includes(r.area)) || me.city === r.city)));
-      // نضيف _myOfferId لكل طلب قدّم عليه الفني عرض
-      rows = rows.map(r => {
-        const myOffer = db.prepare("SELECT id FROM offers WHERE request_id=? AND technician_id=? AND status='pending' LIMIT 1").get(r.id, req.user.id);
-        return myOffer ? { ...r, _myOfferId: myOffer.id } : r;
-      });
+      // [PERF-01] كانت هذه تجلب كل طلب على المنصة منذ إنشائها بلا أي WHERE/LIMIT
+      // (db.prepare(...).all() بلا شرط)، ثم تُصفّي بجافاسكربت، ثم تُنفّذ استعلاماً
+      // إضافياً منفصلاً *لكل صف مطابق* (N+1) لمعرفة عرض الفني الخاص. بما أن
+      // better-sqlite3 متزامن بالكامل، هذا كان يوقف حلقة الحدث (event loop)
+      // بأكملها — أي طلب آخر لأي مستخدم آخر — لمدة تتناسب طردياً مع إجمالي
+      // عدد الطلبات على المنصة كاملة، بغض النظر عن مدى قلة الطلبات الفعلية
+      // المطابقة لهذا الفني. الآن: التصفية والانضمام لعرض الفني كلاهما بجملة
+      // SQL واحدة (WHERE + LEFT JOIN) بدل تحميل كل شيء وتصفيته لاحقاً.
+      if (sv.length > 0) {
+        const placeholders = sv.map(() => '?').join(',');
+        rows = db.prepare(`
+          SELECT r.*, c.name customer_name, o.id _myOfferId
+          FROM requests r
+          JOIN users c ON c.id = r.customer_id
+          LEFT JOIN offers o ON o.request_id = r.id AND o.technician_id = ? AND o.status='pending'
+          WHERE r.technician_id = ?
+             OR (r.status IN ('بانتظار العروض','وصلت عروض') AND r.service IN (${placeholders})
+                 AND (r.city = ? OR (? != '' AND instr(?, r.city) > 0) OR (r.area IS NOT NULL AND r.area != '' AND ? != '' AND instr(?, r.area) > 0)))
+          ORDER BY r.id DESC
+        `).all(req.user.id, req.user.id, ...sv, me.city, me.areas || '', me.areas || '', me.areas || '', me.areas || '');
+      } else {
+        rows = db.prepare(`
+          SELECT r.*, c.name customer_name, o.id _myOfferId
+          FROM requests r
+          JOIN users c ON c.id = r.customer_id
+          LEFT JOIN offers o ON o.request_id = r.id AND o.technician_id = ? AND o.status='pending'
+          WHERE r.technician_id = ?
+          ORDER BY r.id DESC
+        `).all(req.user.id, req.user.id);
+      }
+      // LEFT JOIN يرجّع null صراحة لغياب العرض؛ السلوك القديم كان يحذف
+      // المفتاح كلياً بهذه الحالة بدل تركه null — نحافظ على نفس شكل الرد.
+      for (const r of rows) {
+        if (r._myOfferId == null) delete r._myOfferId;
+      }
     }
     res.json(total !== undefined ? { requests: rows, total } : { requests: rows });
   });

@@ -81,6 +81,21 @@ test.describe.serial('لوحة الأدمن', () => {
     expect(Array.isArray(stats.topServices)).toBe(true);
   });
 
+  // [PERF-02] createDbBackup أصبحت غير متزامنة (fs.promises بدل fs.*Sync) —
+  // هذا الاختبار يثبت أن endpoint النسخ الاحتياطي اليدوي ما زال يعمل بنفس
+  // الشكل تماماً (200 + اسم ملف) رغم التغيير الداخلي.
+  test('POST /admin/backup — يرفض غير الأدمن، وينشئ نسخة احتياطية فعلية للأدمن', async ({ request }) => {
+    const forbidden = await request.post('/api/admin/backup', { headers: authHeader(customer.token) });
+    expect(forbidden.status()).toBe(403);
+
+    const res = await request.post('/api/admin/backup', { headers: authHeader(adminToken) });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    expect(typeof body.file).toBe('string');
+    expect(body.file.endsWith('.sqlite')).toBe(true);
+  });
+
   test('GET /admin/users — يرفض غير الأدمن، وينجح للأدمن', async ({ request }) => {
     const forbidden = await request.get('/api/admin/users', { headers: authHeader(customer.token) });
     expect(forbidden.status()).toBe(403);

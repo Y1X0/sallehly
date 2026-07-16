@@ -9,8 +9,8 @@ module.exports = function (deps) {
   const { createDbBackup } = deps.services;
   const router = express.Router();
 
-  router.post('/admin/backup', auth, requireRole('admin'), (req, res) => {
-    const file = createDbBackup();
+  router.post('/admin/backup', auth, requireRole('admin'), async (req, res) => {
+    const file = await createDbBackup();
     if (!file) return res.status(500).json({ error: 'تعذر إنشاء النسخة الاحتياطية' });
     res.json({ ok: true, file: path.basename(file) });
   });

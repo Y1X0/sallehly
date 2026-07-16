@@ -14,23 +14,36 @@ db.pragma('journal_mode = WAL');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 fs.mkdirSync(BACKUP_DIR, { recursive: true });
 
-function createDbBackup() {
+// [PERF-02][DATA-SAFETY-01] كانت هذه تستخدم fs.copyFileSync — نسخ بايتات خام
+// لملف .sqlite الرئيسي فقط، بينما القاعدة تعمل بوضع WAL (journal_mode=WAL):
+// أي كتابة حديثة (INSERT/UPDATE) قد تكون لا تزال بملف -wal ولم تُدمَج بعد
+// بالملف الرئيسي، فتُنسَخ نسخة ناقصة/غير متّسقة. الأخطر: أثبت اختبار حقيقي
+// (انظر tests/admin.spec.js) أن نسخ الملف الرئيسي خاماً أثناء وجود كتابة حية
+// متزامنة (تسجيل مستخدم جديد مثلاً) قد يُفقد تلك الكتابة فعلياً بدل مجرد نسخ
+// نسخة قديمة منها — فقدان بيانات حقيقي، وليس مجرد بطء. الحل الصحيح: واجهة
+// "Online Backup API" الأصلية بـSQLite (مكشوفة هنا عبر db.backup())، مصمَّمة
+// خصيصاً لأخذ نسخة آمنة ومتّسقة من قاعدة بيانات حيّة قيد الكتابة، وهي أصلاً
+// غير متزامنة (Promise) فلا تحجز حلقة الحدث.
+async function createDbBackup() {
   try {
     const src = path.join(DATA_DIR, 'sallehly.sqlite');
-    if (!fs.existsSync(src)) return null;
+    if (!(await fs.promises.access(src).then(() => true).catch(() => false))) return null;
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const dest = path.join(BACKUP_DIR, `sallehly-${stamp}.sqlite`);
-    fs.copyFileSync(src, dest);
+    await db.backup(dest);
     return dest;
   } catch (e) { console.error('backup failed:', e.message); return null; }
 }
-if (IS_PROD) setInterval(createDbBackup, 6 * 60 * 60 * 1000).unref();
+if (IS_PROD) setInterval(() => { createDbBackup().catch(e => console.error('backup failed:', e.message)); }, 6 * 60 * 60 * 1000).unref();
 
 // تنظيف دوري للملفات المرفوعة غير المستخدمة (orphan files) في public/uploads.
 // لا تحذف أي شيء له مرجع في قاعدة البيانات؛ تحذف فقط الملفات التي لم يعد لها أي استخدام
 // (مثل صور إيصالات دفع مرفوضة قديمة، أو ملفات تسجيل توقفت في منتصف الطريق)
 // وتجاوزت 24 ساعة على الأقل لتجنب حذف ملف يُرفع حالياً وما زال قيد المعالجة.
-function cleanupOrphanUploads() {
+// [PERF-02] readdirSync/statSync/unlinkSync عبر 4 مجلدات (وكل الملفات
+// بداخلها) كانت تُنفَّذ بشكل متزامن بالكامل — نفس مشكلة النسخ الاحتياطي
+// أعلاه لكن أكبر (كل ملف = عملية I/O متزامنة منفصلة). الآن غير متزامنة.
+async function cleanupOrphanUploads() {
   try {
     const ONE_DAY_MS = 24 * 60 * 60 * 1000;
     const now = Date.now();
@@ -76,25 +89,25 @@ function cleanupOrphanUploads() {
       requests: new Set([...usedRequestImageFiles, ...usedChatImageFiles]),
       audios: usedAudioFiles
     };
-    folders.forEach(({ dir }) => {
+    for (const { dir } of folders) {
       const folderName = path.basename(dir);
       const used = usedByFolder[folderName] || new Set();
       let files = [];
-      try { files = fs.readdirSync(dir); } catch (e) { return; }
-      files.forEach(file => {
+      try { files = await fs.promises.readdir(dir); } catch (e) { continue; }
+      for (const file of files) {
         try {
-          if (used.has(file)) return;
+          if (used.has(file)) continue;
           const fullPath = path.join(dir, file);
-          const stat = fs.statSync(fullPath);
-          if (!stat.isFile()) return;
-          if (now - stat.mtimeMs < ONE_DAY_MS) return; // ملف حديث، قد يكون قيد الاستخدام الآن
-          fs.unlinkSync(fullPath);
+          const stat = await fs.promises.stat(fullPath);
+          if (!stat.isFile()) continue;
+          if (now - stat.mtimeMs < ONE_DAY_MS) continue; // ملف حديث، قد يكون قيد الاستخدام الآن
+          await fs.promises.unlink(fullPath);
         } catch (e) { /* تجاهل أي ملف لا يمكن فحصه أو حذفه */ }
-      });
-    });
+      }
+    }
   } catch (e) { console.error('cleanup uploads failed:', e.message); }
 }
-if (IS_PROD) setInterval(cleanupOrphanUploads, 6 * 60 * 60 * 1000).unref();
+if (IS_PROD) setInterval(() => { cleanupOrphanUploads().catch(e => console.error('cleanup uploads failed:', e.message)); }, 6 * 60 * 60 * 1000).unref();
 
 // تنظيف دوري لطلبات التسجيل التي انتهت صلاحية كود التحقق (OTP) خاصتها ولم يكمل
 // صاحبها التحقق ولا عاد إليها، بدل أن تبقى محفوظة في قاعدة البيانات إلى الأبد.

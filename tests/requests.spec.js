@@ -256,3 +256,107 @@ test.describe.serial('[SEC-FIX-16] منع إحياء طلب مكتمل/ملغي 
     expect(offerRes.status()).toBe(200);
   });
 });
+
+// [PERF-01] الاستعلام القديم لهذا الفرع (GET /requests للفني) كان يجلب كل
+// طلب على المنصة بلا شرط، يصفّي بجافاسكربت، ثم يستعلم عن عرض الفني لكل صف
+// مطابق على حدة (N+1). أُعيدت كتابته بجملة SQL واحدة (WHERE + LEFT JOIN) —
+// هذه المجموعة تثبت أن نفس شروط المطابقة القديمة (خدمة/مدينة/منطقة/حالة)
+// ونفس شكل _myOfferId (يظهر فقط عند وجود عرض pending، ويغيب كلياً بدونه)
+// ما زالا يعملان بالضبط كما كانا.
+test.describe.serial('[PERF-01] GET /requests للفني — الاستعلام المُعاد كتابته بـSQL', () => {
+  let customer;
+  let matchingTech;
+  let wrongServiceTech;
+  let cityFallbackTech;
+  let matchingRequestId;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل PERF-01', city: CITY } });
+
+    matchingTech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني مطابق PERF-01', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة,صويلح' },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+    // خدمة مختلفة كلياً — يجب ألا يرى الطلب إطلاقاً رغم تطابق المدينة/المنطقة
+    wrongServiceTech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني خدمة مختلفة PERF-01', city: CITY, national_number: uniqueNationalNumber(), services: 'سباك', areas: 'القويسمة' },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+    // بلا areas إطلاقاً، لكن city نفس مدينة الطلب — يجب أن يراه عبر fallback المدينة
+    cityFallbackTech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني fallback المدينة PERF-01', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: '' },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      multipart: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف كافٍ لاختبار PERF-01 لإعادة الكتابة' },
+    });
+    expect(createRes.status()).toBe(200);
+    matchingRequestId = (await createRes.json()).request.id;
+
+    await request.dispose();
+  });
+
+  test('فني بخدمة مختلفة كلياً لا يرى الطلب إطلاقاً', async ({ request }) => {
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${wrongServiceTech.token}` } });
+    expect(res.status()).toBe(200);
+    const ids = (await res.json()).requests.map((r) => r.id);
+    expect(ids).not.toContain(matchingRequestId);
+  });
+
+  test('فني بلا areas لكن نفس مدينة الطلب يراه عبر fallback المدينة', async ({ request }) => {
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${cityFallbackTech.token}` } });
+    expect(res.status()).toBe(200);
+    const ids = (await res.json()).requests.map((r) => r.id);
+    expect(ids).toContain(matchingRequestId);
+  });
+
+  test('قبل تقديم أي عرض: الطلب المطابق يظهر بلا مفتاح _myOfferId إطلاقاً', async ({ request }) => {
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${matchingTech.token}` } });
+    expect(res.status()).toBe(200);
+    const row = (await res.json()).requests.find((r) => r.id === matchingRequestId);
+    expect(row).toBeTruthy();
+    expect(Object.prototype.hasOwnProperty.call(row, '_myOfferId')).toBe(false);
+  });
+
+  test('بعد تقديم عرض pending: _myOfferId يحمل معرّف العرض الصحيح', async ({ request }) => {
+    const offerRes = await request.post(`/api/requests/${matchingRequestId}/offer`, {
+      headers: { Authorization: `Bearer ${matchingTech.token}` },
+      form: { offer_price: '15', duration: 'فوري' },
+    });
+    expect(offerRes.status()).toBe(200);
+    const offerId = (await offerRes.json()).offers[0].id;
+
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${matchingTech.token}` } });
+    const row = (await res.json()).requests.find((r) => r.id === matchingRequestId);
+    expect(row._myOfferId).toBe(offerId);
+  });
+
+  test('فني آخر بلا عرض على نفس الطلب: لا يرى _myOfferId لعرض غيره', async ({ request }) => {
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${cityFallbackTech.token}` } });
+    const row = (await res.json()).requests.find((r) => r.id === matchingRequestId);
+    expect(row).toBeTruthy();
+    expect(Object.prototype.hasOwnProperty.call(row, '_myOfferId')).toBe(false);
+  });
+
+  test('فني له طلب مُسنَد مباشرة (technician_id) يراه حتى لو تغيّرت الحالة عن حالات الانتظار', async ({ request }) => {
+    const acceptRes = await request.post(`/api/offers/${(await (await request.get('/api/requests', { headers: { Authorization: `Bearer ${matchingTech.token}` } })).json()).requests.find((r) => r.id === matchingRequestId)._myOfferId}/decision`, {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      form: { decision: 'accepted' },
+    });
+    expect(acceptRes.status()).toBe(200);
+
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${matchingTech.token}` } });
+    const ids = (await res.json()).requests.map((r) => r.id);
+    expect(ids).toContain(matchingRequestId);
+
+    const wrongTechRes = await request.get('/api/requests', { headers: { Authorization: `Bearer ${wrongServiceTech.token}` } });
+    const wrongIds = (await wrongTechRes.json()).requests.map((r) => r.id);
+    expect(wrongIds).not.toContain(matchingRequestId);
+  });
+});

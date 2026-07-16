@@ -292,6 +292,17 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_support_tickets_user ON support
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_message_reports_created ON message_reports(created_at)').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_user_blocks_blocker ON user_blocks(blocker_id)').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blocks(blocked_id)').run(); } catch (e) {}
+// [PERF-03] الثلاثة أدناه أُضيفت بعد تحقيق فعلي أثبت أنها الأعمدة الأكثر
+// تأثراً بغياب أي فهرس: messages.request_id يُستخدَم بكل استعلامات الشات
+// (getMessages، والاستعلامات الفرعية المترابطة الثلاثة بـGET /chats لكل صف)
+// — بلا فهرس، كل واحدة منها تفحص كامل جدول الرسائل. requests.customer_id
+// كانت فجوة غير متماثلة: النظير الخاص بالفني (technician_id) كان مفهرساً
+// أصلاً منذ زمن، أما جهة العميل ("طلباتي") فلا. ledger.user_id يُستخدَم
+// بكل من /api/ledger الشخصي و/admin/ledger الشامل للمنصة. إضافية بالكامل،
+// idempotent (IF NOT EXISTS)، لا تُغيّر أي بيانات موجودة ولا تحذف شيئاً.
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_messages_request ON messages(request_id)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_customer ON requests(customer_id)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_ledger_user ON ledger(user_id)').run(); } catch (e) {}
 // تمت إزالة سطر إعادة تفعيل الفنيين الموقوفين تلقائياً عند كل تشغيل للسيرفر.
 // كان هذا السطر يلغي قرار إيقاف أي فني من الإدارة (بسبب شكوى أو مخالفة) في كل مرة يعاد تشغيل السيرفر أو يتم نشر تحديث جديد.
 // إيقاف/تفعيل الفنيين أصبح بالكامل بيد الإدارة فقط عبر /api/admin/users/:id/toggle.
