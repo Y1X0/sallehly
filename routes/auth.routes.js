@@ -196,7 +196,12 @@ module.exports = function (deps) {
     if (user && user.role === 'technician') {
       const oc = db.prepare('SELECT COUNT(DISTINCT request_id) c FROM offers WHERE technician_id=?').get(user.id).c || 0;
       user.offer_count = oc;
-      user.free_quota_used = Math.max(Number(user.free_orders_used || 0), Number(user.completed_jobs || 0), Number(oc || 0));
+      // [FIX-OFFERQUOTA-01] free_quota_used يعكس الآن free_offers_used الدائم
+      // (لا يتأثر بسحب العروض) بدل الحساب الحي القديم القابل للتلاعب — نفس
+      // اسم الحقل أُبقي للتوافق الرجعي مع أي طرف كان يقرأه سابقاً.
+      user.free_offers_used = Number(user.free_offers_used || 0);
+      user.free_offers_remaining = Math.max(0, 2 - user.free_offers_used);
+      user.free_quota_used = user.free_offers_used;
     }
     res.json({ user });
   });

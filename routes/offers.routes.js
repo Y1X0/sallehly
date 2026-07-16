@@ -16,11 +16,13 @@ module.exports = function (deps) {
     if (r.technician_id && Number(r.technician_id) !== Number(req.user.id)) return res.status(403).json({ error: 'هذا الطلب مباشر لفني آخر' });
     const active = db.prepare("SELECT id, service FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') AND id<>? ORDER BY id DESC LIMIT 1").get(req.user.id, r.id);
     if (active) return res.status(409).json({ error: `لا يمكنك إرسال عرض جديد قبل إنهاء طلبك الحالي رقم ${active.id} - ${active.service}` });
-    const tech = db.prepare('SELECT id,balance,free_orders_used,completed_jobs,active_commission FROM users WHERE id=? AND role=\'technician\'').get(req.user.id);
+    const tech = db.prepare('SELECT id,balance,free_offers_used,active_commission FROM users WHERE id=? AND role=\'technician\'').get(req.user.id);
     const requiredBalance = Number(tech?.active_commission ?? 2);
     const oldOffer = db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id);
-    const sentOffers = db.prepare('SELECT COUNT(DISTINCT request_id) c FROM offers WHERE technician_id=?').get(req.user.id).c || 0;
-    const quotaUsed = Math.max(Number(tech?.free_orders_used || 0), Number(tech?.completed_jobs || 0), Number(sentOffers || 0));
+    // [FIX-OFFERQUOTA-01] free_offers_used عدّاد دائم يُزاد فقط عند نجاح إدراج
+    // عرض جديد فعلياً (أسفل هذا الراوت) — لا يتأثر إطلاقاً بسحب عرض لاحقاً
+    // (DELETE /offers/:id)، بعكس الحساب القديم القابل للتلاعب بإعادة تقديم/سحب.
+    const quotaUsed = Number(tech?.free_offers_used || 0);
     if (!oldOffer && tech && quotaUsed >= 2 && Number(tech.balance || 0) < requiredBalance) {
       return res.status(402).json({
         code: 'INSUFFICIENT_BALANCE',
@@ -41,6 +43,13 @@ module.exports = function (deps) {
     db.prepare(`INSERT INTO offers(request_id,technician_id,price,duration,note,status) VALUES(?,?,?,?,?,'pending')
       ON CONFLICT(request_id,technician_id) DO UPDATE SET price=excluded.price,duration=excluded.duration,note=excluded.note,status='pending',updated_at=CURRENT_TIMESTAMP`)
       .run(r.id, req.user.id, price, duration, note);
+    // [FIX-OFFERQUOTA-01] يُزاد فقط عند أول عرض فعلي على هذا الطلب تحديداً
+    // (oldOffer كان فارغاً قبل الإدراج أعلاه) — تعديل السعر على عرض معلّق
+    // موجود مسبقاً على نفس الطلب (نفس شرط ON CONFLICT أعلاه) لا يُحتسب محاولة
+    // ثانية، وسحب العرض لاحقاً لا يُنقص هذا العدّاد أبداً.
+    if (!oldOffer) {
+      db.prepare('UPDATE users SET free_offers_used = free_offers_used + 1 WHERE id=?').run(req.user.id);
+    }
     db.prepare("UPDATE requests SET status='وصلت عروض', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('بانتظار العروض','وصلت عروض')").run(r.id);
 
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);

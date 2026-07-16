@@ -4,7 +4,7 @@
 // هذا أهم منطق مالي بالمشروع (يمس أرصدة حقيقية) ولم يكن مغطى بأي اختبار سابقاً.
 
 const { test, expect } = require('@playwright/test');
-const { getPendingOtp } = require('./helpers/db');
+const { getPendingOtp, openTestDb } = require('./helpers/db');
 
 function uniqueEmail(tag) {
   return `test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`;
@@ -283,5 +283,119 @@ test.describe.serial('[SEC-FIX-15] منع إعادة اتخاذ قرار على 
     const checkBody = await checkRes.json();
     expect(checkBody.request.technician_id).toBe(techA.user.id);
     expect(checkBody.request.offer_price).toBe(20);
+  });
+});
+
+// [FIX-OFFERQUOTA-01] عدّاد free_offers_used دائم ومنفصل تماماً عن free_orders_used
+// (الذي يبقى بلا أي تعديل ويحكم فقط "أول طلبين مكتملين بلا عمولة"). كان الحساب
+// القديم يعتمد على COUNT(DISTINCT request_id) الحي من جدول offers، فيتناقص فور
+// سحب عرض (DELETE /offers/:id) ويسمح بتجاوز حد الفرصتين المجانيتين بلا نهاية.
+test.describe.serial('[FIX-OFFERQUOTA-01] عدّاد فرص العروض المجانية الدائم', () => {
+  let customer;
+  let tech;
+  let firstOfferId;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار حصة العروض', city: CITY } });
+    tech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { ...technicianRegisterExtra, name: 'فني اختبار حصة العروض', national_number: uniqueNationalNumber() },
+      multipart: technicianAvatar,
+    });
+    await request.dispose();
+  });
+
+  test('[1] فرصتان مجانيتان فقط: العرض الثالث بلا رصيد يُرفض بـ402', async ({ request }) => {
+    const r1 = await createRequest(request, customer.token, { description: 'طلب أول لاختبار حصة العروض المجانية' });
+    const offer1Res = await request.post(`/api/requests/${r1.id}/offer`, { headers: authHeader(tech.token), form: { offer_price: '10', duration: 'فوري' } });
+    expect(offer1Res.status()).toBe(200);
+    const offer1Body = await offer1Res.json();
+    firstOfferId = offer1Body.offers.find((o) => o.request_id === r1.id).id;
+
+    const r2 = await createRequest(request, customer.token, { description: 'طلب ثانٍ لاختبار حصة العروض المجانية' });
+    const offer2Res = await request.post(`/api/requests/${r2.id}/offer`, { headers: authHeader(tech.token), form: { offer_price: '10', duration: 'فوري' } });
+    expect(offer2Res.status()).toBe(200);
+
+    const meRes = await request.get('/api/me', { headers: authHeader(tech.token) });
+    const me = (await meRes.json()).user;
+    expect(me.free_offers_used).toBe(2);
+    expect(me.free_offers_remaining).toBe(0);
+
+    const r3 = await createRequest(request, customer.token, { description: 'طلب ثالث بعد استهلاك الفرصتين المجانيتين مباشرة' });
+    const offer3Res = await request.post(`/api/requests/${r3.id}/offer`, { headers: authHeader(tech.token), form: { offer_price: '10', duration: 'فوري' } });
+    expect(offer3Res.status()).toBe(402);
+    const body = await offer3Res.json();
+    expect(body.code).toBe('INSUFFICIENT_BALANCE');
+  });
+
+  test('[2] سحب عرض سابق لا يُعيد أي فرصة مجانية', async ({ request }) => {
+    // نسحب أول عرض قدّمه الفني بالاختبار السابق بالكامل — هذا يُنقص العدد الحي
+    // بجدول offers (COUNT(DISTINCT request_id) يهبط من 2 إلى 1)، لكن يجب ألا
+    // يُعيد أي فرصة مجانية طالما free_offers_used دائم ولا يتراجع.
+    const withdrawRes = await request.delete(`/api/offers/${firstOfferId}`, { headers: authHeader(tech.token) });
+    expect(withdrawRes.status()).toBe(200);
+
+    const meRes = await request.get('/api/me', { headers: authHeader(tech.token) });
+    const me = (await meRes.json()).user;
+    expect(me.free_offers_used).toBe(2); // لم يتغيّر رغم سحب العرض
+    expect(me.free_offers_remaining).toBe(0);
+
+    const r4 = await createRequest(request, customer.token, { description: 'طلب رابع بعد سحب عرض سابق — يجب أن يبقى مرفوضاً' });
+    const offer4Res = await request.post(`/api/requests/${r4.id}/offer`, { headers: authHeader(tech.token), form: { offer_price: '10', duration: 'فوري' } });
+    expect(offer4Res.status()).toBe(402);
+  });
+
+  test('[3] إعادة تقديم/تعديل عرض على نفس الطلب لا يستهلك أكثر من فرصة واحدة', async ({ request }) => {
+    const freshTech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { ...technicianRegisterExtra, name: 'فني اختبار تكرار نفس الطلب', national_number: uniqueNationalNumber() },
+      multipart: technicianAvatar,
+    });
+    const r = await createRequest(request, customer.token, { description: 'طلب لاختبار عدم احتساب تعديل السعر كمحاولة ثانية' });
+
+    // نفس الفني يرسل عرضاً على نفس الطلب 3 مرات متتالية (تعديل السعر في كل مرة).
+    for (const price of ['10', '12', '15']) {
+      const res = await request.post(`/api/requests/${r.id}/offer`, { headers: authHeader(freshTech.token), form: { offer_price: price, duration: 'فوري' } });
+      expect(res.status()).toBe(200);
+    }
+
+    const meRes = await request.get('/api/me', { headers: authHeader(freshTech.token) });
+    const me = (await meRes.json()).user;
+    expect(me.free_offers_used).toBe(1); // ليس 3 — نفس الطلب في كل مرة
+    expect(me.free_offers_remaining).toBe(1);
+
+    // إثبات إضافي: فرصة ثانية حقيقية (على طلب مختلف) لازالت متاحة فعلاً.
+    const r2 = await createRequest(request, customer.token, { description: 'طلب ثانٍ حقيقي — يجب أن تبقى الفرصة الثانية متاحة' });
+    const secondRealOfferRes = await request.post(`/api/requests/${r2.id}/offer`, { headers: authHeader(freshTech.token), form: { offer_price: '10', duration: 'فوري' } });
+    expect(secondRealOfferRes.status()).toBe(200);
+  });
+
+  test('[4] الترحيل: فني موجود مسبقاً بتاريخ عروض حقيقي يُرحَّل بشكل صحيح', async ({ request }) => {
+    // "tech" استهلك بالفعل فرصتين حقيقيتين بالاختبار [1] أعلاه. نحاكي هنا حالة
+    // "قبل الترحيل" بتصفير free_offers_used مباشرة بقاعدة البيانات (كما لو أن
+    // عمود free_offers_used أُضيف للتو ولم يُهيَّأ بعد لهذا الفني تحديداً)، ثم
+    // نُعيد تنفيذ نفس صيغة SQL الخاصة بالترحيل (config/migrate.js) ونتأكد أنها
+    // تُعيد حساب القيمة الصحيحة اعتماداً على تاريخ العروض الحقيقي المخزَّن فعلاً.
+    const db = openTestDb();
+    try {
+      db.prepare('UPDATE users SET free_offers_used = 0 WHERE id = ?').run(tech.user.id);
+      const before = db.prepare('SELECT free_offers_used FROM users WHERE id=?').get(tech.user.id);
+      expect(before.free_offers_used).toBe(0);
+
+      db.prepare(`
+        UPDATE users SET free_offers_used = (
+          SELECT COUNT(DISTINCT request_id) FROM offers WHERE offers.technician_id = users.id
+        ) WHERE role = 'technician' AND id = ?
+      `).run(tech.user.id);
+
+      const after = db.prepare('SELECT free_offers_used FROM users WHERE id=?').get(tech.user.id);
+      // الفني قدّم عروضاً على طلبين مختلفين بالاختبار [1] (أحدهما سُحب لاحقاً
+      // بالاختبار [2]، لكن صف العرض المسحوب حُذف من الجدول — يبقى طلب واحد
+      // فقط بجدول offers حالياً). القيمة الصحيحة المُرحَّلة تعكس هذا الواقع.
+      expect(after.free_offers_used).toBe(1);
+    } finally {
+      db.close();
+    }
   });
 });

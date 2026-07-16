@@ -224,6 +224,27 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_log
 // (تسجيل خروج أو تغيير كلمة سر) دون انتظار انتهاء صلاحية التوكن (7 أيام).
 // القيمة الافتراضية 0 تُبقي كل التوكنات الحالية صالحة كما هي (توافق رجعي كامل).
 try { db.prepare('ALTER TABLE users ADD COLUMN token_version INTEGER DEFAULT 0').run(); } catch (e) {}
+// [FIX-OFFERQUOTA-01] عدّاد منفصل تماماً عن free_orders_used (الذي يبقى بلا أي
+// تعديل ويحكم فقط "أول طلبين مكتملين بلا عمولة" كما كان تماماً). هذا العدّاد
+// الجديد يتتبّع عدد "محاولات تقديم عرض" الفعلية بشكل دائم — بعكس الحساب القديم
+// (COUNT(DISTINCT request_id) من جدول offers الحيّ، بملف routes/offers.routes.js)
+// الذي كان يتناقص فور حذف عرض مسحوب (DELETE /offers/:id)، فيسمح بتجاوز حد
+// الفرصتين المجانيتين بتكرار تقديم/سحب العرض بلا نهاية.
+try {
+  db.prepare('ALTER TABLE users ADD COLUMN free_offers_used INTEGER NOT NULL DEFAULT 0').run();
+  // يُنفَّذ هذا السطر فقط أول مرة يُضاف فيها العمود أعلاه (بفضل نجاح ALTER ضمن
+  // نفس try — لو كان العمود موجوداً مسبقاً لرمى ALTER خطأً ولما وصلنا هنا إطلاقاً).
+  // نُهيّئ كل فني موجود مسبقاً بعدد عروضه الحالية الفعلية (COUNT(DISTINCT
+  // request_id)) كأفضل تقدير متاح لتاريخه — توافق رجعي آمن، لا يُصفّر أحداً
+  // ظلماً. ملاحظة: لا يمكن استرجاع تاريخ عروض سُحبت وحُذفت فعلياً قبل هذا
+  // الإصلاح، فأي فني استغل هذه الثغرة سابقاً قد يحصل على فرص إضافية قليلة
+  // لمرة واحدة فقط بعد الترحيل — هذا تقصير معروف ومقصود بدل تخمين غير آمن.
+  db.prepare(`
+    UPDATE users SET free_offers_used = (
+      SELECT COUNT(DISTINCT request_id) FROM offers WHERE offers.technician_id = users.id
+    ) WHERE role = 'technician'
+  `).run();
+} catch (e) {}
 
 // [FIX-CLEANUP-01] كان هنا سابقاً تعريف ثانٍ لجدول complaints بأعمدة مختلفة
 // (customer_id/technician_id بدل user_id/subject/status). بفضل IF NOT EXISTS
