@@ -24,6 +24,31 @@ fs.mkdirSync(BACKUP_DIR, { recursive: true });
 // "Online Backup API" الأصلية بـSQLite (مكشوفة هنا عبر db.backup())، مصمَّمة
 // خصيصاً لأخذ نسخة آمنة ومتّسقة من قاعدة بيانات حيّة قيد الكتابة، وهي أصلاً
 // غير متزامنة (Promise) فلا تحجز حلقة الحدث.
+// [DATA-SAFETY-02] كانت هذه الدالة تُنشئ نسخة احتياطية جديدة كل 6 ساعات إلى
+// الأبد بلا أي حذف للنسخ القديمة — على قرص محدود السعة (1GB على Render) يشترك
+// فيه أيضاً كل الصور/التسجيلات الصوتية المرفوعة، هذا نمو غير محدود سينتهي
+// حتماً بامتلاء القرص (ENOSPC)، وعندها تفشل عمليات الرفع الجديدة بصمت أو
+// بأخطاء غامضة — وهذا بالضبط النمط الذي قد يفسّر "الصور ما زالت تفشل أحياناً"
+// رغم صحة كود الرفع نفسه. الاحتفاظ بآخر 7 أيام فقط (مطابق لمدة الاحتفاظ
+// بلقطات القرص من Render نفسها) كافٍ للتعافي من أي مشكلة حديثة دون نمو لا نهائي.
+const BACKUP_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+async function pruneOldBackups() {
+  try {
+    const now = Date.now();
+    const files = await fs.promises.readdir(BACKUP_DIR);
+    for (const file of files) {
+      if (!file.startsWith('sallehly-') || !file.endsWith('.sqlite')) continue;
+      const fullPath = path.join(BACKUP_DIR, file);
+      try {
+        const stat = await fs.promises.stat(fullPath);
+        if (now - stat.mtimeMs > BACKUP_RETENTION_MS) {
+          await fs.promises.unlink(fullPath);
+        }
+      } catch (e) { /* تجاهل ملفاً واحداً فشل فحصه أو حذفه */ }
+    }
+  } catch (e) { console.error('prune old backups failed:', e.message); }
+}
+
 async function createDbBackup() {
   try {
     const src = path.join(DATA_DIR, 'sallehly.sqlite');
@@ -31,6 +56,7 @@ async function createDbBackup() {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const dest = path.join(BACKUP_DIR, `sallehly-${stamp}.sqlite`);
     await db.backup(dest);
+    await pruneOldBackups();
     return dest;
   } catch (e) { console.error('backup failed:', e.message); return null; }
 }
@@ -83,8 +109,15 @@ async function cleanupOrphanUploads() {
       db.prepare("SELECT body FROM messages WHERE body LIKE '[audio]%'").all()
         .map(r => path.basename(String(r.body).replace('[audio]', '').split('|')[0]))
     );
+    // [DATA-SAFETY-03] صور شات كانت (بسبب علة سابقة سبقت FIX-CHATIMG-01) قد
+    // تكون لا تزال فعلياً بمجلد avatars/ (المكان الخاطئ) بانتظار أن ينقلها
+    // repairMisplacedChatImages() عند الإقلاع التالي — بدون إضافتها هنا أيضاً،
+    // هذه الدالة (التي تعمل كل 6 ساعات) قد تحذفها نهائياً كـ"غير مستخدمة"
+    // بمجرد تجاوزها 24 ساعة، قبل أن يحصل الإصلاح على فرصته إطلاقاً. إضافتها
+    // كـ"مستخدمة" بكلا المجلدين معاً (أينما وُجد الملف فعلياً) تحمي الملف حتى
+    // يُنقَل، دون أي أثر على الوضع الطبيعي (صور جديدة تُحفَظ مباشرة بـrequests/).
     const usedByFolder = {
-      avatars: new Set([...usedAvatarFiles, ...usedPendingAvatarFiles]),
+      avatars: new Set([...usedAvatarFiles, ...usedPendingAvatarFiles, ...usedChatImageFiles]),
       payments: usedPaymentFiles,
       requests: new Set([...usedRequestImageFiles, ...usedChatImageFiles]),
       audios: usedAudioFiles
