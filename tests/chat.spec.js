@@ -162,6 +162,37 @@ test.describe.serial('الدردشة على الطلبات', () => {
     expect(body.chats.some((c) => c.request_id === acceptedRequest.id)).toBe(true);
   });
 
+  // [FIX-CHATUNREAD-01] يتحقق من أن unread_count/total_unread بـGET /chats
+  // يعكسان فعلياً رسالة جديدة لم تُقرأ، ويُصفَّران فور فتح المحادثة (نفس
+  // آلية markChatRead المستخدَمة أصلاً بـGET /requests/:id/messages) —
+  // هذه هي البنية التي يعتمد عليها تطبيق الفلاتر بالواجهة (شارات غير المقروء).
+  test('GET /chats — unread_count يعكس رسالة جديدة لم تُقرأ، ويُصفّر بعد القراءة', async ({ request }) => {
+    await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(technician.token),
+      form: { body: 'وصلت تقريباً، افتح الباب من فضلك' },
+    });
+
+    const beforeRead = await request.get('/api/chats', { headers: authHeader(customer.token) });
+    const beforeBody = await beforeRead.json();
+    const chatBefore = beforeBody.chats.find((c) => c.request_id === acceptedRequest.id);
+    expect(chatBefore.unread_count).toBeGreaterThanOrEqual(1);
+    expect(beforeBody.total_unread).toBeGreaterThanOrEqual(chatBefore.unread_count);
+
+    // العميل يفتح المحادثة — GET /messages يستدعي markChatRead تلقائياً.
+    await request.get(`/api/requests/${acceptedRequest.id}/messages`, { headers: authHeader(customer.token) });
+
+    const afterRead = await request.get('/api/chats', { headers: authHeader(customer.token) });
+    const afterBody = await afterRead.json();
+    const chatAfter = afterBody.chats.find((c) => c.request_id === acceptedRequest.id);
+    expect(chatAfter.unread_count).toBe(0);
+
+    // رسالة الفني نفسها (مُرسِلها) لا تُحسب أبداً ضمن غير مقروء الفني.
+    const technicianChats = await request.get('/api/chats', { headers: authHeader(technician.token) });
+    const technicianBody = await technicianChats.json();
+    const chatForTechnician = technicianBody.chats.find((c) => c.request_id === acceptedRequest.id);
+    expect(chatForTechnician.unread_count).toBe(0);
+  });
+
   test('GET /chat-violations — الأدمن فقط يقدر يشوف سجل المخالفات', async ({ request }) => {
     const forbidden = await request.get('/api/chat-violations', { headers: authHeader(customer.token) });
     expect(forbidden.status()).toBe(403);
