@@ -166,4 +166,34 @@ test.describe.serial('الدردشة على الطلبات', () => {
     const forbidden = await request.get('/api/chat-violations', { headers: authHeader(customer.token) });
     expect(forbidden.status()).toBe(403);
   });
+
+  // [FIX-CHATIMG-01] كانت صور الشات تُحفَظ فعلياً بمجلد avatars/ بينما الرابط
+  // المُرجَع بالرسالة يشير لمجلد requests/ — فيفشل تحميلها دائماً بـ404. هذا
+  // الاختبار يتأكد أن الرابط المُرجَع فعلياً قابل للجلب، لا فقط أن الرفع نجح.
+  test('POST /requests/:id/images — الصورة المرفوعة تُخزَّن وتُقرأ من نفس الرابط المُرجَع', async ({ request }) => {
+    const uploadRes = await request.post(`/api/requests/${acceptedRequest.id}/images`, {
+      headers: authHeader(customer.token),
+      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
+    expect(uploadRes.status()).toBe(200);
+    const messages = (await uploadRes.json()).messages;
+    const imageMessage = messages.find((m) => m.body.startsWith('[image]'));
+    expect(imageMessage).toBeTruthy();
+
+    const imageUrl = imageMessage.body.replace('[image]', '');
+    expect(imageUrl).toMatch(/^\/uploads\/requests\//);
+
+    // الفحص الحقيقي لهذا الإصلاح: الرابط نفسه يرجع الصورة فعلاً، وليس 404.
+    const fetchRes = await request.get(imageUrl);
+    expect(fetchRes.status()).toBe(200);
+    expect(fetchRes.headers()['content-type']).toContain('image');
+  });
+
+  test('POST /requests/:id/images — يرفض طرفاً خارجياً غير مرتبط بالطلب', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/images`, {
+      headers: authHeader(outsider.token),
+      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+    expect(res.status()).toBe(403);
+  });
 });

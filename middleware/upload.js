@@ -7,9 +7,23 @@ const multer = require('multer');
 const { UPLOAD_DIR } = require('../config/env');
 const { hasSafeExt, safeUploadName } = require('../utils/helpers');
 
+// [FIX-CHATIMG-01] خريطة صريحة بدل شرط متداخل — الشرط القديم كان يُسقط أي
+// fieldname غير 'receipt'/'problem_image' على 'avatars' افتراضياً، وهذا كان
+// يشمل رسائل الشات (fieldname='image') بالخطأ: تُحفَظ فعلياً داخل avatars/
+// بينما الرابط المُخزَّن بقاعدة البيانات (routes/chat.routes.js) يشير إلى
+// requests/ — فيفشل تحميل الصورة دائماً (404) لأنها غير موجودة بالمسار الذي
+// يُطلَب منه. أي fieldname مستقبلي غير مُدرَج هنا سيرمي خطأً بدل الانزلاق
+// بصمت لمجلد خاطئ.
+const UPLOAD_FIELD_FOLDERS = {
+  receipt: 'payments',
+  problem_image: 'requests',
+  image: 'requests',
+  avatar: 'avatars'
+};
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const folder = file.fieldname === 'receipt' ? 'payments' : (file.fieldname === 'problem_image' ? 'requests' : 'avatars');
+    const folder = UPLOAD_FIELD_FOLDERS[file.fieldname];
+    if (!folder) return cb(new Error(`حقل رفع غير معروف: ${file.fieldname}`));
     cb(null, path.join(UPLOAD_DIR, folder));
   },
   filename: (req, file, cb) => {

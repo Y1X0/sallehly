@@ -56,6 +56,13 @@ function cleanupOrphanUploads() {
       db.prepare("SELECT problem_image_url FROM requests WHERE problem_image_url IS NOT NULL AND problem_image_url<>''").all()
         .map(r => path.basename(r.problem_image_url))
     );
+    // [FIX-CHATIMG-01] صور الشات (messages.body بصيغة '[image]/uploads/requests/...')
+    // تُحفَظ بنفس مجلد requests/ لكنها لم تكن محسوبة هون إطلاقاً — فكانت هذه
+    // الدالة نفسها تحذفها كـ"غير مستخدمة" بعد أول 24 ساعة، بنفس نمط usedAudioFiles أدناه.
+    const usedChatImageFiles = new Set(
+      db.prepare("SELECT body FROM messages WHERE body LIKE '[image]%'").all()
+        .map(r => path.basename(String(r.body).replace('[image]', '')))
+    );
     const usedAudioFiles = new Set(
       db.prepare("SELECT body FROM messages WHERE body LIKE '[audio]%'").all()
         .map(r => path.basename(String(r.body).replace('[audio]', '')))
@@ -63,7 +70,7 @@ function cleanupOrphanUploads() {
     const usedByFolder = {
       avatars: new Set([...usedAvatarFiles, ...usedPendingAvatarFiles]),
       payments: usedPaymentFiles,
-      requests: usedRequestImageFiles,
+      requests: new Set([...usedRequestImageFiles, ...usedChatImageFiles]),
       audios: usedAudioFiles
     };
     folders.forEach(({ dir }) => {
@@ -97,5 +104,33 @@ if (IS_PROD) setInterval(cleanupExpiredPendingUsers, 60 * 60 * 1000).unref();
 
 
 migrate(db);
+
+// [FIX-CHATIMG-01] إصلاح تلقائي لمرة واحدة عند الإقلاع: أي صورة شات أُرسلت قبل
+// إصلاح middleware/upload.js انحفظت فعلياً بمجلد avatars/ بينما رابطها المُخزَّن
+// بقاعدة البيانات يشير لـ requests/ (فتفشل بـ404 دائماً). ننقل أي ملف ما زال
+// موجوداً لمكانه الصحيح تلقائياً هنا حتى تعمل الصور القديمة من جديد بدون أي
+// تدخل يدوي على السيرفر. لا يمس أي ملف غير مرتبط برسالة صورة، ولا يكرر النقل
+// إن كان الملف موجوداً بالفعل بمكانه الصحيح.
+function repairMisplacedChatImages() {
+  try {
+    const avatarsDir = path.join(UPLOAD_DIR, 'avatars');
+    const requestsDir = path.join(UPLOAD_DIR, 'requests');
+    const rows = db.prepare("SELECT body FROM messages WHERE body LIKE '[image]/uploads/requests/%'").all();
+    let moved = 0;
+    for (const row of rows) {
+      const filename = path.basename(String(row.body).replace('[image]', ''));
+      const wrongPath = path.join(avatarsDir, filename);
+      const rightPath = path.join(requestsDir, filename);
+      try {
+        if (fs.existsSync(wrongPath) && !fs.existsSync(rightPath)) {
+          fs.renameSync(wrongPath, rightPath);
+          moved++;
+        }
+      } catch (e) { /* تجاهل ملفاً واحداً فشل نقله ولا توقف البقية */ }
+    }
+    if (moved > 0) console.log(`[FIX-CHATIMG-01] تم إصلاح ${moved} صورة شات كانت محفوظة بمكان خاطئ.`);
+  } catch (e) { console.error('repair misplaced chat images failed:', e.message); }
+}
+repairMisplacedChatImages();
 
 module.exports = { db, createDbBackup };
