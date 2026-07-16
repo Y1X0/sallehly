@@ -38,6 +38,21 @@ fs.mkdirSync(path.join(UPLOAD_DIR, 'avatars'), { recursive: true });
 fs.mkdirSync(path.join(UPLOAD_DIR, 'audios'), { recursive: true });
 fs.mkdirSync(path.join(UPLOAD_DIR, 'requests'), { recursive: true });
 
+// [FIX-CHATIMG-02] بدون DATA_DIR مضبوطاً على قرص دائم فعلي، كل الصور/التسجيلات
+// الصوتية/الإيصالات المرفوعة تُخزَّن داخل مجلد كود التطبيق نفسه (public/uploads)
+// — على أي منصة نشر تُعيد بناء الحاوية من الصفر بكل deploy (مثل Render بدون
+// Persistent Disk)، هذا المجلد يُمحى بالكامل عند كل نشر جديد أو إعادة تشغيل،
+// فتفشل كل الصور القديمة بصمت (404) بلا أي أثر بالسجلات يوضّح السبب الحقيقي.
+// هذا التحذير لا يمنع الإقلاع (البيئة قد تكون قصداً بلا قرص دائم أثناء التطوير)
+// لكنه يجعل السبب واضحاً فوراً بسجلات الإنتاج بدل اكتشافه لاحقاً من شكاوى المستخدمين.
+if (IS_PROD && !process.env.DATA_DIR) {
+  console.warn(
+    '[WARN] DATA_DIR غير مضبوط بالإنتاج — الملفات المرفوعة (صور/صوت/إيصالات) ' +
+    'تُخزَّن بمسار غير دائم وستُفقد عند أي إعادة نشر أو إعادة تشغيل. ' +
+    'اربط قرصاً دائماً (Persistent Disk) على منصة النشر واضبط DATA_DIR على مساره.'
+  );
+}
+
 const COOKIE_OPTS = { httpOnly: true, sameSite: 'strict', secure: IS_PROD, maxAge: 7 * 24 * 60 * 60 * 1000 };
 
 // [SEC-FIX-06] CSRF Protection — Origin/Referer validation for state-changing requests

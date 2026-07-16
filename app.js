@@ -29,10 +29,14 @@ function createApp() {
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
   app.use(express.static(path.join(env.BASE, 'public')));
-  // قدّم الملفات المرفوعة من القرص الدائم (إن وُجد) حتى تظهر الصور بعد الـ deploy.
-  if (process.env.DATA_DIR) {
-    app.use('/uploads', express.static(env.UPLOAD_DIR));
-  }
+  // [FIX-CHATIMG-02] قدّم الملفات المرفوعة دائماً وبدون شرط — سواء كانت
+  // env.UPLOAD_DIR تشير لقرص دائم (DATA_DIR مضبوط) أو لمجلد داخل كود
+  // التطبيق نفسه (DATA_DIR غير مضبوط، وقتها UPLOAD_DIR = public/uploads
+  // أصلاً حسب config/env.js فتُغطّى بالسطر أعلاه أيضاً بلا تعارض). قبل هذا
+  // التعديل، تسجيل هذا المسار بأكمله كان مشروطاً بوجود DATA_DIR فقط — لو
+  // البيئة لم تُعرِّفه لأي سبب (خطأ إعداد على Render مثلاً)، /uploads/* كان
+  // سيرجع 404 دائماً بلا أي تحذير أو أثر بالسجلات يوضّح السبب.
+  app.use('/uploads', express.static(env.UPLOAD_DIR));
 
   return app;
 }
