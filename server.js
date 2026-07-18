@@ -1,6 +1,12 @@
 require('dotenv').config?.();
 const { Resend } = require('resend');
-const resend = new Resend(process.env.RESEND_API_KEY);
+// resend@6 throws synchronously in its constructor when no API key is given,
+// which previously crashed the whole process at startup (before Express even
+// bound the port) on any deployment where RESEND_API_KEY wasn't set. Build it
+// lazily so a missing key only disables OTP email sending (see sendOtpEmail),
+// matching the same graceful-degradation style already used below for
+// JWT_SECRET/ADMIN_EMAIL/ADMIN_PASSWORD.
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
@@ -20,6 +26,11 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: true, credentials: true } });
 const PORT = process.env.PORT || 3000;
 const JWT_SECRET = process.env.JWT_SECRET || (process.env.NODE_ENV === 'production' ? (()=>{ throw new Error('JWT_SECRET is required in production'); })() : 'local_development_secret_change_me');
+// [FIX-COOKIE-SECURE-01] الكوكي لم يكن يحمل Secure، فلو تم الوصول للسيرفر
+// يوماً عبر HTTP عادي (مثلاً قبل تفعيل إعادة التوجيه لـHTTPS بمنصة الاستضافة)
+// كان التوكن سينتقل بنص صريح. مقيّد بـNODE_ENV=production فقط كي لا يكسر
+// تسجيل الدخول محلياً على http://localhost وقت التطوير.
+const AUTH_COOKIE_OPTS = { httpOnly:true, sameSite:'strict', secure: process.env.NODE_ENV === 'production' };
 const BASE = __dirname;
 const DATA_DIR = path.join(BASE, 'data');
 const UPLOAD_DIR = path.join(BASE, 'public', 'uploads');
@@ -37,13 +48,24 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(express.static(path.join(BASE, 'public')));
 
+// [FIX-UPLOAD-EXT-01] الامتداد كان يُؤخذ من اسم الملف الأصلي الذي يرسله
+// العميل بالكامل، رغم أن fileFilter يتحقق فقط من Content-Type (mimetype) —
+// قيمة يسهل تزويرها من أي عميل HTTP مباشر (خارج تطبيق فلاتر) بإرسال
+// mimetype صورة صحيح مع اسم ملف مثل "x.svg" أو "x.html". express.static كان
+// سيخدم هذا الملف المرفوع لاحقاً باستخدام نفس امتداده الأصلي، أي احتمال
+// تنفيذ HTML/SVG مخزَّن (Stored XSS) عبر رابط رفع يُفترض أنه "صورة فقط".
+// الآن الامتداد المخزَّن يُشتق حصراً من mimetype الذي تحقق منه fileFilter
+// أعلاه/أدناه فعلياً، بغض النظر عن اسم الملف الأصلي.
+const IMAGE_EXT_BY_MIME = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' };
+const AUDIO_EXT_BY_MIME = { 'audio/webm': '.webm', 'audio/mpeg': '.mp3', 'audio/mp3': '.mp3', 'audio/wav': '.wav', 'audio/ogg': '.ogg' };
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const folder = file.fieldname === 'receipt' ? 'payments' : (file.fieldname === 'problem_image' ? 'requests' : 'avatars');
     cb(null, path.join(UPLOAD_DIR, folder));
   },
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
+    const ext = IMAGE_EXT_BY_MIME[file.mimetype] || '.jpg';
     cb(null, Date.now() + '-' + Math.random().toString(16).slice(2) + ext);
   }
 });
@@ -59,7 +81,7 @@ const upload = multer({
 const audioStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, path.join(UPLOAD_DIR, 'audios')),
   filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase() || '.webm';
+    const ext = AUDIO_EXT_BY_MIME[file.mimetype] || '.webm';
     cb(null, Date.now() + '-' + Math.random().toString(16).slice(2) + ext);
   }
 });
@@ -283,6 +305,10 @@ try {
 } catch(e) { console.warn('demo tech seed skipped', e.message); }
 
 async function sendOtpEmail(email, code, name) {
+  if (!resend) {
+    console.warn('RESEND_API_KEY not set — OTP email not sent (code still stored for verification).');
+    return false;
+  }
   try {
     await resend.emails.send({
       from: 'تحقق من صلّحلي <no-reply@sallehly.com>',
@@ -312,7 +338,16 @@ function auth(req,res,next){
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : req.cookies.token;
   if(!token) return res.status(401).json({error:'يرجى تسجيل الدخول'});
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); } catch { return res.status(401).json({error:'جلسة غير صالحة'}); }
+  try { req.user = jwt.verify(token, JWT_SECRET); } catch { return res.status(401).json({error:'جلسة غير صالحة'}); }
+  // [FIX-SUSPEND-AUTH-01] كان توكن JWT صالحاً لمدة 7 أيام كاملة بغض النظر عن
+  // حالة الحساب — إيقاف حساب من لوحة الإدارة (users/:id/toggle) لم يكن يمنع
+  // من يملك توكناً صادراً مسبقاً من الاستمرار باستخدام كل الـ API لغاية 7
+  // أيام لاحقة رغم إيقافه. الآن يُتحقق من is_active الفعلي بقاعدة البيانات
+  // مع كل طلب مصادَق، بنفس فحص تسجيل الدخول أعلاه بالضبط.
+  const u = db.prepare('SELECT is_active FROM users WHERE id=?').get(req.user.id);
+  if(!u) return res.status(401).json({error:'جلسة غير صالحة'});
+  if(!u.is_active) return res.status(403).json({error:'الحساب موقوف'});
+  next();
 }
 function requireRole(...roles){ return (req,res,next)=> roles.includes(req.user.role) ? next() : res.status(403).json({error:'لا تملك صلاحية'}); }
 function clean(s){ return String(s||'').trim(); }
@@ -405,7 +440,7 @@ app.post('/api/auth/verify', (req,res)=>{
     db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
     const user = db.prepare('SELECT * FROM users WHERE id=?').get(info.lastInsertRowid);
     const token = sign(user);
-    res.cookie('token', token, { httpOnly:true, sameSite:'strict' });
+    res.cookie('token', token, AUTH_COOKIE_OPTS);
     res.json({ok:true, token, user:userPublic(user)});
   }catch(e){
     if(String(e.message).includes('UNIQUE')) return res.status(409).json({error:'الحساب موجود مسبقاً'});
@@ -431,7 +466,7 @@ app.post('/api/auth/login', (req,res)=>{
   const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
   if(!user || !bcrypt.compareSync(password, user.password_hash)) return res.status(401).json({error:'بيانات الدخول غير صحيحة'});
   if(!user.is_active) return res.status(403).json({error:'الحساب موقوف'});
-  const token = sign(user); res.cookie('token', token, { httpOnly:true, sameSite:'strict' }); res.json({token,user:userPublic(user)});
+  const token = sign(user); res.cookie('token', token, AUTH_COOKIE_OPTS); res.json({token,user:userPublic(user)});
 });
 app.post('/api/auth/logout', (req,res)=>{ res.clearCookie('token'); res.json({ok:true}); });
 app.get('/api/me', auth, (req,res)=> res.json({user:userPublic(db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id))}));
