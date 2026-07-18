@@ -2,8 +2,10 @@
 // يغطي أهم صلاحيات لوحة الأدمن: الإحصائيات، تفعيل/إيقاف المستخدمين، تعديل الرصيد يدوياً
 // (مع تسجيله بدفتر الأستاذ)، حذف المستخدم بشروط، إدارة الخدمات والباقات، إلغاء طلب، وسجل التدقيق.
 
+const path = require('path');
+const Database = require('better-sqlite3');
 const { test, expect } = require('@playwright/test');
-const { getPendingOtp } = require('./helpers/db');
+const { getPendingOtp, TEST_DB_PATH } = require('./helpers/db');
 
 function uniqueEmail(tag) {
   return `test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`;
@@ -94,6 +96,30 @@ test.describe.serial('لوحة الأدمن', () => {
     expect(body.ok).toBe(true);
     expect(typeof body.file).toBe('string');
     expect(body.file.endsWith('.sqlite')).toBe(true);
+  });
+
+  // [SEC-FIX-C2] القاعدة تعمل بوضع WAL (journal_mode=WAL) — كتابة حديثة قد
+  // تبقى بملف -wal فترة، ولا تُدمَج بالملف الرئيسي إلا عند checkpoint. لو كانت
+  // آلية النسخ الاحتياطي عادت لنسخ بايتات خام (fs.copyFile) لملف .sqlite
+  // الرئيسي فقط، هذا الاختبار كان سيفشل لأن المستخدم المسجَّل للتو هنا (كتابة
+  // حية لم يُطلَب لها أي checkpoint) لن يظهر بالنسخة. db.backup() (Online
+  // Backup API الأصلية بـSQLite) مصمَّمة خصيصاً لالتقاط WAL بأمان أثناء الكتابة.
+  test('POST /admin/backup — النسخة الناتجة تتضمّن كتابات WAL حديثة لم تُدمَج بعد بالملف الرئيسي', async ({ request }) => {
+    const fresh = await registerAndVerify(request, 'customer', { name: 'عميل نسخة احتياطية WAL', city: CITY });
+
+    const res = await request.post('/api/admin/backup', { headers: authHeader(adminToken) });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+
+    const backupPath = path.join(path.dirname(TEST_DB_PATH), 'backups', body.file);
+    const backupDb = new Database(backupPath, { readonly: true, fileMustExist: true });
+    try {
+      const row = backupDb.prepare('SELECT id, email FROM users WHERE email=?').get(fresh.email.toLowerCase());
+      expect(row).toBeTruthy();
+      expect(row.email).toBe(fresh.email.toLowerCase());
+    } finally {
+      backupDb.close();
+    }
   });
 
   test('GET /admin/users — يرفض غير الأدمن، وينجح للأدمن', async ({ request }) => {

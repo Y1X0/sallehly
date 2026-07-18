@@ -138,6 +138,47 @@ test.describe.serial('الدردشة على الطلبات', () => {
     expect(res.status()).toBe(400);
   });
 
+  // [SEC-FIX-C1] JWT leakage through chat media spoofing: [image]/[audio] لا
+  // مسار شرعي لهما إطلاقاً عبر هذا الـendpoint (فقط عبر /images أو /audio
+  // مباشرة)، فمن المفترض رفض أي رسالة نصية تبدأ بهما دوماً — قبل هذا الإصلاح
+  // كانت تُقبل وتُخزَّن كما هي، ويفسّرها الطرف الآخر بواجهة فلاتر كصورة/صوت
+  // فيرسل توكن جلسته لأي رابط خارجي بها عند فتحها.
+  test('POST /requests/:id/messages — يرفض رسالة نصية تنتحل صورة برابط خارجي "[image]https://attacker.com/x.png"', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: '[image]https://attacker.com/x.png' },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBeTruthy();
+  });
+
+  test('POST /requests/:id/messages — يرفض رسالة نصية تبدأ بـ"[audio]" دون رفع فعلي', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: '[audio]https://attacker.com/evil.mp3' },
+    });
+    expect(res.status()).toBe(400);
+  });
+
+  test('POST /requests/:id/messages — يرفض "[location]" بصيغة غير رقمية (ليست إحداثيات فعلية)', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: '[location]https://attacker.com/track' },
+    });
+    expect(res.status()).toBe(400);
+  });
+
+  test('POST /requests/:id/messages — "[location]lat,lng" الشرعي (نفس صيغة ChatApi.sendLocation) ما زال يعمل', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: '[location]31.963158,35.930359' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.messages.some((m) => m.body === '[location]31.963158,35.930359')).toBe(true);
+  });
+
   test('GET /requests/:id/messages — يرفض طرفاً خارجياً', async ({ request }) => {
     const res = await request.get(`/api/requests/${acceptedRequest.id}/messages`, {
       headers: authHeader(outsider.token),
