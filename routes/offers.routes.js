@@ -7,16 +7,26 @@ module.exports = function (deps) {
   const { auth, requireRole } = deps.middleware;
   const { clean } = deps.utils;
   const { sendPush } = deps.services;
+  const { offerLimiter } = deps.limiters;
   const router = express.Router();
 
-  router.post('/requests/:id/offer', auth, requireRole('technician'), (req, res) => {
+  router.post('/requests/:id/offer', auth, requireRole('technician'), offerLimiter, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
     if (!['بانتظار العروض', 'وصلت عروض'].includes(r.status)) return res.status(400).json({ error: 'هذا الطلب لم يعد يستقبل عروضاً' });
     if (r.technician_id && Number(r.technician_id) !== Number(req.user.id)) return res.status(403).json({ error: 'هذا الطلب مباشر لفني آخر' });
     const active = db.prepare("SELECT id, service FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') AND id<>? ORDER BY id DESC LIMIT 1").get(req.user.id, r.id);
     if (active) return res.status(409).json({ error: `لا يمكنك إرسال عرض جديد قبل إنهاء طلبك الحالي رقم ${active.id} - ${active.service}` });
-    const tech = db.prepare('SELECT id,balance,free_offers_used,active_commission FROM users WHERE id=? AND role=\'technician\'').get(req.user.id);
+    const tech = db.prepare('SELECT id,balance,free_offers_used,active_commission,services FROM users WHERE id=? AND role=\'technician\'').get(req.user.id);
+    // [SEC-FIX-19] لم يكن هناك أي تحقق هنا من تطابق خدمة الطلب مع خدمات الفني
+    // المسجَّلة — التصفية كانت موجودة فقط بطرف القراءة (GET /requests)، فأي
+    // فني يقدر يرسل عرضاً مباشرة على أي طلب مهما كانت خدمته عبر نداء API مباشر،
+    // متجاوزاً قائمة "الطلبات المتاحة" المفلترة له بالتطبيق بالكامل. نفس منطق
+    // المطابقة المستخدم بـ GET /requests (routes/requests.routes.js) تماماً.
+    const techServices = (tech?.services || '').split(',').filter(Boolean);
+    if (!techServices.includes(r.service)) {
+      return res.status(403).json({ error: 'هذه الخدمة ليست ضمن خدماتك المسجّلة، لا يمكنك تقديم عرض على هذا الطلب' });
+    }
     const requiredBalance = Number(tech?.active_commission ?? 2);
     const oldOffer = db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id);
     // [FIX-OFFERQUOTA-01] free_offers_used عدّاد دائم يُزاد فقط عند نجاح إدراج

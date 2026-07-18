@@ -36,6 +36,29 @@ const passwordResetLimiter = rateLimit({
   legacyHeaders: false
 });
 
+// [SEC-FIX-18] /requests/:id/messages و /requests/:id/offer كانا بدون أي حد
+// طلبات — بعكس auth/*. أُثبت عملياً أن 25 رسالة متتالية دون أي تأخير تُقبل
+// جميعها بلا أي عرقلة (كل رسالة تُفعّل Socket.IO event + محاولة Push، وكل عرض
+// يُنشئ صفاً بقاعدة البيانات ويُرسل إشعارات). الحدود أدناه سخية بما يكفي لأي
+// استخدام طبيعي (محادثة حقيقية بين طرفين، أو فني يستعرض ويقدّم على عدة طلبات)
+// لكنها تمنع نمط spam الواضح. نفس نمط IS_PROD الموجود أعلاه لباقي الحدود —
+// حتى لا تتأثر اختبارات Playwright الآلية بالحد الحقيقي.
+const messageLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: IS_PROD ? 30 : 1000,
+  message: { error: 'رسائل كثيرة جداً خلال وقت قصير، حاول بعد قليل' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+const offerLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: IS_PROD ? 20 : 1000,
+  message: { error: 'عروض كثيرة جداً خلال وقت قصير، حاول بعد قليل' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 // [SEC-FIX-13] Helmet with explicit frameguard DENY + CSP hardened
 const helmetMiddleware = helmet({
   frameguard: { action: 'deny' },
@@ -106,5 +129,7 @@ module.exports = {
   apiErrorHandler,
   loginLimiter,
   registerLimiter,
-  passwordResetLimiter
+  passwordResetLimiter,
+  messageLimiter,
+  offerLimiter
 };

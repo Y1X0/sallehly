@@ -49,6 +49,7 @@ module.exports = function (deps) {
   const { auth, requireRole, upload, uploadAudio } = deps.middleware;
   const { clean, getMessages, markChatRead, logAudit } = deps.utils;
   const { sendPush } = deps.services;
+  const { messageLimiter } = deps.limiters;
   const router = express.Router();
 
   // [FIX-UGC-01] الطرف الآخر بمحادثة طلب معيّن، بنفس منطق تنبيه الرسائل تماماً.
@@ -72,7 +73,7 @@ module.exports = function (deps) {
     return res.status(400).json({ error: '⚠️ الرسائل العادية مسموحة. الممنوع فقط مشاركة رقم هاتف أو واتساب أو تيليجرام أو إيميل أو روابط تواصل خارجية.' });
   }
 
-  router.post('/requests/:id/messages', auth, (req, res) => {
+  router.post('/requests/:id/messages', auth, messageLimiter, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;

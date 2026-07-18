@@ -174,7 +174,15 @@ module.exports = function (deps) {
   router.post('/requests/:id/rate', auth, requireRole('customer'), (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=? AND customer_id=? AND status=?').get(req.params.id, req.user.id, 'مكتمل');
     if (!r || !r.technician_id) return res.status(400).json({ error: 'لا يمكن تقييم هذا الطلب' });
-    const stars = Number(req.body.stars); if (stars < 1 || stars > 5) return res.status(400).json({ error: 'اختر تقييم من 1 إلى 5' });
+    // [SEC-FIX-20] Number(x) لقيمة مفقودة/غير رقمية تُنتج NaN، والمقارنات
+    // stars < 1 / stars > 5 كلتاهما false مع NaN بجافاسكربت — يتجاوز هذا
+    // التحقق بصمت ويصل الإدراج لقاعدة البيانات، حيث يرفضه قيد CHECK فعلاً
+    // (لا يحدث أي تلف بيانات)، لكن catch العام أسفل هذا الراوت يُرجع خطأ
+    // "تم تقييم هذا الطلب مسبقاً" لأي فشل إدراج — رسالة خاطئة تماماً لهذه
+    // الحالة (لم يُسجَّل أي تقييم أصلاً). Number.isFinite يرفض NaN صراحة قبل
+    // وصول القيمة لقاعدة البيانات، فيُرجع رسالة "تقييم غير صحيح" الصحيحة.
+    const stars = Number(req.body.stars);
+    if (!Number.isFinite(stars) || stars < 1 || stars > 5) return res.status(400).json({ error: 'اختر تقييم من 1 إلى 5' });
     const comment = clean(req.body.comment || '');
     if (comment.length > 500) return res.status(400).json({ error: 'التعليق طويل جداً، الحد الأقصى 500 حرف' });
     try { db.prepare('INSERT INTO ratings(request_id,technician_id,customer_id,stars,comment) VALUES(?,?,?,?,?)').run(r.id, r.technician_id, req.user.id, stars, comment); calcRating(r.technician_id); safeEmit(r.id, 'rated', { requestId: r.id, stars }); res.json({ ok: true }); }
