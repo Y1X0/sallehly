@@ -5,7 +5,36 @@
 const path = require('path');
 const Database = require('better-sqlite3');
 const { test, expect } = require('@playwright/test');
-const { getPendingOtp, TEST_DB_PATH } = require('./helpers/db');
+const { getPendingOtp, TEST_DB_PATH, openTestDb } = require('./helpers/db');
+
+// [H2/H3][PERF-03] messages.request_id (كل استعلامات الشات) و
+// requests.customer_id ("طلباتي" للعميل) — يثبت أن الفهرسين موجودان فعلياً
+// بقاعدة البيانات بعد migrate()، وليس فقط أن سطر CREATE INDEX موجود بالكود.
+test.describe('[H2/H3] فهارس قاعدة البيانات الحرجة للأداء', () => {
+  test('idx_messages_request موجود على messages(request_id)', () => {
+    const db = openTestDb();
+    try {
+      const indexes = db.prepare('PRAGMA index_list(messages)').all().map((i) => i.name);
+      expect(indexes).toContain('idx_messages_request');
+      const cols = db.prepare('PRAGMA index_info(idx_messages_request)').all();
+      expect(cols.map((c) => c.name)).toEqual(['request_id']);
+    } finally {
+      db.close();
+    }
+  });
+
+  test('idx_requests_customer موجود على requests(customer_id)', () => {
+    const db = openTestDb();
+    try {
+      const indexes = db.prepare('PRAGMA index_list(requests)').all().map((i) => i.name);
+      expect(indexes).toContain('idx_requests_customer');
+      const cols = db.prepare('PRAGMA index_info(idx_requests_customer)').all();
+      expect(cols.map((c) => c.name)).toEqual(['customer_id']);
+    } finally {
+      db.close();
+    }
+  });
+});
 
 function uniqueEmail(tag) {
   return `test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`;
