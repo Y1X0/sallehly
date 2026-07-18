@@ -40,11 +40,13 @@ function chatViolationReason(body) {
     .replace(/[۰-۹]/g, ch => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch)))
     .replace(/[oO]/g, '0');
   const compact = normalizeChatText(original);
+  // [H1] 'insta' و'wa me'/'t me'/'fb com' أُزيلت من هذه القائمة — substring
+  // بلا حدود كلمة كانت تُصادف كلمات عادية شائعة (انظر boundaryChecks أسفل).
   const groups = [
-    { reason: 'واتساب', words: ['واتساب', 'واتس', 'وتساب', 'whatsapp', 'watsapp', 'wa.me', 'wa me'] },
-    { reason: 'تيليجرام', words: ['تيليجرام', 'تليجرام', 'تلجرام', 'telegram', 't.me', 't me'] },
-    { reason: 'فيسبوك أو ماسنجر', words: ['facebook', 'fb.com', 'fb com', 'messenger', 'فيسبوك', 'ماسنجر'] },
-    { reason: 'إنستغرام أو سناب', words: ['instagram', 'insta', 'انستا', 'إنستا', 'snapchat', 'سناب'] },
+    { reason: 'واتساب', words: ['واتساب', 'واتس', 'وتساب', 'whatsapp', 'watsapp'] },
+    { reason: 'تيليجرام', words: ['تيليجرام', 'تليجرام', 'تلجرام', 'telegram'] },
+    { reason: 'فيسبوك أو ماسنجر', words: ['facebook', 'messenger', 'فيسبوك', 'ماسنجر'] },
+    { reason: 'إنستغرام أو سناب', words: ['instagram', 'انستا', 'إنستا', 'snapchat', 'سناب'] },
     { reason: 'بريد إلكتروني', words: ['gmail.com', 'hotmail.com', 'outlook.com', 'yahoo.com', 'gmail', 'hotmail', 'outlook', 'yahoo'] }
   ];
   for (const g of groups) {
@@ -54,12 +56,46 @@ function chatViolationReason(body) {
       if ((wl && lower.includes(wl)) || (wc && compact.includes(wc))) return g.reason;
     }
   }
+  // [H1] أُثبت ديناميكياً (إرسال رسائل حقيقية لسيرفر يعمل فعلياً) أن substring
+  // بلا حدود كلمة لـ"insta"/"t me"/"wa me"/"fb com" يصطاد كلمات إنجليزية عادية
+  // شائعة الاستخدام بالمحادثة: "install"/"installment"/"Instapay" (طريقة دفع
+  // أردنية حقيقية) عبر "insta"، و"chat me"/"text me"/"let me"/"meet me"/"at me"
+  // عبر "t me" (compact يحذف كل المسافات فتتكوّن "tme" من كلمتين منفصلتين
+  // تماماً). الحل: نفس الأنماط لكن بحدود كلمة صريحة (\b) — تصطاد فقط الرمز
+  // المستقل فعلاً (مثل "insta" وحدها، أو "t"/"wa"/"fb" كتوكن منفصل تماماً قبل
+  // مسافة أو نقطة ثم me/com) ولا تُصادف كلمة إنجليزية أطول تحوي نفس الحروف.
+  // fb.../c0m: lower أعلاه يستبدل كل 'o' بـ'0' مسبقاً (لالتقاط أرقام هاتف
+  // مكتوبة بحرف O بدل صفر) فـ"com" تصل هنا "c0m" دوماً.
+  const boundaryChecks = [
+    { reason: 'إنستغرام أو سناب', re: /\binsta\b/ },
+    { reason: 'تيليجرام', re: /\bt[.\s]+me\b/ },
+    { reason: 'واتساب', re: /\bwa[.\s]+me\b/ },
+    { reason: 'فيسبوك أو ماسنجر', re: /\bfb[.\s]+c0m\b/ }
+  ];
+  for (const c of boundaryChecks) {
+    if (c.re.test(lower)) return c.reason;
+  }
   if (/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i.test(original)) return 'بريد إلكتروني';
-  const digits = lower.replace(/[^0-9+]/g, '');
-  const separated = lower.replace(/[^0-9]/g, '');
-  if (/(\+?962|00962)?0?7[789]\d{7}/.test(digits) || /(962|00962)?0?7[789]\d{7}/.test(separated)) return 'رقم هاتف';
-  if (/\d{10,}/.test(separated)) return 'رقم هاتف';
-  if (separated.length >= 9 && /^(0?7|9627|009627)/.test(separated)) return 'رقم هاتف';
+  // [H1] كانت أرقام الرسالة كلها (بصرف النظر عن موقعها بالجملة) تُلصَق ببعضها
+  // كسلسلة واحدة قبل الفحص — أُثبت ديناميكياً أن رقمين غير مرتبطين بجملة
+  // واحدة (مثل وقت الوصول "7" ورقم الباب "12345678"، أو رقم الطابق + رقم
+  // الشقة + رقم الطلب) قد يتلاصقان مصادفة فيبدوان كرقم هاتف فتُرفض رسالة
+  // عادية تماماً. الفحص الآن على مستوى "مقطع أرقام متصل" فعلي فقط (قد يحوي
+  // مسافات/شرطات ضمنه فقط — كصيغة كتابة رقم هاتف حقيقي)، وليس كل أرقام
+  // الرسالة مجتمعة. digitNormalized (تطبيع أرقام عربية/فارسية + O⇐0) قبل
+  // الاستخراج حتى لا يُفقَد اصطياد رقم مموَّه بحرف O وسط تسلسل أرقام متصل.
+  // ملاحظة: مقطع مستقل من 10 خانات فأكثر (بلا سياق) يبقى يُرفض عمداً — لا
+  // يمكن تمييزه عن رقم هاتف حقيقي بلا صفر بداية، وهذا تحفّظ مقصود لا يجوز إضعافه.
+  const digitNormalized = original
+    .replace(/[٠-٩]/g, ch => String('٠١٢٣٤٥٦٧٨٩'.indexOf(ch)))
+    .replace(/[۰-۹]/g, ch => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch)))
+    .replace(/[oO]/g, '0');
+  const numberRuns = digitNormalized.match(/\+?[0-9](?:[0-9\s-]*[0-9])?/g) || [];
+  for (const run of numberRuns) {
+    const cleaned = run.replace(/[\s-]/g, '');
+    if (/^(\+?962|00962)?0?7[789]\d{7}$/.test(cleaned)) return 'رقم هاتف';
+    if (cleaned.replace(/[^0-9]/g, '').length >= 10) return 'رقم هاتف';
+  }
   return '';
 }
 

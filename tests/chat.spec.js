@@ -130,6 +130,55 @@ test.describe.serial('الدردشة على الطلبات', () => {
     expect(res.status()).toBe(400);
   });
 
+  // [H1] أُثبتت هذه الحالات عبر اختبار ديناميكي حقيقي (سيرفر يعمل فعلياً)
+  // أنها كانت تُرفض خطأً قبل الإصلاح — رسائل عادية تماماً لا علاقة لها
+  // بمشاركة تواصل خارج التطبيق، لكنها كانت تُصادف substring بلا حدود كلمة.
+  const shouldPassMessages = [
+    ['هل ممكن الدفع بالتقسيط installment؟', 'installment تحوي insta كـsubstring'],
+    ['بدي أدفع Instapay ممكن؟', 'Instapay تحوي insta كـsubstring'],
+    ['لازم install تطبيق تاني عشان يشتغل معاك صح', 'install تحوي insta كـsubstring'],
+    ['ممكن chat me لو في استفسار', 'chatme (بعد حذف المسافة) تحوي tme'],
+    ['let me check and reply بعد شوي', 'letme تحوي tme'],
+    ['meet me at the door please', 'meetme تحوي tme'],
+    ['at me if you need anything', 'atme تحوي tme'],
+    ['if u need help text me anytime', 'textme تحوي tme'],
+    ['الساعة 7 والباب رقم 12345678', 'رقمان غير مرتبطين بجملة واحدة (وقت + رقم باب) تلاصقا صدفة'],
+    ['الطابق 3 والشقة رقم 45، والطلب رقم 6789012', 'ثلاثة أرقام غير مرتبطة تلاصقت صدفة لتشكّل نمطاً يشبه رقم هاتف'],
+  ];
+  for (const [text, why] of shouldPassMessages) {
+    test(`POST /requests/:id/messages — [H1] رسالة عادية لا تُرفض خطأً (${why})`, async ({ request }) => {
+      const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+        headers: authHeader(customer.token),
+        form: { body: text },
+      });
+      expect(res.status()).toBe(200);
+    });
+  }
+
+  // [H1] يثبت أن الإصلاح لم يُضعف الحماية الفعلية — نفس الأنماط لكن بصيغتها
+  // الحقيقية (توكن مستقل فعلاً لـ"insta"/"t me"، ورقم هاتف بحرف O مموَّه وسط
+  // تسلسل متصل) تبقى تُرفض تماماً كما قبل.
+  const shouldStillBlockMessages = [
+    ['follow me on insta', 'إنستغرام أو سناب'],
+    ['أضفني ع الـ insta', 'إنستغرام أو سناب'],
+    ['t.me/username', 'تيليجرام'],
+    ['t me/username', 'تيليجرام'],
+    ['wa.me/962791234567', 'واتساب'],
+    ['fb.com/myprofile', 'فيسبوك أو ماسنجر'],
+    ['اتصل فيني ع O79-123-4567', 'رقم هاتف'],
+    ['رقمي 079-123-4567', 'رقم هاتف'],
+    ['رقمي +962791234567', 'رقم هاتف'],
+  ];
+  for (const [text, expectedReason] of shouldStillBlockMessages) {
+    test(`POST /requests/:id/messages — [H1] الحماية الحقيقية بلا إضعاف: "${text}"`, async ({ request }) => {
+      const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+        headers: authHeader(customer.token),
+        form: { body: text },
+      });
+      expect(res.status()).toBe(400);
+    });
+  }
+
   test('POST /requests/:id/messages — يرفض رسالة فارغة', async ({ request }) => {
     const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
       headers: authHeader(customer.token),
