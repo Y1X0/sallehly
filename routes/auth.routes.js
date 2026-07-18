@@ -12,7 +12,7 @@ module.exports = function (deps) {
   const { io } = deps.realtime;
   const { auth, upload } = deps.middleware;
   const { sign, sendOtpEmail } = deps.services;
-  const { clean, userPublic } = deps.utils;
+  const { clean, userPublic, anonymizeUser } = deps.utils;
   const { COOKIE_OPTS, BASE } = deps.constants;
   const { registerLimiter, loginLimiter, passwordResetLimiter } = deps.limiters;
   const router = express.Router();
@@ -309,7 +309,17 @@ module.exports = function (deps) {
         error: `لا يمكن حذف حسابك حالياً — رصيدك الحالي ${u.balance} د.أ. تواصل مع الدعم لتصفيته أولاً.`,
       });
     }
-    db.prepare('DELETE FROM users WHERE id=?').run(id);
+    // [FIX-DELETE-CRASH-01] كانت DELETE FROM users هنا ترمي SqliteError
+    // (FOREIGN KEY constraint failed) لأي حساب له سجل واحد فعلي بـrequests/
+    // offers/topups/support_tickets/support_messages — وبما أن هذا الراوت
+    // async بلا try/catch، الاستثناء غير الملتقَط كان يُسقط عملية Node بأكملها
+    // (انظر utils/db-helpers.js لتفاصيل السبب والحل الكامل).
+    try {
+      anonymizeUser(id);
+    } catch (e) {
+      console.error('account deletion failed:', e.message);
+      return res.status(500).json({ error: 'تعذر حذف الحساب، حاول لاحقاً' });
+    }
     // اقطع أي اتصال Socket.IO حي بهذا الحساب فوراً (بدل انتظار انقطاعه لحاله).
     try { io.in(`user-${id}`).disconnectSockets(); } catch (e) {}
     res.clearCookie('token');

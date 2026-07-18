@@ -283,6 +283,12 @@ try { db.prepare('ALTER TABLE users ADD COLUMN suspended_by INTEGER').run(); } c
 // الموجودة (سلوك ADD COLUMN القياسي بـ SQLite)، فلا حاجة لـUPDATE إضافي.
 try { db.prepare("ALTER TABLE chat_violations ADD COLUMN status TEXT NOT NULL DEFAULT 'مفتوح'").run(); } catch (e) {}
 
+// [FIX-DELETE-CRASH-01] راجع utils/db-helpers.js (anonymizeUser) وDECISIONS.md.
+// تُترَك NULL لكل حساب عادي (لا تغيير سلوكي على أي شيء موجود)؛ تُضبَط فقط عند
+// حذف/إخفاء حساب (DELETE /me أو DELETE /admin/users/:id) لتمييزه عن حساب
+// موقوف عادي (is_active=0 لوحده لا يفرّق بين "موقوف مؤقتاً" و"محذوف نهائياً").
+try { db.prepare('ALTER TABLE users ADD COLUMN deleted_at TEXT').run(); } catch (e) {}
+
 // [FIX-CLEANUP-01] كان هنا سابقاً تعريف ثانٍ لجدول complaints بأعمدة مختلفة
 // (customer_id/technician_id بدل user_id/subject/status). بفضل IF NOT EXISTS
 // لم يكن له أي أثر فعلي إطلاقاً — الجدول الحقيقي المُستخدَم فعلياً بكل أرجاء

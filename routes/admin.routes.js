@@ -5,7 +5,7 @@ module.exports = function (deps) {
   const { db, path } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, requireSuperAdmin } = deps.middleware;
-  const { clean, logAudit } = deps.utils;
+  const { clean, logAudit, anonymizeUser } = deps.utils;
   const { createDbBackup } = deps.services;
   const router = express.Router();
 
@@ -295,7 +295,17 @@ module.exports = function (deps) {
     ).get(id, id);
     if (activeRequest) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — عنده طلب نشط رقم ${activeRequest.id}. أنهِ أو ألغِ الطلب أولاً.` });
     if (Number(u.balance || 0) > 0) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — رصيده الحالي ${u.balance} د.أ. صفّر الرصيد أولاً.` });
-    db.prepare('DELETE FROM users WHERE id=?').run(id);
+    // [FIX-DELETE-CRASH-01] راجع utils/db-helpers.js (anonymizeUser) — كانت
+    // DELETE FROM users هنا ترمي SqliteError (FOREIGN KEY constraint failed)
+    // لأي مستخدم له سجل واحد فعلي بـrequests/offers/topups/support_tickets/
+    // support_messages، فيلتقطها معالج الأخطاء العام كخطأ 400 غامض بدل تنفيذ
+    // الحذف فعلياً.
+    try {
+      anonymizeUser(id);
+    } catch (e) {
+      console.error('user deletion failed:', e.message);
+      return res.status(500).json({ error: 'تعذر حذف المستخدم، حاول لاحقاً' });
+    }
     logAudit({
       adminId: req.user.id, actorName: req.user.name,
       action: 'حذف مستخدم نهائياً', targetType: 'user', targetId: id,
