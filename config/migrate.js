@@ -309,6 +309,24 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_user_blocks_blocked ON user_blo
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_messages_request ON messages(request_id)').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_customer ON requests(customer_id)').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_ledger_user ON ledger(user_id)').run(); } catch (e) {}
+// [PERF-HARDEN-01] offers.request_id/technician_id كانا بلا أي فهرس رغم
+// كونهما من أكثر الأعمدة استخداماً بشرط WHERE بكل المشروع (تحقَّق فعلياً:
+// 13+ استدعاءً منفصلاً). الأهم: chat.routes.js يُنفّذ
+// "WHERE request_id=? AND technician_id=?" على offers عند كل رسالة/صورة/صوت
+// يرسلها أي طرف (فحص hasOffer، 6 مواقع منفصلة) — أي هذا الفهرس يُلمَس عملياً
+// على كل تفاعل شات تقريباً، وليس فقط شاشات العروض نفسها. request_id له أيضاً
+// استخدام منفرد (offers.routes.js: عرض/عدّ عروض طلب معيّن)، وtechnician_id
+// له استخدام منفرد آخر (admin/auth: عدّ/عرض عروض فني معيّن) — فهرسان منفصلان
+// بنفس نمط requests.customer_id/technician_id أعلاه بالضبط، بدل فهرس مركّب
+// واحد لا يخدم إلا أحد الاتجاهين بكفاءة.
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_offers_request ON offers(request_id)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_offers_technician ON offers(technician_id)').run(); } catch (e) {}
+// [PERF-HARDEN-01] ratings.technician_id بلا فهرس — يُستخدَم بـ
+// utils/db-helpers.js:calcRating() التي تُنفَّذ synchronously عند كل تقييم
+// جديد (POST /requests/:id/rate) لحساب المعدّل الجديد فوراً، وبـ
+// GET /technicians/:id/profile (بروفايل الفني العام، قد يُفتح كثيراً من
+// عملاء متعدّدين). request_id به بالفعل UNIQUE (مفهرس ضمنياً)، لا حاجة لفهرس إضافي عليه.
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_ratings_technician ON ratings(technician_id)').run(); } catch (e) {}
 // تمت إزالة سطر إعادة تفعيل الفنيين الموقوفين تلقائياً عند كل تشغيل للسيرفر.
 // كان هذا السطر يلغي قرار إيقاف أي فني من الإدارة (بسبب شكوى أو مخالفة) في كل مرة يعاد تشغيل السيرفر أو يتم نشر تحديث جديد.
 // إيقاف/تفعيل الفنيين أصبح بالكامل بيد الإدارة فقط عبر /api/admin/users/:id/toggle.

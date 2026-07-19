@@ -47,8 +47,8 @@ module.exports = function (deps) {
       const baseSql = 'SELECT r.*, c.name customer_name, t.name technician_name FROM requests r JOIN users c ON c.id=r.customer_id LEFT JOIN users t ON t.id=r.technician_id ORDER BY r.id DESC';
 
       if (req.query.page == null && req.query.limit == null) {
-        // [FIX-09] السلوك الافتراضي القديم — بدون أي تغيير لو ما طُلبت صفحات
-        rows = db.prepare(baseSql).all();
+        // [PERF-HARDEN-01] نفس سقف GET /admin/users الوقائي — راجع تعليقه.
+        rows = db.prepare(`${baseSql} LIMIT 2000`).all();
       } else {
         const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
         const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
@@ -70,6 +70,10 @@ module.exports = function (deps) {
       // عدد الطلبات على المنصة كاملة، بغض النظر عن مدى قلة الطلبات الفعلية
       // المطابقة لهذا الفني. الآن: التصفية والانضمام لعرض الفني كلاهما بجملة
       // SQL واحدة (WHERE + LEFT JOIN) بدل تحميل كل شيء وتصفيته لاحقاً.
+      // [PERF-HARDEN-01] فرع r.technician_id=? هنا يشمل كل طلبات الفني بأي
+      // حالة (بلا قيد على status)، فينمو بلا حدود مع طول عمر الحساب. سقف 1000
+      // وقائي بحت — ORDER BY r.id DESC يضمن بقاء الأحدث (وأي عمل نشط حالياً
+      // منطقياً حديث العمر) دائماً ضمن النطاق المُرجَع.
       if (sv.length > 0) {
         const placeholders = sv.map(() => '?').join(',');
         rows = db.prepare(`
@@ -81,6 +85,7 @@ module.exports = function (deps) {
              OR (r.status IN ('بانتظار العروض','وصلت عروض') AND r.service IN (${placeholders})
                  AND (r.city = ? OR (? != '' AND instr(?, r.city) > 0) OR (r.area IS NOT NULL AND r.area != '' AND ? != '' AND instr(?, r.area) > 0)))
           ORDER BY r.id DESC
+          LIMIT 1000
         `).all(req.user.id, req.user.id, ...sv, me.city, me.areas || '', me.areas || '', me.areas || '', me.areas || '');
       } else {
         rows = db.prepare(`
@@ -90,6 +95,7 @@ module.exports = function (deps) {
           LEFT JOIN offers o ON o.request_id = r.id AND o.technician_id = ? AND o.status='pending'
           WHERE r.technician_id = ?
           ORDER BY r.id DESC
+          LIMIT 1000
         `).all(req.user.id, req.user.id);
       }
       // LEFT JOIN يرجّع null صراحة لغياب العرض؛ السلوك القديم كان يحذف

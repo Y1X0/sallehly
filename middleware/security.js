@@ -5,9 +5,16 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { IS_PROD, ALLOWED_ORIGINS } = require('../config/env');
 
+// [PERF-HARDEN-01] كان max=20 ثابتاً بلا استثناء بيئة الاختبار — الوحيد بين
+// كل الحدود الخمسة بهذا الملف بلا نمط IS_PROD الموجود بباقيها. بما أن هذا
+// الحد يُحسَب على مستوى IP واحد (127.0.0.1 لكل عمليات Playwright)، وتسجيلات
+// دخول الأدمن تتكرر عبر عشرات الاختبارات المختلفة بنفس تشغيلة الاختبارات،
+// أي إضافة اختبار جديد يسجّل دخول الأدمن كانت قادرة فعلياً (وأثبتت ذلك) على
+// تجاوز الحد فتُفشل اختبارات لاحقة بـ429 لا علاقة لها بما تختبره فعلياً.
+// الإنتاج (IS_PROD=true) يبقى بلا أي تغيير: الحد الحقيقي يبقى 20 تماماً.
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: IS_PROD ? 20 : 1000,
   message: { error: 'محاولات تسجيل دخول كثيرة، حاول بعد 15 دقيقة' },
   standardHeaders: true,
   legacyHeaders: false

@@ -69,12 +69,18 @@ module.exports = function (deps) {
 
   // [FIX-09] Pagination اختيارية: لو ما أُرسل page/limit، السلوك يبقى بالضبط كما كان
   // (يرجع كل المستخدمين) — حتى لا يخرب أي عميل حالي (تطبيق الموبايل) لا يرسل هذه المعاملات.
+  // [PERF-HARDEN-01] "بالضبط كما كان" كان يعني بلا أي سقف إطلاقاً — أُثبت
+  // قياسياً (تحقيق بطء الخادم) أن هذا الاستعلام تحديداً بلا LIMIT يحجز عملية
+  // Node بأكملها لمدة تفوق 700ms عند نمو الجدول لعشرات الآلاف من الصفوف
+  // (better-sqlite3 متزامن)، ما يؤخر كل طلب آخر من أي مستخدم آخر بنفس اللحظة
+  // بغض النظر عن علاقته بهذا الطلب. 2000 سقف وقائي بحت لا علاقة له بالسلوك
+  // الحالي — لا يوجد سيناريو واقعي حالي لهذا التطبيق فيه أكثر من 2000 مستخدم
+  // مسجَّل، فهذا لا يُغيّر أي استجابة فعلية اليوم، فقط يمنع الانهيار المستقبلي.
   router.get('/admin/users', auth, requireRole('admin'), (req, res) => {
     const baseSql = 'SELECT id,role,name,email,phone,national_number,city,areas,services,is_active,balance,free_orders_used,rating_avg,rating_count,completed_jobs,created_at FROM users ORDER BY id DESC';
 
     if (req.query.page == null && req.query.limit == null) {
-      // السلوك الافتراضي القديم — بدون أي تغيير
-      return res.json({ users: db.prepare(baseSql).all() });
+      return res.json({ users: db.prepare(`${baseSql} LIMIT 2000`).all() });
     }
 
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);

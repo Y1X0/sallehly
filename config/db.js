@@ -10,6 +10,15 @@ const { migrate } = require('./migrate');
 
 const db = new Database(path.join(DATA_DIR, 'sallehly.sqlite'));
 db.pragma('journal_mode = WAL');
+// [PERF-HARDEN-01] synchronous لم يكن مضبوطاً صراحة، فيبقى على الافتراضي
+// العام لـSQLite (FULL) حتى مع WAL — كل كتابة (INSERT/UPDATE) تنتظر fsync
+// كامل قبل أن تُرجع. NORMAL هو الإعداد الموصى به رسمياً من توثيق SQLite نفسه
+// تحديداً مع journal_mode=WAL (https://www.sqlite.org/pragma.html#pragma_synchronous):
+// لا يزال يضمن عدم تلف قاعدة البيانات إطلاقاً (لا فرق هنا مقارنة بـFULL)، والفرق
+// الوحيد نظرياً هو احتمال ضياع آخر معاملة/معاملتين لو انقطعت الكهرباء أو
+// انهار نظام التشغيل بالكامل بين لحظة الـcommit ولحظة كتابة القرص فعلياً —
+// لا علاقة له بانهيار التطبيق نفسه (Node crash)، الذي يبقى محمياً بالكامل.
+db.pragma('synchronous = NORMAL');
 
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 fs.mkdirSync(BACKUP_DIR, { recursive: true });

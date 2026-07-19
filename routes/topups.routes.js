@@ -26,8 +26,12 @@ module.exports = function (deps) {
     res.json({ topup: db.prepare('SELECT * FROM topups WHERE id=?').get(info.lastInsertRowid) });
   });
 
+  // [PERF-HARDEN-01] فرع الأدمن (كل طلبات الشحن على المنصة) كان بلا سقف —
+  // نفس المخاطرة المُثبتة بـGET /admin/users. فرع الفني (سطر تحته) لا يحتاج
+  // سقفاً مماثلاً: محصور بمعرّف الفني نفسه (WHERE technician_id=?) فلن ينمو
+  // بلا حدود مهما كبرت المنصة.
   router.get('/topups', auth, (req, res) => {
-    if (req.user.role === 'admin') return res.json({ topups: db.prepare('SELECT tp.*,u.name technician_name,u.phone,p.name package_name FROM topups tp JOIN users u ON u.id=tp.technician_id JOIN packages p ON p.id=tp.package_id ORDER BY tp.id DESC').all() });
+    if (req.user.role === 'admin') return res.json({ topups: db.prepare('SELECT tp.*,u.name technician_name,u.phone,p.name package_name FROM topups tp JOIN users u ON u.id=tp.technician_id JOIN packages p ON p.id=tp.package_id ORDER BY tp.id DESC LIMIT 2000').all() });
     res.json({ topups: db.prepare('SELECT tp.*,p.name package_name FROM topups tp JOIN packages p ON p.id=tp.package_id WHERE technician_id=? ORDER BY id DESC').all(req.user.id) });
   });
 

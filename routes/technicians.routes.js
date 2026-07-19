@@ -31,7 +31,11 @@ module.exports = function (deps) {
     if (wanted) { const w = escapeLike(wanted); sql += " AND (services LIKE ? OR name LIKE ?)"; params.push('%' + w + '%', '%' + w + '%'); }
     if (city) { const c = escapeLike(city); sql += " AND (city=? OR areas LIKE ?)"; params.push(city, '%' + c + '%'); }
     if (area) { const a = escapeLike(area); sql += " AND (areas LIKE ? OR city=?)"; params.push('%' + a + '%', city || area); }
-    sql += ' ORDER BY rating_avg DESC, completed_jobs DESC, created_at DESC';
+    // [PERF-HARDEN-01] بلا سقف سابقاً — endpoint عام يستخدمه كل عميل يبحث عن
+    // فني، بلا أي حد أقصى للنتائج المُرجَعة. 500 سقف وقائي بحت (لا يوجد
+    // سيناريو واقعي حالي فيه أكثر من 500 نتيجة مطابقة لبحث واحد) يمنع نمو
+    // الاستجابة بلا حدود مع نمو عدد الفنيين المسجَّلين مستقبلاً.
+    sql += ' ORDER BY rating_avg DESC, completed_jobs DESC, created_at DESC LIMIT 500';
     res.json({ technicians: db.prepare(sql).all(...params) });
   });
 

@@ -44,8 +44,11 @@ module.exports = function (deps) {
     res.json({ ticket });
   });
 
+  // [PERF-HARDEN-01] بلا سقف سابقاً — نفس المخاطرة المُثبتة بـGET /admin/users
+  // (استعلام متزامن يحجز عملية Node بأكملها لمدة تتناسب مع حجم الجدول). 1000
+  // سقف وقائي، ليس له أي أثر على أي استخدام حالي واقعي لهذا التطبيق.
   router.get('/support', auth, requireRole('admin'), (req, res) => {
-    res.json({ tickets: db.prepare(`SELECT t.*,u.name user_name,u.role user_role,u.email FROM support_tickets t LEFT JOIN users u ON u.id=t.user_id ORDER BY t.id DESC`).all() });
+    res.json({ tickets: db.prepare(`SELECT t.*,u.name user_name,u.role user_role,u.email FROM support_tickets t LEFT JOIN users u ON u.id=t.user_id ORDER BY t.id DESC LIMIT 1000`).all() });
   });
 
   router.post('/support/:id/status', auth, requireRole('admin'), (req, res) => {
@@ -98,6 +101,7 @@ module.exports = function (deps) {
     res.json({ ok: true, complaint });
   });
 
+  // [PERF-HARDEN-01] بلا سقف سابقاً — نفس المخاطرة المُثبتة بـGET /admin/users.
   router.get('/complaints', auth, requireRole('admin'), (req, res) => {
     // technician_id مش عمود موجود بجدول complaints — نجيبه عبر الربط مع جدول requests بدلاً منه.
     const complaints = db.prepare(`
@@ -110,6 +114,7 @@ module.exports = function (deps) {
       LEFT JOIN requests r ON r.id = c.request_id
       LEFT JOIN users t  ON t.id  = r.technician_id
       ORDER BY c.id DESC
+      LIMIT 1000
     `).all();
     res.json({ complaints });
   });
