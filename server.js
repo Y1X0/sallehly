@@ -15,11 +15,8 @@ const fs = require('fs');
 const env = require('./config/env');
 const { db, createDbBackup } = require('./config/db');
 const createApp = require('./app');
-// [TEMP-PERF-TRACE] أداة قياس مؤقتة فقط لتشخيص رسالة "الخادم يستغرق وقتاً" —
-// لا تغيّر أي منطق. انظر middleware/perf-trace.js للتفاصيل وطريقة الإزالة.
-const { installPerfTrace, wrapDbForPerfTrace, clientLogRoute } = require('./middleware/perf-trace');
-// [PERF-HARDEN-01] مراقبة أداء دائمة اختيارية، مُعطّلة افتراضياً — منفصلة
-// عن أداة التشخيص المؤقتة أعلاه. انظر middleware/perf-monitor.js.
+// [PERF-HARDEN-01] مراقبة أداء دائمة اختيارية، مُعطّلة افتراضياً. انظر
+// middleware/perf-monitor.js.
 const { installPerfMonitor } = require('./middleware/perf-monitor');
 const { auth, requireRole, requireSuperAdmin, sign } = require('./middleware/auth');
 const utilsHelpers = require('./utils/helpers');
@@ -32,16 +29,23 @@ const { createSocket } = require('./services/socket');
 
 const app = createApp();
 
-// [TEMP-PERF-TRACE] يجب تركيبها هنا (أول شيء بعد إنشاء app، قبل أي route)
-// حتى تقيس المدة الكاملة لكل طلب /api/*. wrapDbForPerfTrace يلف db.prepare
-// فقط لقياس مدة .get()/.all()/.run() — لا يغيّر القيم المُرجَعة ولا رمي الأخطاء.
-installPerfTrace(app);
-wrapDbForPerfTrace(db);
-app.post('/api/_debug/client-log', clientLogRoute);
-
 // [PERF-HARDEN-01] لا شيء يحدث هنا ما لم يُفعَّل PERF_LOG_ENABLED صراحةً
 // بمتغيرات البيئة — انظر تعليق middleware/perf-monitor.js.
 installPerfMonitor(app);
+
+// [PERF-HARDEN-04] فحص صحة خفيف لمنصة النشر/أدوات المراقبة الخارجية —
+// بلا مصادقة عمداً (نفس اتفاقية فحوصات الصحة القياسية)، بلا حد طلبات (تُستدعى
+// بشكل متكرر من مراقبات خارجية)، وبفحص فعلي بسيط لقاعدة البيانات (SELECT 1)
+// بدل مجرد "200 دائماً" — لو تعطّلت قاعدة البيانات فعلياً، يجب أن يعكس هذا
+// الفحص ذلك بدل الإبلاغ بصحة كاذبة.
+app.get('/health', (req, res) => {
+  try {
+    db.prepare('SELECT 1').get();
+    res.status(200).json({ status: 'ok', uptime: process.uptime() });
+  } catch (e) {
+    res.status(503).json({ status: 'error' });
+  }
+});
 
 // Socket.IO يحتاج app جاهز (بيلف عليه بـ http.createServer)، فلازم ننشئه بعد app مباشرة
 // وقبل ما نوصل الـ routes (الـ routes محتاجة io عشان ترسل تحديثات لحظية).
