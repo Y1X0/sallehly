@@ -16,6 +16,7 @@ module.exports = function (deps) {
   router.use(require('./topups.routes')(deps));
   router.use(require('./admin.routes')(deps));
   router.use(require('./support.routes')(deps));
+  router.use(require('./notifications.routes')(deps));
 
   return router;
 };
