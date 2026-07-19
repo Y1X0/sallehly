@@ -2,7 +2,10 @@
 // دوال مساعدة بتحتاج db. منعملها factory حتى ما في أي require دائري
 // (هالملف ما بعمل require لأي route أو لـ config/db مباشرة، الـ db بتنمرر له).
 
-const bcrypt = require('bcryptjs');
+// [PERF-05] bcryptjs -> bcrypt (native) — see routes/auth.routes.js. This
+// file's only use (anonymizeUser) is a throwaway low-cost hash never checked
+// against a real login; hashSync() signature is identical either way.
+const bcrypt = require('bcrypt');
 
 function createDbHelpers(db) {
   // [FIX-DELETE-CRASH-01] راجع DECISIONS.md — القرار الموثَّق كان "حذف فعلي
