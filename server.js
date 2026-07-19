@@ -21,6 +21,7 @@ const { installPerfMonitor } = require('./middleware/perf-monitor');
 const { auth, requireRole, requireSuperAdmin, sign } = require('./middleware/auth');
 const utilsHelpers = require('./utils/helpers');
 const { createDbHelpers } = require('./utils/db-helpers');
+const { createNotificationHelper } = require('./utils/notification');
 const { upload, uploadAudio } = require('./middleware/upload');
 const security = require('./middleware/security');
 const { sendOtpEmail } = require('./services/email');
@@ -51,6 +52,10 @@ app.get('/health', (req, res) => {
 // وقبل ما نوصل الـ routes (الـ routes محتاجة io عشان ترسل تحديثات لحظية).
 const { server, io, safeEmit } = createSocket(app);
 const dbHelpers = createDbHelpers(db);
+// [NOTIF-PHASE1] راجع utils/notification.js — طبقة تخزين إشعارات دائمة فقط،
+// غير مربوطة بأي route بعد بهذه المرحلة. نفس نمط dbHelpers أعلاه بالضبط
+// (factory تاخد db، تُنشَر بـdeps.utils).
+const notificationHelper = createNotificationHelper(db);
 
 // كل شي محتاجه أي route — مجمّع بمجموعات واضحة، ما في أي require متبادل بين الملفات.
 const deps = {
@@ -58,7 +63,7 @@ const deps = {
   realtime: { io, safeEmit },
   middleware: { auth, requireRole, requireSuperAdmin, upload, uploadAudio },
   services: { sendOtpEmail, sendPush, createDbBackup, sign },
-  utils: { ...utilsHelpers, ...dbHelpers },
+  utils: { ...utilsHelpers, ...dbHelpers, ...notificationHelper },
   limiters: {
     loginLimiter: security.loginLimiter,
     registerLimiter: security.registerLimiter,

@@ -203,6 +203,28 @@ CREATE TABLE IF NOT EXISTS audit_logs(
   details TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+-- [NOTIF-PHASE1] أساس تخزين دائم للإشعارات — راجع utils/notification.js.
+-- طبقة تخزين فقط بهذه المرحلة: لا يوجد أي مسار حالياً يكتب لهذا الجدول
+-- (notify() موجودة كدالة معزولة، غير مربوطة بأي route أو socket/push بعد)،
+-- ولا يوجد أي endpoint قراءة (GET) بعد — كلاهما بمراحل لاحقة. request_id/
+-- ticket_id اختياريان (NULL) لأن أنواع إشعارات مستقبلية (مثلاً 'service')
+-- لا ترتبط بطلب أو تذكرة دعم محددة؛ SQLite لا يفرض قيد FOREIGN KEY على قيمة NULL.
+CREATE TABLE IF NOT EXISTS notifications(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT,
+  data TEXT,
+  request_id INTEGER,
+  ticket_id INTEGER,
+  is_read INTEGER NOT NULL DEFAULT 0,
+  read_at TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(user_id) REFERENCES users(id),
+  FOREIGN KEY(request_id) REFERENCES requests(id),
+  FOREIGN KEY(ticket_id) REFERENCES support_tickets(id)
+);
 `);
 
 // تحديث قواعد البيانات القديمة بدون حذف البيانات
@@ -343,6 +365,13 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)').run
 // على أي تذكرة دعم يفحص كامل تاريخ رسائل الدعم عبر كل المستخدمين. إضافي
 // بالكامل، idempotent، لا يُغيّر أي بيانات أو سلوك.
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_support_messages_ticket ON support_messages(ticket_id)').run(); } catch (e) {}
+// [NOTIF-PHASE1] فهرسان لجدول notifications الجديد أعلاه — نفس نمط
+// idx_support_messages_ticket تماماً (عمود أجنبي كثير الاستخدام بشرط WHERE).
+// user_id+created_at يخدم "أحدث إشعاراتي أولاً" (المرحلة القادمة، GET
+// /notifications)، وuser_id+is_read يخدم عدّاد/تصفية غير المقروء لاحقاً.
+// إضافيان بالكامل، idempotent، لا يُغيّران أي بيانات أو سلوك حالي.
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read)').run(); } catch (e) {}
 // تمت إزالة سطر إعادة تفعيل الفنيين الموقوفين تلقائياً عند كل تشغيل للسيرفر.
 // كان هذا السطر يلغي قرار إيقاف أي فني من الإدارة (بسبب شكوى أو مخالفة) في كل مرة يعاد تشغيل السيرفر أو يتم نشر تحديث جديد.
 // إيقاف/تفعيل الفنيين أصبح بالكامل بيد الإدارة فقط عبر /api/admin/users/:id/toggle.
