@@ -3,7 +3,7 @@
 // يعمل على سيرفر وقاعدة بيانات اختبار منفصلين بالكامل (راجع playwright.config.js).
 
 const { test, expect } = require('@playwright/test');
-const { getPendingOtp } = require('./helpers/db');
+const { getPendingOtp, openTestDb } = require('./helpers/db');
 
 function uniqueEmail() {
   return `test-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`;
@@ -223,5 +223,45 @@ test.describe('[PERF-04] تحديث كلمة سر متزامن لحسابين م
     ]);
     expect((await meA.json()).user.email).toBe(userA.email);
     expect((await meB.json()).user.email).toBe(userB.email);
+  });
+});
+
+// [PERF-HARDEN-03] يحاكي مباشرة الحالة النادرة التي يمكن أن تحدث فيها نافذة
+// تسابق ضيقة بمسار /auth/register (بين فحص وجود الإيميل وإدراج صف pending_users
+// الفعلي يوجد await واحد — bcrypt.hash — يسمح لطلب آخر بالتنفيذ بالمنتصف):
+// أكثر من صف pending_users بنفس الإيميل. بدون ORDER BY id DESC LIMIT 1 صريح،
+// .get() قد يُرجع أقدم صف بدل آخر محاولة فعلية للمستخدم.
+test.describe('[PERF-HARDEN-03] pending_users — الصف الأحدث دائماً هو المُعتمَد عند تعدّد الصفوف', () => {
+  test('POST /auth/verify-otp يقبل كود آخر محاولة تسجيل، ويرفض كود محاولة أقدم لنفس الإيميل', async ({ request }) => {
+    const email = uniqueEmail();
+    const db = openTestDb();
+    let oldOtp, newOtp;
+    try {
+      oldOtp = '111111';
+      newOtp = '222222';
+      const data = JSON.stringify({
+        role: 'customer', name: 'مستخدم اختبار السباق', email, phone: uniquePhone(),
+        hash: '$2a$12$dummyhashdummyhashdummyhashdummyhashdummyhash', national_number: '', city: 'عمان', services: '', areas: '',
+      });
+      const insert = db.prepare(
+        'INSERT INTO pending_users(email,otp,otp_expires,data,avatar_filename) VALUES(?,?,?,?,?)'
+      );
+      // الصف الأقدم أولاً (id أصغر)، ثم الأحدث (id أكبر) — محاكاة لمحاولتَي
+      // تسجيل متتاليتين بلا حذف بينهما (بالضبط ما قد ينتج عن نافذة التسابق).
+      insert.run(email, oldOtp, Date.now() + 10 * 60 * 1000, data, '');
+      insert.run(email, newOtp, Date.now() + 10 * 60 * 1000, data, '');
+    } finally {
+      db.close();
+    }
+
+    // كود المحاولة الأقدم يُرفض — لو كان .get() يُرجع الصف الأقدم لكان هذا يُقبَل خطأً.
+    const oldAttempt = await request.post('/api/auth/verify-otp', { form: { email, otp: oldOtp } });
+    expect(oldAttempt.status()).toBe(400);
+
+    // كود المحاولة الأحدث (الفعلية) يُقبَل وينشئ الحساب بنجاح.
+    const newAttempt = await request.post('/api/auth/verify-otp', { form: { email, otp: newOtp } });
+    expect(newAttempt.status()).toBe(200);
+    const body = await newAttempt.json();
+    expect(body.user.email).toBe(email);
   });
 });

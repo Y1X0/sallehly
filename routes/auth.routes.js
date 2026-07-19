@@ -18,7 +18,17 @@ module.exports = function (deps) {
   const router = express.Router();
 
   // ── STEP 1: تقبّل البيانات، تحقق منها، ابعث OTP ──────────────────────────
+  // [PERF-HARDEN-03] راجع نفس تعليق FIX-DELETE-CRASH-01 بـutils/db-helpers.js:
+  // أي راوت async بلا try/catch يحيط الجسم كاملاً، لو رمى استثناءً غير متوقّع
+  // (خطأ قاعدة بيانات نادر، قرص ممتلئ...) يصبح "unhandled promise rejection"
+  // يُسقط عملية Node بأكملها فوراً — يقطع اتصال كل المستخدمين المتصلين حينها،
+  // وليس فقط هذا الطلب. أُثبت هذا فعلياً بتجربة مباشرة (Audit إنتاجية
+  // 2026-07-19)، وهو نفس السبب الجذري الذي ضرب DELETE /me سابقاً بالضبط، لم
+  // يكن قد طُبِّق بعد على باقي راوتات async المشابهة بهذا الملف. try/catch هنا
+  // لا يغيّر أي مسار نجاح أو رسالة خطأ حالية (كل return res.status(...)
+  // الموجودة تبقى كما هي تماماً) — يضيف فقط شبكة أمان لحالة الفشل غير المتوقّع.
   router.post('/auth/register', registerLimiter, upload.single('avatar'), async (req, res) => {
+   try {
     const role = clean(req.body.role);
     const name = clean(req.body.name || req.body.full_name || req.body.fullName || req.body.username);
     const email = clean(req.body.email).toLowerCase();
@@ -67,6 +77,10 @@ module.exports = function (deps) {
     if (!sent) return res.status(500).json({ error: 'تعذر إرسال البريد، حاول مرة أخرى' });
 
     res.json({ ok: true, step: 'verify', message: 'تم إرسال كود التحقق إلى بريدك الإلكتروني', email });
+   } catch (e) {
+     console.error('register failed:', e.message);
+     res.status(500).json({ error: 'تعذر إنشاء الحساب، حاول مرة أخرى' });
+   }
   });
 
   // ── STEP 2: التحقق من OTP وإنشاء الحساب ─────────────────────────────────
@@ -74,7 +88,15 @@ module.exports = function (deps) {
     const email = clean(req.body.email).toLowerCase();
     const otp = clean(req.body.otp);
 
-    const pending = db.prepare('SELECT * FROM pending_users WHERE email=?').get(email);
+    // [PERF-HARDEN-03] ORDER BY id DESC — بلا هذا، لو وُجد أكثر من صف معلّق
+    // بنفس الإيميل (نافذة تسابق ضيقة: طلبَي تسجيل/إعادة تعيين متزامنَين
+    // فعلياً لنفس الإيميل، بينهما نقطة await واحدة بجسم /auth/register تسمح
+    // لطلب آخر بالتنفيذ في المنتصف)، .get() بلا ترتيب صريح قد يُرجع أقدم صف
+    // بدل آخر محاولة فعلية للمستخدم — فيُقارَن الكود المُدخَل بكود قديم مختلف.
+    // DELETE-ثم-INSERT بمسار /auth/register يمنع هذا بالمسار الطبيعي المتسلسل؛
+    // هذا فقط يجعل الحالة النادرة المتبقية سلوكها صحيحاً (يأخذ الأحدث دائماً)
+    // بدل الاعتماد على ترتيب غير مضمون بمحرك SQLite.
+    const pending = db.prepare('SELECT * FROM pending_users WHERE email=? ORDER BY id DESC LIMIT 1').get(email);
     if (!pending) return res.status(400).json({ error: 'لا يوجد طلب تسجيل لهذا البريد، أعد التسجيل' });
 
     if (Date.now() > pending.otp_expires) {
@@ -109,7 +131,11 @@ module.exports = function (deps) {
     }
   });
 
+  // [PERF-HARDEN-03] راجع تعليق [PERF-HARDEN-03] أعلى /auth/register — نفس
+  // شبكة الأمان بالضبط، وهذا أكثر مسار بالتطبيق كله استدعاءً (كل محاولة دخول)،
+  // فأي استثناء غير متوقّع هنا كان أخطر ما يمكن أن يُسقط الخادم بأكمله.
   router.post('/auth/login', loginLimiter, async (req, res) => {
+   try {
     const email = clean(req.body.email).toLowerCase();
     const password = String(req.body.password || '');
     if (password.length > 72) return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
@@ -124,6 +150,10 @@ module.exports = function (deps) {
     if (!user || !valid) return res.status(401).json({ error: 'بيانات الدخول غير صحيحة' });
     if (!user.is_active) return res.status(403).json({ error: 'الحساب موقوف' });
     const token = sign(user); res.cookie('token', token, COOKIE_OPTS); res.json({ user: userPublic(user), token });
+   } catch (e) {
+     console.error('login failed:', e.message);
+     res.status(500).json({ error: 'تعذر تسجيل الدخول، حاول مرة أخرى' });
+   }
   });
   // [SEC-FIX-09] لا يشترط auth() صراحة (يبقى نفس السلوك السابق تماماً حتى لو
   // كان التوكن منتهياً/غير صالح أصلاً — يرجع {ok:true} دائماً)، لكن لو كان
@@ -145,7 +175,9 @@ module.exports = function (deps) {
   });
 
   // ── Forgot Password: خطوة 1 — إرسال OTP لإعادة التعيين ──────────────────
+  // [PERF-HARDEN-03] راجع تعليق [PERF-HARDEN-03] أعلى /auth/register.
   router.post('/auth/forgot-password', passwordResetLimiter, async (req, res) => {
+   try {
     const email = clean(req.body.email || '').toLowerCase();
     if (!validator.isEmail(email)) return res.status(400).json({ error: 'البريد الإلكتروني غير صحيح' });
     const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
@@ -163,6 +195,10 @@ module.exports = function (deps) {
     const sent = await sendOtpEmail(email, otp, user.name);
     if (!sent) return res.status(500).json({ error: 'تعذر إرسال البريد، حاول مرة أخرى' });
     res.json({ ok: true, message: 'تم إرسال كود التحقق على بريدك الإلكتروني' });
+   } catch (e) {
+     console.error('forgot-password failed:', e.message);
+     res.status(500).json({ error: 'تعذر إرسال البريد، حاول مرة أخرى' });
+   }
   });
 
   // ── Forgot Password: خطوة 2 — التحقق وإعادة التعيين ─────────────────────
@@ -173,7 +209,15 @@ module.exports = function (deps) {
     if (!validator.isEmail(email)) return res.status(400).json({ error: 'البريد غير صحيح' });
     if (newPassword.length < 8) return res.status(400).json({ error: 'كلمة السر يجب أن تكون 8 أحرف على الأقل' });
     if (newPassword.length > 72) return res.status(400).json({ error: 'كلمة السر طويلة جداً' });
-    const pending = db.prepare('SELECT * FROM pending_users WHERE email=?').get(email);
+    // [PERF-HARDEN-03] ORDER BY id DESC — بلا هذا، لو وُجد أكثر من صف معلّق
+    // بنفس الإيميل (نافذة تسابق ضيقة: طلبَي تسجيل/إعادة تعيين متزامنَين
+    // فعلياً لنفس الإيميل، بينهما نقطة await واحدة بجسم /auth/register تسمح
+    // لطلب آخر بالتنفيذ في المنتصف)، .get() بلا ترتيب صريح قد يُرجع أقدم صف
+    // بدل آخر محاولة فعلية للمستخدم — فيُقارَن الكود المُدخَل بكود قديم مختلف.
+    // DELETE-ثم-INSERT بمسار /auth/register يمنع هذا بالمسار الطبيعي المتسلسل؛
+    // هذا فقط يجعل الحالة النادرة المتبقية سلوكها صحيحاً (يأخذ الأحدث دائماً)
+    // بدل الاعتماد على ترتيب غير مضمون بمحرك SQLite.
+    const pending = db.prepare('SELECT * FROM pending_users WHERE email=? ORDER BY id DESC LIMIT 1').get(email);
     if (!pending) return res.status(400).json({ error: 'انتهت صلاحية الكود أو لم تطلبه، أعد المحاولة' });
     if (Date.now() > pending.otp_expires) {
       db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
@@ -263,7 +307,9 @@ module.exports = function (deps) {
     res.json({ user: userPublic(db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id)) });
   });
 
+  // [PERF-HARDEN-03] راجع تعليق [PERF-HARDEN-03] أعلى /auth/register.
   router.post('/me/password', auth, async (req, res) => {
+   try {
     const current = String(req.body.current_password || '');
     const next = String(req.body.new_password || '');
     const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
@@ -280,6 +326,10 @@ module.exports = function (deps) {
     const token = sign(updated);
     res.cookie('token', token, COOKIE_OPTS);
     res.json({ ok: true, token });
+   } catch (e) {
+     console.error('password change failed:', e.message);
+     res.status(500).json({ error: 'تعذر تغيير كلمة السر، حاول مرة أخرى' });
+   }
   });
 
   // ── حذف الحساب الذاتي (متطلّب سياسة Google Play لحذف الحساب) ──────────
@@ -288,7 +338,13 @@ module.exports = function (deps) {
   // مفاجئ بمنتصف عمل، ولحماية المستخدم نفسه من فقدان رصيد لم يُصرف.
   // بالإضافة لذلك: نطلب كلمة السر الحالية للتأكيد (مثل /me/password تماماً)
   // لأن هذا إجراء نهائي لا رجعة فيه.
+  // [PERF-HARDEN-03] الحماية الأصلية (FIX-DELETE-CRASH-01) كانت مقصورة على
+  // anonymizeUser فقط — الفحوصات قبلها (bcrypt.compare، استعلامَي SELECT)
+  // كانت لا تزال بلا شبكة أمان خارجية. try/catch خارجي هنا يغطيها أيضاً، مع
+  // إبقاء try/catch الداخلي كما هو تماماً (رسالته الخاصة أدق لحالة القيد
+  // الخارجي المعروفة تحديداً).
   router.delete('/me', auth, async (req, res) => {
+   try {
     const id = req.user.id;
     const password = String(req.body.password || '');
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
@@ -324,6 +380,10 @@ module.exports = function (deps) {
     try { io.in(`user-${id}`).disconnectSockets(); } catch (e) {}
     res.clearCookie('token');
     res.json({ ok: true, message: 'تم حذف حسابك بنجاح' });
+   } catch (e) {
+     console.error('account deletion failed (outer):', e.message);
+     res.status(500).json({ error: 'تعذر حذف الحساب، حاول لاحقاً' });
+   }
   });
 
   return router;

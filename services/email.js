@@ -2,7 +2,7 @@
 // إرسال إيميلات الـ OTP عبر Resend. أي تعديل على قالب الإيميل أو مزوّد الإرسال مكانه هون.
 
 const { Resend } = require('resend');
-const { RESEND_API_KEY, RESEND_FROM } = require('../config/env');
+const { RESEND_API_KEY, RESEND_FROM, IS_PROD } = require('../config/env');
 
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
@@ -18,9 +18,20 @@ function escapeHtml(str) {
 
 async function sendOtpEmail(toEmail, otp, name) {
   if (!resend) {
-    // Development fallback: print to console
-    console.log(`\n📧 OTP for ${toEmail}: ${otp}\n`);
-    return true;
+    // [PERF-HARDEN-03] هذا البديل (طباعة الكود على console بدل إرسال إيميل
+    // حقيقي) مقصود فقط للتطوير المحلي (لا RESEND_API_KEY مضبوطاً عمداً).
+    // كان يعمل بلا شرط IS_PROD — لو غاب RESEND_API_KEY بالإنتاج فعلياً بالخطأ
+    // (مفتاح منتهي الصلاحية، خطأ إعداد على منصة النشر...)، كل تسجيل/إعادة
+    // تعيين كلمة سر كان سيُعتبَر "ناجحاً" (return true) بصمت بينما المستخدم لن
+    // يستلم أي إيميل حقيقي إطلاقاً — عطل كامل بصلاحية "نجاح" مضلِّلة بالسجلات،
+    // بدل ظهوره فوراً وبوضوح كخطأ 500 قابل للتشخيص (نفس فلسفة تحقق JWT_SECRET
+    // بـconfig/env.js: فشل واضح أفضل من نجاح وهمي بالإنتاج تحديداً).
+    if (!IS_PROD) {
+      console.log(`\n📧 OTP for ${toEmail}: ${otp}\n`);
+      return true;
+    }
+    console.error('[FATAL] RESEND_API_KEY غير مضبوط بالإنتاج — تعذّر إرسال إيميل التحقق فعلياً.');
+    return false;
   }
   try {
     await resend.emails.send({
