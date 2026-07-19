@@ -5,9 +5,16 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io } = deps.realtime;
   const { auth, requireRole } = deps.middleware;
-  const { clean } = deps.utils;
+  const { clean, notify } = deps.utils;
   const { sendPush } = deps.services;
   const router = express.Router();
+
+  // [NOTIF-PHASE2B-1] نسخة دائمة (جدول notifications) لكل الأدمنية — مستقلة
+  // تماماً عن fcm_token (بعكس استعلامات sendPush بهذا الملف)، لأن الهدف هنا
+  // سجل يظهر لاحقاً حتى لو لم يكن للأدمن توكن Push أو كان socket مقطوعاً وقتها.
+  function getAdminIds() {
+    return db.prepare("SELECT id FROM users WHERE role='admin'").all().map(a => a.id);
+  }
 
   router.post('/support', auth, (req, res) => {
     const { type, title, body } = req.body || {};
@@ -40,6 +47,17 @@ module.exports = function (deps) {
     // [SEC-FIX-03] Support ticket notifications only to admin + ticket owner
     io.to('admin-room').emit('support-created', { ticket });
     io.to(`user-${req.user.id}`).emit('support-created', { ticket });
+
+    // [NOTIF-PHASE2B-1] نسخة دائمة لكل الأدمنية — لا تُبدّل ولا تُلغي البث
+    // اللحظي أعلاه، فقط تضيف سجلاً يبقى حتى لو كان الأدمن غير متصل وقتها.
+    getAdminIds().forEach(adminId => notify({
+      userId: adminId,
+      type: 'support',
+      title: 'تذكرة دعم جديدة',
+      body: `${req.user.name || 'مستخدم'} فتح تذكرة دعم: ${ticket.title}`,
+      data: { ticketId: ticket.id },
+      ticketId: ticket.id
+    }));
 
     res.json({ ticket });
   });
@@ -98,6 +116,18 @@ module.exports = function (deps) {
     // Push للأدمن
     const admins = db.prepare("SELECT fcm_token FROM users WHERE role='admin' AND fcm_token IS NOT NULL").all();
     admins.forEach(a => sendPush(a.fcm_token, '⚠️ شكوى جديدة', `العميل ${req.user.name || ''} قدّم شكوى على طلب #${request_id || ''}`, { type: 'complaint' }));
+
+    // [NOTIF-PHASE2B-1] نسخة دائمة لكل الأدمنية. complaints ليس له عمود مخصّص
+    // بجدول notifications (بعكس request_id/ticket_id) — complaintId يُحفظ
+    // ضمن data فقط، كما هو مطلوب.
+    getAdminIds().forEach(adminId => notify({
+      userId: adminId,
+      type: 'complaint',
+      title: 'شكوى جديدة',
+      body: `العميل ${req.user.name || ''} قدّم شكوى${request ? ` على طلب #${request.id}` : ''}`,
+      data: { complaintId: complaint.id }
+    }));
+
     res.json({ ok: true, complaint });
   });
 
@@ -131,6 +161,18 @@ module.exports = function (deps) {
     db.prepare('UPDATE complaints SET status=? WHERE id=?').run(status, id);
     const complaint = db.prepare('SELECT * FROM complaints WHERE id=?').get(id);
     io.to('admin-room').emit('complaint-status-updated', { complaint });
+
+    // [NOTIF-PHASE2B-1] نسخة دائمة لصاحب الشكوى — complaintId ضمن data فقط
+    // (لا عمود مخصّص له بجدول notifications، بنفس منطق الإنشاء أعلاه).
+    const complaintStatusLabels = { open: 'مفتوحة', in_review: 'قيد المراجعة', resolved: 'تم الحل', rejected: 'مرفوضة' };
+    notify({
+      userId: complaint.user_id,
+      type: 'complaint',
+      title: 'تحديث حالة الشكوى',
+      body: `تم تحديث حالة شكواك إلى: ${complaintStatusLabels[status] || status}`,
+      data: { complaintId: complaint.id }
+    });
+
     res.json({ ok: true, complaint });
   });
 
@@ -222,6 +264,29 @@ module.exports = function (deps) {
         { type: 'support', ticketId: String(req.params.id) }
       ));
     }
+
+    // [NOTIF-PHASE2B-1] نسخة دائمة — نفس اتجاه الإشعار الفعلي أعلاه بالضبط
+    // (لا تُبدّل sendPush ولا الأحداث اللحظية، تعمل بالتوازي معهما).
+    if (isAdminSender) {
+      notify({
+        userId: ticket.user_id,
+        type: 'support',
+        title: 'رد من الدعم الفني',
+        body: body.slice(0, 100),
+        data: { ticketId: ticket.id },
+        ticketId: ticket.id
+      });
+    } else {
+      getAdminIds().forEach(adminId => notify({
+        userId: adminId,
+        type: 'support',
+        title: 'رسالة دعم جديدة',
+        body: `${req.user.name || 'مستخدم'}: ${body.slice(0, 80)}`,
+        data: { ticketId: ticket.id },
+        ticketId: ticket.id
+      }));
+    }
+
     res.json({ success: true });
   });
 
