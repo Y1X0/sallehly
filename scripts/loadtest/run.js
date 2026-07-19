@@ -102,9 +102,34 @@ async function registerAndVerify(role, i, extra = {}) {
   return { email, token: body.token, user: body.user };
 }
 
+const NUM_TECHNICIANS = 15;
+
+async function registerTechnician(i) {
+  const email = `loadtest-technician-${i}-${Date.now()}@example.com`;
+  const phone = `07${String(80000000 + i).padStart(8, '0')}`;
+  const fd = new FormData();
+  fd.append('role', 'technician');
+  fd.append('email', email);
+  fd.append('phone', phone);
+  fd.append('password', 'LoadTest123');
+  fd.append('name', `فني تحميل ${i}`);
+  fd.append('city', 'عمان');
+  fd.append('national_number', String(2000000000 + i));
+  fd.append('services', 'كهربائي');
+  fd.append('areas', 'القويسمة');
+  fd.append('avatar', new Blob([Buffer.from([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' }), 'avatar.png');
+  const registerRes = await fetch(`${BASE_URL}/api/auth/register`, { method: 'POST', body: fd });
+  if (!registerRes.ok) throw new Error(`فشل تسجيل فني #${i}: ${registerRes.status} ${await registerRes.text()}`);
+  const db = openLoadTestDb();
+  let otp;
+  try { otp = db.prepare('SELECT otp FROM pending_users WHERE email=? ORDER BY id DESC LIMIT 1').get(email.toLowerCase()).otp; } finally { db.close(); }
+  const verifyRes = await fetch(`${BASE_URL}/api/auth/verify-otp`, { method: 'POST', body: new URLSearchParams({ email, otp }) });
+  if (!verifyRes.ok) throw new Error(`فشل verify-otp فني #${i}: ${verifyRes.status} ${await verifyRes.text()}`);
+  const body = await verifyRes.json();
+  return { email, token: body.token };
+}
+
 async function seed() {
-  // ملاحظة: السيناريوهات المقاسة (تصفح/دخول/إنشاء طلب/رسائل) تُنفَّذ كلها
-  // بحساب عميل — لا حاجة لزرع فنيين فعليين لهذا القياس تحديداً.
   log(`زرع ${NUM_CUSTOMERS} عميلاً عبر /auth الحقيقية...`);
   const customers = [];
   for (let i = 0; i < NUM_CUSTOMERS; i++) {
@@ -124,25 +149,52 @@ async function seed() {
     customerPool.push({ token: c.token, requestId: body.request.id, email: c.email, password: 'LoadTest123' });
   }
   log(`تم الزرع: ${customerPool.length} عميلاً بحساب+طلب جاهزَين.`);
-  return customerPool;
+
+  log(`زرع ${NUM_TECHNICIANS} فنياً (لسيناريو عمليات المحفظة — طلبات شحن رصيد)...`);
+  const technicianPool = [];
+  for (let i = 0; i < NUM_TECHNICIANS; i++) {
+    const t = await registerTechnician(i);
+    technicianPool.push({ token: t.token, email: t.email });
+  }
+  log(`تم الزرع: ${technicianPool.length} فنياً.`);
+
+  return { customerPool, technicianPool };
 }
 
-function buildRequests(pool) {
-  const pick = () => pool[Math.floor(Math.random() * pool.length)];
-  // مزيج وزنه يقارب: 40% تصفح، 20% دخول، 20% إنشاء طلب، 20% رسائل شات
+// جسم multipart/form-data ثابت (نفس المحتوى لكل طلب — فقط Authorization
+// يتغيّر لكل نداء عبر pick()) لسيناريو "إنشاء طلب شحن رصيد" — لا حاجة لإعادة
+// بنائه بكل مرة، فقط الفني المُرسِل يتغيّر.
+function buildTopupMultipartBody() {
+  const boundary = '----loadtestboundary1234567890';
+  const receiptBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG header بسيط كافٍ لفحوصات النوع
+  const parts = [
+    `--${boundary}\r\nContent-Disposition: form-data; name="package_id"\r\n\r\n1\r\n`,
+    `--${boundary}\r\nContent-Disposition: form-data; name="receipt"; filename="receipt.png"\r\nContent-Type: image/png\r\n\r\n`,
+  ];
+  const tail = `\r\n--${boundary}--\r\n`;
+  const body = Buffer.concat([Buffer.from(parts[0] + parts[1]), receiptBytes, Buffer.from(tail)]);
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` };
+}
+
+function buildRequests(customerPool, technicianPool) {
+  const pickCustomer = () => customerPool[Math.floor(Math.random() * customerPool.length)];
+  const pickTechnician = () => technicianPool[Math.floor(Math.random() * technicianPool.length)];
+  const topup = buildTopupMultipartBody();
+  // مزيج وزنه يقارب: 30% تصفح، 15% دخول، 15% إنشاء طلب، 25% رسائل شات، 15% عمليات محفظة (شحن رصيد)
   return [
-    { method: 'GET', path: '/api/technicians', setupRequest: (req) => { req.headers = { Authorization: `Bearer ${pick().token}` }; return req; } },
-    { method: 'GET', path: '/api/technicians', setupRequest: (req) => { req.headers = { Authorization: `Bearer ${pick().token}` }; return req; } },
-    { method: 'POST', path: '/api/auth/login', setupRequest: (req) => { const u = pick(); req.body = `email=${encodeURIComponent(u.email)}&password=${u.password}`; req.headers = { 'content-type': 'application/x-www-form-urlencoded' }; return req; } },
-    { method: 'POST', path: '/api/requests', setupRequest: (req) => { const u = pick(); req.headers = { Authorization: `Bearer ${u.token}`, 'content-type': 'application/x-www-form-urlencoded' }; req.body = 'service=كهربائي&description=طلب+حمل+أداء+متكرر+أثناء+القياس&city=عمان&area=القويسمة'; return req; } },
-    { method: 'POST', path: '/api/requests', setupRequest: (req) => { const u = pick(); req.headers = { Authorization: `Bearer ${u.token}`, 'content-type': 'application/x-www-form-urlencoded' }; req.body = 'service=كهربائي&description=طلب+حمل+أداء+متكرر+أثناء+القياس&city=عمان&area=القويسمة'; return req; } },
-    { method: 'GET', path: '/api/requests', setupRequest: (req) => { req.headers = { Authorization: `Bearer ${pick().token}` }; return req; } },
-    { method: 'POST', path: '/api/requests/0/messages', setupRequest: (req) => { const u = pick(); req.path = `/api/requests/${u.requestId}/messages`; req.headers = { Authorization: `Bearer ${u.token}`, 'content-type': 'application/x-www-form-urlencoded' }; req.body = 'body=رسالة+اختبار+حمل+آلية'; return req; } },
-    { method: 'POST', path: '/api/requests/0/messages', setupRequest: (req) => { const u = pick(); req.path = `/api/requests/${u.requestId}/messages`; req.headers = { Authorization: `Bearer ${u.token}`, 'content-type': 'application/x-www-form-urlencoded' }; req.body = 'body=رسالة+اختبار+حمل+آلية'; return req; } },
+    { method: 'GET', path: '/api/technicians', setupRequest: (req) => { req.headers = { Authorization: `Bearer ${pickCustomer().token}` }; return req; } },
+    { method: 'GET', path: '/api/technicians', setupRequest: (req) => { req.headers = { Authorization: `Bearer ${pickCustomer().token}` }; return req; } },
+    { method: 'GET', path: '/api/technicians', setupRequest: (req) => { req.headers = { Authorization: `Bearer ${pickCustomer().token}` }; return req; } },
+    { method: 'POST', path: '/api/auth/login', setupRequest: (req) => { const u = pickCustomer(); req.body = `email=${encodeURIComponent(u.email)}&password=${u.password}`; req.headers = { 'content-type': 'application/x-www-form-urlencoded' }; return req; } },
+    { method: 'POST', path: '/api/requests', setupRequest: (req) => { const u = pickCustomer(); req.headers = { Authorization: `Bearer ${u.token}`, 'content-type': 'application/x-www-form-urlencoded' }; req.body = 'service=كهربائي&description=طلب+حمل+أداء+متكرر+أثناء+القياس&city=عمان&area=القويسمة'; return req; } },
+    { method: 'GET', path: '/api/requests', setupRequest: (req) => { req.headers = { Authorization: `Bearer ${pickCustomer().token}` }; return req; } },
+    { method: 'POST', path: '/api/requests/0/messages', setupRequest: (req) => { const u = pickCustomer(); req.path = `/api/requests/${u.requestId}/messages`; req.headers = { Authorization: `Bearer ${u.token}`, 'content-type': 'application/x-www-form-urlencoded' }; req.body = 'body=رسالة+اختبار+حمل+آلية'; return req; } },
+    { method: 'POST', path: '/api/requests/0/messages', setupRequest: (req) => { const u = pickCustomer(); req.path = `/api/requests/${u.requestId}/messages`; req.headers = { Authorization: `Bearer ${u.token}`, 'content-type': 'application/x-www-form-urlencoded' }; req.body = 'body=رسالة+اختبار+حمل+آلية'; return req; } },
+    { method: 'POST', path: '/api/topups', setupRequest: (req) => { req.headers = { Authorization: `Bearer ${pickTechnician().token}`, 'content-type': topup.contentType }; req.body = topup.body; return req; } },
   ];
 }
 
-async function runLevel(connections, pool, serverPid) {
+async function runLevel(connections, customerPool, technicianPool, serverPid) {
   log(`\n=== تشغيل بمستوى ${connections} اتصال متزامن لمدة ${DURATION_SECONDS}ث ===`);
   const memSamples = [];
   const memInterval = setInterval(() => {
@@ -155,7 +207,7 @@ async function runLevel(connections, pool, serverPid) {
     connections,
     duration: DURATION_SECONDS,
     pipelining: 1,
-    requests: buildRequests(pool),
+    requests: buildRequests(customerPool, technicianPool),
   });
 
   clearInterval(memInterval);
@@ -189,10 +241,11 @@ function writeReport(results) {
   }
   lines.push('');
   lines.push('## السيناريو المُقاس بكل طلب (مزيج ثابت يتكرر لكل اتصال)');
-  lines.push('- 40% تصفح الفنيين (`GET /api/technicians`)');
-  lines.push('- 20% تسجيل دخول (`POST /api/auth/login`)');
-  lines.push('- 20% إنشاء طلب خدمة جديد (`POST /api/requests`) — أثقل عملية كتابة بالمزيج');
-  lines.push('- 20% إرسال رسالة شات على طلب موجود مسبقاً (`POST /api/requests/:id/messages`)');
+  lines.push('- 30% تصفح الفنيين (`GET /api/technicians`)');
+  lines.push('- 15% تسجيل دخول (`POST /api/auth/login`)');
+  lines.push('- 15% إنشاء طلب خدمة جديد (`POST /api/requests`)');
+  lines.push('- 25% رسائل شات (`GET`+`POST /api/requests/:id/messages`)');
+  lines.push('- 15% عمليات محفظة — إنشاء طلب شحن رصيد (`POST /api/topups`, multipart)');
   lines.push('');
   fs.writeFileSync(path.join(__dirname, 'report.md'), lines.join('\n'));
   fs.writeFileSync(path.join(__dirname, 'report.json'), JSON.stringify(results, null, 2));
@@ -204,11 +257,11 @@ async function main() {
   try {
     await waitForServer(BASE_URL);
     log('السيرفر جاهز. جاري الزرع...');
-    const pool = await seed();
+    const { customerPool, technicianPool } = await seed();
 
     const results = [];
     for (const connections of CONCURRENCY_LEVELS) {
-      const r = await runLevel(connections, pool, child.pid);
+      const r = await runLevel(connections, customerPool, technicianPool, child.pid);
       results.push(r);
       log(`النتيجة: ${r.requestsPerSec.toFixed(1)} req/s، p95=${r.latencyMs.p95}ms، أخطاء=${r.errors}، غير-2xx=${r.non2xx}`);
     }

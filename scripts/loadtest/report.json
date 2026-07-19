@@ -1,59 +1,59 @@
 [
   {
     "connections": 100,
-    "requestsPerSec": 13.34,
+    "requestsPerSec": 9.07,
     "latencyMs": {
-      "p50": 99,
-      "p95": 6981,
-      "p99": 6981,
-      "max": 6982
+      "p50": 37,
+      "p95": 7752,
+      "p99": 7857,
+      "max": 7861
     },
-    "errors": 82,
-    "timeouts": 82,
+    "errors": 94,
+    "timeouts": 94,
     "non2xx": 0,
-    "totalRequests": 200,
+    "totalRequests": 136,
     "memoryMB": {
-      "min": "92.2",
-      "max": "101.5",
-      "avg": "98.2"
+      "min": "93.3",
+      "max": "101.0",
+      "avg": "98.8"
     }
   },
   {
     "connections": 500,
-    "requestsPerSec": 0.27,
+    "requestsPerSec": 21.34,
     "latencyMs": {
-      "p50": 4470,
-      "p95": 4674,
-      "p99": 4674,
-      "max": 4674
+      "p50": 768,
+      "p95": 5715,
+      "p99": 7920,
+      "max": 9902
     },
-    "errors": 500,
-    "timeouts": 500,
-    "non2xx": 0,
-    "totalRequests": 4,
+    "errors": 471,
+    "timeouts": 471,
+    "non2xx": 4,
+    "totalRequests": 320,
     "memoryMB": {
-      "min": "101.5",
-      "max": "112.3",
-      "avg": "102.3"
+      "min": "101.3",
+      "max": "110.7",
+      "avg": "103.3"
     }
   },
   {
     "connections": 1000,
-    "requestsPerSec": 18.94,
+    "requestsPerSec": 20.67,
     "latencyMs": {
-      "p50": 716,
-      "p95": 5337,
-      "p99": 7721,
-      "max": 9338
+      "p50": 512,
+      "p95": 6973,
+      "p99": 8789,
+      "max": 9864
     },
-    "errors": 977,
-    "timeouts": 867,
-    "non2xx": 0,
-    "totalRequests": 284,
+    "errors": 980,
+    "timeouts": 980,
+    "non2xx": 19,
+    "totalRequests": 310,
     "memoryMB": {
-      "min": "114.3",
-      "max": "120.2",
-      "avg": "119.0"
+      "min": "115.9",
+      "max": "120.4",
+      "avg": "119.7"
     }
   }
 ]
