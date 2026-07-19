@@ -3,7 +3,7 @@
 // أرقام الهواتف/واتساب/إيميل داخل الشات (حماية نموذج العمولة).
 
 const { test, expect } = require('@playwright/test');
-const { getPendingOtp } = require('./helpers/db');
+const { getPendingOtp, openTestDb } = require('./helpers/db');
 
 function uniqueEmail(tag) {
   return `test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`;
@@ -283,6 +283,34 @@ test.describe.serial('الدردشة على الطلبات', () => {
     expect(chatForTechnician.unread_count).toBe(0);
   });
 
+  // [PERF-HARDEN-02] يثبت أن السقف الوقائي الجديد على GET /chats (1000) فعّال
+  // حقاً على مستوى قاعدة البيانات، بنفس نمط اختبار GET /admin/users بـ
+  // tests/admin.spec.js تماماً — يزرع 1001 محادثة مباشرة (أسرع من الطلبات
+  // الحقيقية) ويتحقق أن الاستجابة الافتراضية محدودة بـ1000 بالضبط.
+  test('GET /chats — سقف وقائي 1000 محادثة رغم وجود أكثر من ذلك بقاعدة البيانات', async ({ request }) => {
+    const db = openTestDb();
+    try {
+      const insertReq = db.prepare(
+        `INSERT INTO requests(customer_id,technician_id,service,city,description,status) VALUES(?,?,?,?,?,?)`
+      );
+      const insertMsg = db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)');
+      const seed = db.transaction((n) => {
+        for (let i = 0; i < n; i++) {
+          const info = insertReq.run(customer.user.id, technician.user.id, SERVICE, CITY, 'طلب اختبار سقف المحادثات ' + i, 'مكتمل');
+          insertMsg.run(info.lastInsertRowid, customer.user.id, 'رسالة اختبار سقف ' + i);
+        }
+      });
+      seed(1001);
+    } finally {
+      db.close();
+    }
+
+    const res = await request.get('/api/chats', { headers: authHeader(customer.token) });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.chats.length).toBeLessThanOrEqual(1000);
+  });
+
   test('GET /chat-violations — الأدمن فقط يقدر يشوف سجل المخالفات', async ({ request }) => {
     const forbidden = await request.get('/api/chat-violations', { headers: authHeader(customer.token) });
     expect(forbidden.status()).toBe(403);
@@ -316,6 +344,28 @@ test.describe.serial('الدردشة على الطلبات', () => {
       multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
     });
     expect(res.status()).toBe(403);
+  });
+
+  // [PERF-HARDEN-02] كانت /images و/audio بلا أي حد طلبات إطلاقاً، بعكس
+  // /messages — الفحص هنا لا يحاول استنزاف الحد الحقيقي (1000 بالتطوير/
+  // الاختبار عمداً حتى لا تتأثر اختبارات Playwright، انظر middleware/security.js)
+  // بل يتأكد أن express-rate-limit مُركَّب فعلاً على المسارين عبر هيدرز
+  // RateLimit-* الموحّدة (standardHeaders:true) — لو أُزيل الميدلوير بالخطأ
+  // لاحقاً، هذا الاختبار يفشل فوراً حتى بلا الحاجة لمحاكاة 429 حقيقي.
+  test('POST /requests/:id/images و/audio — حد الطلبات (messageLimiter) مُفعَّل فعلياً', async ({ request }) => {
+    const imgRes = await request.post(`/api/requests/${acceptedRequest.id}/images`, {
+      headers: authHeader(customer.token),
+      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+    expect(imgRes.status()).toBe(200);
+    expect(imgRes.headers()['ratelimit-limit']).toBeTruthy();
+
+    const audioRes = await request.post(`/api/requests/${acceptedRequest.id}/audio`, {
+      headers: authHeader(customer.token),
+      multipart: { audio: { name: 'voice.wav', mimeType: 'audio/wav', buffer: Buffer.from([0x52, 0x49, 0x46, 0x46]) } },
+    });
+    expect(audioRes.status()).toBe(200);
+    expect(audioRes.headers()['ratelimit-limit']).toBeTruthy();
   });
 
   // [FIX-AUDIODUR-01] المدة المُرسَلة مع التسجيل تُخزَّن وتُرجَع ضمن body،

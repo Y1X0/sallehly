@@ -179,7 +179,13 @@ module.exports = function (deps) {
     res.json({ messages });
   });
 
-  router.post('/requests/:id/audio', auth, uploadAudio.single('audio'), (req, res) => {
+  // [PERF-HARDEN-02] كانت هذه بلا أي حد طلبات إطلاقاً — بعكس /messages
+  // (messageLimiter) رغم أن كل تسجيل صوتي يُنفّذ نفس تكلفة رسالة نصية (كتابة
+  // قرص + إدراج قاعدة بيانات + بث Socket.IO + إشعار Push) وأكثر (رفع ملف
+  // فعلي). أُثبت هذا الغياب بمراجعة الكود مباشرة (audit إنتاجية 2026-07-19)،
+  // وليس بحادثة فعلية — نفس الحد المطبَّق على الرسائل النصية بالضبط، بلا أي
+  // تغيير على سلوك الاستخدام الطبيعي (30 رسالة/دقيقة بالإنتاج تكفي أي محادثة حقيقية).
+  router.post('/requests/:id/audio', auth, messageLimiter, uploadAudio.single('audio'), (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
@@ -208,7 +214,9 @@ module.exports = function (deps) {
   });
 
   // ── إرسال صورة في الشات (يستخدم نفس حماية ونمط مسار الصوت) ──
-  router.post('/requests/:id/images', auth, upload.single('image'), (req, res) => {
+  // [PERF-HARDEN-02] نفس تعليق /requests/:id/audio أعلاه بالضبط — كانت بلا
+  // أي حد طلبات، الآن نفس حد الرسائل النصية.
+  router.post('/requests/:id/images', auth, messageLimiter, upload.single('image'), (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
@@ -358,6 +366,12 @@ module.exports = function (deps) {
   });
 
   // V13 chats center and support center
+  // [PERF-HARDEN-02] بلا سقف سابقاً — كل صف يُنفّذ 3 استعلامات فرعية مترابطة
+  // (آخر رسالة، وقتها، وعدد غير المقروء عبر LEFT JOIN+COUNT) لكل طلب يخص هذا
+  // المستخدم. سقف 1000 وقائي بحت (لا يوجد سيناريو واقعي حالي فيه أكثر من 1000
+  // محادثة لمستخدم واحد) بنفس نمط GET /technicians و/admin/users تماماً —
+  // ORDER BY آخر نشاط DESC يضمن بقاء المحادثات الأحدث (وأي رسالة غير مقروءة
+  // منطقياً حديثة) ضمن النطاق المُرجَع دائماً.
   router.get('/chats', auth, (req, res) => {
     let rows = [];
     if (req.user.role === 'customer') {
@@ -367,7 +381,7 @@ module.exports = function (deps) {
         (SELECT COUNT(*) FROM messages m LEFT JOIN chat_reads cr ON cr.request_id=m.request_id AND cr.user_id=? WHERE m.request_id=r.id AND m.sender_id<>? AND m.id>COALESCE(cr.last_read_message_id,0)) unread_count
         FROM requests r LEFT JOIN users u ON u.id=r.technician_id
         WHERE r.customer_id=? AND (r.technician_id IS NOT NULL OR EXISTS(SELECT 1 FROM messages m WHERE m.request_id=r.id))
-        ORDER BY COALESCE(last_at,r.created_at) DESC`).all(req.user.id, req.user.id, req.user.id);
+        ORDER BY COALESCE(last_at,r.created_at) DESC LIMIT 1000`).all(req.user.id, req.user.id, req.user.id);
     } else if (req.user.role === 'technician') {
       rows = db.prepare(`SELECT r.id request_id,r.service,r.status,u.name other_name,
         (SELECT body FROM messages WHERE request_id=r.id ORDER BY id DESC LIMIT 1) last_body,
@@ -375,7 +389,7 @@ module.exports = function (deps) {
         (SELECT COUNT(*) FROM messages m LEFT JOIN chat_reads cr ON cr.request_id=m.request_id AND cr.user_id=? WHERE m.request_id=r.id AND m.sender_id<>? AND m.id>COALESCE(cr.last_read_message_id,0)) unread_count
         FROM requests r JOIN users u ON u.id=r.customer_id
         WHERE r.technician_id=? OR EXISTS(SELECT 1 FROM offers o WHERE o.request_id=r.id AND o.technician_id=?)
-        ORDER BY COALESCE(last_at,r.created_at) DESC`).all(req.user.id, req.user.id, req.user.id, req.user.id);
+        ORDER BY COALESCE(last_at,r.created_at) DESC LIMIT 1000`).all(req.user.id, req.user.id, req.user.id, req.user.id);
     }
     const total = rows.reduce((a, b) => a + Number(b.unread_count || 0), 0);
     res.json({ chats: rows, total_unread: total });

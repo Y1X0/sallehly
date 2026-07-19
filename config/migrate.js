@@ -327,6 +327,22 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_offers_technician ON offers(tec
 // GET /technicians/:id/profile (بروفايل الفني العام، قد يُفتح كثيراً من
 // عملاء متعدّدين). request_id به بالفعل UNIQUE (مفهرس ضمنياً)، لا حاجة لفهرس إضافي عليه.
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_ratings_technician ON ratings(technician_id)').run(); } catch (e) {}
+// [PERF-HARDEN-02] users.role بلا فهرس رغم استخدامه بشرط WHERE بمواقع حرجة:
+// بحث الفنيين (GET /technicians، WHERE role='technician')، وبحثين منفصلين عن
+// حساب الأدمن لإرسال Push (routes/support.routes.js، WHERE role='admin').
+// قِيس فعلياً (Audit إنتاجية 2026-07-19، 8000 مستخدم صناعي): 2.88ms → 2.03ms
+// لنفس استعلام بحث الفنيين (خطة EXPLAIN تحوّلت من SCAN كامل لـSEARCH بالفهرس).
+// تحسّن متواضع بحجم البيانات الحالي، لكنه ينمو خطياً مع عدد المستخدمين —
+// role عمود منخفض التفرّع لكنه يُفلتَر أولاً بكل هذه الاستعلامات، فالفهرس
+// يمنع فحص كامل جدول users (بما فيه كل العملاء) لإيجاد الفنيين/الأدمن فقط.
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)').run(); } catch (e) {}
+// [PERF-HARDEN-02] support_messages.ticket_id بلا أي فهرس إطلاقاً — بنفس نمط
+// messages.request_id أعلاه بالضبط (نفس المشكلة، نفس الحل): GET و POST
+// /support/:id/messages كلاهما يُنفّذ "WHERE ticket_id=?" على جدول يجمع رسائل
+// كل تذاكر الدعم على المنصة كلها، وليس تذكرة واحدة — بلا فهرس، كل فتح أو رد
+// على أي تذكرة دعم يفحص كامل تاريخ رسائل الدعم عبر كل المستخدمين. إضافي
+// بالكامل، idempotent، لا يُغيّر أي بيانات أو سلوك.
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_support_messages_ticket ON support_messages(ticket_id)').run(); } catch (e) {}
 // تمت إزالة سطر إعادة تفعيل الفنيين الموقوفين تلقائياً عند كل تشغيل للسيرفر.
 // كان هذا السطر يلغي قرار إيقاف أي فني من الإدارة (بسبب شكوى أو مخالفة) في كل مرة يعاد تشغيل السيرفر أو يتم نشر تحديث جديد.
 // إيقاف/تفعيل الفنيين أصبح بالكامل بيد الإدارة فقط عبر /api/admin/users/:id/toggle.

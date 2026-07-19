@@ -69,6 +69,32 @@ test.describe('[PERF-HARDEN-01] فهارس إضافية على offers/ratings', 
     }
   });
 
+  // [PERF-HARDEN-02] users.role يُستخدَم بشرط WHERE ببحث الفنيين وبمواقع
+  // إرسال Push للأدمن — قِيس فعلياً أنه يحوّل خطة الاستعلام من فحص كامل
+  // (SCAN) لبحث بالفهرس (SEARCH)، انظر تعليق config/migrate.js.
+  test('idx_users_role موجود على users(role)', () => {
+    const db = openTestDb();
+    try {
+      const indexes = db.prepare('PRAGMA index_list(users)').all().map((i) => i.name);
+      expect(indexes).toContain('idx_users_role');
+    } finally {
+      db.close();
+    }
+  });
+
+  // [PERF-HARDEN-02] support_messages.ticket_id — نفس مشكلة messages.request_id
+  // (H2/H3 أعلاه) تماماً: بلا فهرس، كل فتح/رد على أي تذكرة دعم يفحص كامل
+  // جدول رسائل الدعم عبر كل المستخدمين، لا رسائل تلك التذكرة فقط.
+  test('idx_support_messages_ticket موجود على support_messages(ticket_id)', () => {
+    const db = openTestDb();
+    try {
+      const indexes = db.prepare('PRAGMA index_list(support_messages)').all().map((i) => i.name);
+      expect(indexes).toContain('idx_support_messages_ticket');
+    } finally {
+      db.close();
+    }
+  });
+
   // [PERF-HARDEN-01] journal_mode مضبوط فعلياً بقاعدة بيانات الاختبار (يُقرأ
   // من ملف القاعدة نفسه، يبقى محفوظاً عبر أي اتصال). synchronous بعكسه —
   // إعداد خاص بكل اتصال على حدة، فلا يُقرأ من اتصال جديد منفصل هنا كما فعل
