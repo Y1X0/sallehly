@@ -15,6 +15,9 @@ const fs = require('fs');
 const env = require('./config/env');
 const { db, createDbBackup } = require('./config/db');
 const createApp = require('./app');
+// [TEMP-PERF-TRACE] أداة قياس مؤقتة فقط لتشخيص رسالة "الخادم يستغرق وقتاً" —
+// لا تغيّر أي منطق. انظر middleware/perf-trace.js للتفاصيل وطريقة الإزالة.
+const { installPerfTrace, wrapDbForPerfTrace, clientLogRoute } = require('./middleware/perf-trace');
 const { auth, requireRole, requireSuperAdmin, sign } = require('./middleware/auth');
 const utilsHelpers = require('./utils/helpers');
 const { createDbHelpers } = require('./utils/db-helpers');
@@ -25,6 +28,13 @@ const { sendPush } = require('./services/push');
 const { createSocket } = require('./services/socket');
 
 const app = createApp();
+
+// [TEMP-PERF-TRACE] يجب تركيبها هنا (أول شيء بعد إنشاء app، قبل أي route)
+// حتى تقيس المدة الكاملة لكل طلب /api/*. wrapDbForPerfTrace يلف db.prepare
+// فقط لقياس مدة .get()/.all()/.run() — لا يغيّر القيم المُرجَعة ولا رمي الأخطاء.
+installPerfTrace(app);
+wrapDbForPerfTrace(db);
+app.post('/api/_debug/client-log', clientLogRoute);
 
 // Socket.IO يحتاج app جاهز (بيلف عليه بـ http.createServer)، فلازم ننشئه بعد app مباشرة
 // وقبل ما نوصل الـ routes (الـ routes محتاجة io عشان ترسل تحديثات لحظية).
