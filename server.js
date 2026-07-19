@@ -18,6 +18,9 @@ const createApp = require('./app');
 // [TEMP-PERF-TRACE] أداة قياس مؤقتة فقط لتشخيص رسالة "الخادم يستغرق وقتاً" —
 // لا تغيّر أي منطق. انظر middleware/perf-trace.js للتفاصيل وطريقة الإزالة.
 const { installPerfTrace, wrapDbForPerfTrace, clientLogRoute } = require('./middleware/perf-trace');
+// [PERF-HARDEN-01] مراقبة أداء دائمة اختيارية، مُعطّلة افتراضياً — منفصلة
+// عن أداة التشخيص المؤقتة أعلاه. انظر middleware/perf-monitor.js.
+const { installPerfMonitor } = require('./middleware/perf-monitor');
 const { auth, requireRole, requireSuperAdmin, sign } = require('./middleware/auth');
 const utilsHelpers = require('./utils/helpers');
 const { createDbHelpers } = require('./utils/db-helpers');
@@ -35,6 +38,10 @@ const app = createApp();
 installPerfTrace(app);
 wrapDbForPerfTrace(db);
 app.post('/api/_debug/client-log', clientLogRoute);
+
+// [PERF-HARDEN-01] لا شيء يحدث هنا ما لم يُفعَّل PERF_LOG_ENABLED صراحةً
+// بمتغيرات البيئة — انظر تعليق middleware/perf-monitor.js.
+installPerfMonitor(app);
 
 // Socket.IO يحتاج app جاهز (بيلف عليه بـ http.createServer)، فلازم ننشئه بعد app مباشرة
 // وقبل ما نوصل الـ routes (الـ routes محتاجة io عشان ترسل تحديثات لحظية).
