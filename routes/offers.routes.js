@@ -5,7 +5,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole } = deps.middleware;
-  const { clean } = deps.utils;
+  const { clean, notify } = deps.utils;
   const { sendPush } = deps.services;
   const { offerLimiter } = deps.limiters;
   const router = express.Router();
@@ -80,6 +80,19 @@ module.exports = function (deps) {
         { type: 'offer', requestId: String(r.id) }
       );
     }
+
+    // [NOTIF-PHASE2B-2] نسخة دائمة للعميل. offers موجودة أصلاً بالمتغيّر (بلا
+    // استعلام إضافي) — نلتقط عرض هذا الفني تحديداً منها لمعرّف offerId.
+    const myOffer = offers.find(o => o.technician_id === req.user.id);
+    notify({
+      userId: r.customer_id,
+      type: 'offer',
+      title: 'وصل عرض جديد',
+      body: `الفني ${req.user.name || ''} أرسل عرضاً على طلبك`,
+      data: { requestId: r.id, offerId: myOffer ? myOffer.id : null },
+      requestId: r.id
+    });
+
     res.json({ request, offers });
   });
 
@@ -144,6 +157,16 @@ module.exports = function (deps) {
           { type: 'offer_accepted', requestId: String(request.id) }
         );
       }
+
+      // [NOTIF-PHASE2B-2] نسخة دائمة للفني.
+      notify({
+        userId: offer.technician_id,
+        type: 'offer',
+        title: 'تم قبول عرضك',
+        body: `العميل وافق على عرضك لخدمة ${request.service || ''}`,
+        data: { requestId: offer.request_id, offerId: offer.id },
+        requestId: offer.request_id
+      });
     }
     res.json({ request, offers });
   });

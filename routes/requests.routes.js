@@ -5,8 +5,16 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, upload } = deps.middleware;
-  const { clean, calcRating } = deps.utils;
+  const { clean, calcRating, notify } = deps.utils;
   const router = express.Router();
+
+  // [NOTIF-PHASE2B-2] نفس جمهور بث 'new-request-created' بالضبط (technicians-room،
+  // كل من role='technician' بلا أي تصفية خدمة/مدينة إضافية — التصفية الفعلية
+  // تحدث فقط بطرف القراءة GET /requests، تماماً كما لا يوجد أي تصفية على
+  // البث اللحظي نفسه اليوم).
+  function getTechnicianIds() {
+    return db.prepare("SELECT id FROM users WHERE role='technician'").all().map(t => t.id);
+  }
 
   router.post('/requests', auth, requireRole('customer'), upload.single('problem_image'), (req, res) => {
     const { service, city, area, description, preferred_time } = req.body;
@@ -37,6 +45,18 @@ module.exports = function (deps) {
     io.to('technicians-room').emit('new-request-created', { requestId: request.id, service: request.service, city: request.city, area: request.area, status: request.status });
     // Notify admins with full data
     io.to('admin-room').emit('requests-updated', { request });
+
+    // [NOTIF-PHASE2B-2] نسخة دائمة لكل الفنيين — لا تُبدّل ولا تُلغي بث
+    // technicians-room أعلاه، فقط تضيف سجلاً يبقى حتى لو كان الفني غير متصل.
+    getTechnicianIds().forEach(techId => notify({
+      userId: techId,
+      type: 'request',
+      title: 'طلب جديد قريب منك',
+      body: `${request.service} في ${request.city}`,
+      data: { requestId: request.id },
+      requestId: request.id
+    }));
+
     res.json({ request });
   });
 
@@ -124,6 +144,20 @@ module.exports = function (deps) {
     io.to(`user-${request.customer_id}`).emit('requests-updated', { request });
     if (request.technician_id) io.to(`user-${request.technician_id}`).emit('requests-updated', { request });
     io.to('admin-room').emit('requests-updated', { request });
+
+    // [NOTIF-PHASE2B-2] نسخة دائمة للفني فقط — العميل هو من نفّذ الإلغاء
+    // (لا داعي لإشعاره بفعله هو نفسه)، أما الفني (إن وُجد) فهذا خبر جديد له.
+    if (request.technician_id) {
+      notify({
+        userId: request.technician_id,
+        type: 'request',
+        title: 'تحديث على الطلب',
+        body: 'حالة الطلب أصبحت: ' + request.status,
+        data: { requestId: request.id },
+        requestId: request.id
+      });
+    }
+
     res.json({ request });
   });
 
@@ -174,6 +208,20 @@ module.exports = function (deps) {
     io.to(`user-${request.customer_id}`).emit('requests-updated', { request });
     if (request.technician_id) io.to(`user-${request.technician_id}`).emit('requests-updated', { request });
     io.to('admin-room').emit('requests-updated', { request });
+
+    // [NOTIF-PHASE2B-2] نسخة دائمة — للطرف (العميل و/أو الفني) الذي لم يكن
+    // هو من نفّذ هذا التغيير فعلياً (قد يكون الأدمن هو المنفّذ، فيُشعَر كلاهما).
+    [request.customer_id, request.technician_id]
+      .filter(uid => uid && uid !== req.user.id)
+      .forEach(uid => notify({
+        userId: uid,
+        type: 'request',
+        title: 'تحديث على الطلب',
+        body: 'حالة الطلب أصبحت: ' + status,
+        data: { requestId: request.id },
+        requestId: request.id
+      }));
+
     res.json({ request });
   });
 
