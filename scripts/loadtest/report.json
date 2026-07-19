@@ -1,0 +1,59 @@
+[
+  {
+    "connections": 100,
+    "requestsPerSec": 13.34,
+    "latencyMs": {
+      "p50": 99,
+      "p95": 6981,
+      "p99": 6981,
+      "max": 6982
+    },
+    "errors": 82,
+    "timeouts": 82,
+    "non2xx": 0,
+    "totalRequests": 200,
+    "memoryMB": {
+      "min": "92.2",
+      "max": "101.5",
+      "avg": "98.2"
+    }
+  },
+  {
+    "connections": 500,
+    "requestsPerSec": 0.27,
+    "latencyMs": {
+      "p50": 4470,
+      "p95": 4674,
+      "p99": 4674,
+      "max": 4674
+    },
+    "errors": 500,
+    "timeouts": 500,
+    "non2xx": 0,
+    "totalRequests": 4,
+    "memoryMB": {
+      "min": "101.5",
+      "max": "112.3",
+      "avg": "102.3"
+    }
+  },
+  {
+    "connections": 1000,
+    "requestsPerSec": 18.94,
+    "latencyMs": {
+      "p50": 716,
+      "p95": 5337,
+      "p99": 7721,
+      "max": 9338
+    },
+    "errors": 977,
+    "timeouts": 867,
+    "non2xx": 0,
+    "totalRequests": 284,
+    "memoryMB": {
+      "min": "114.3",
+      "max": "120.2",
+      "avg": "119.0"
+    }
+  }
+]

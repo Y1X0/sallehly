@@ -7,5 +7,6 @@ public/uploads/
 npm-debug.log*
 .DS_Store
 data-test/
+data-loadtest/
 playwright-report/
 test-results/

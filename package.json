@@ -31,6 +31,7 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
+    "autocannon": "^8.0.0",
     "socket.io-client": "^4.8.3"
   }
 }
