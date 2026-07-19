@@ -5,7 +5,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io } = deps.realtime;
   const { auth, requireRole, upload } = deps.middleware;
-  const { clean, logAudit } = deps.utils;
+  const { clean, logAudit, notify } = deps.utils;
   const { sendPush } = deps.services;
   const router = express.Router();
 
@@ -71,8 +71,27 @@ module.exports = function (deps) {
       });
       sendPush(db.prepare('SELECT fcm_token FROM users WHERE id=?').get(t.technician_id)?.fcm_token,
         '✅ تمت الموافقة على الشحن', `تم إضافة ${Number(t.amount) + Number(t.bonus || 0)} د.أ إلى رصيدك`, { type: 'topup' });
+      // [NOTIF-PHASE2B-3] نسخة دائمة — type='wallet' نفس الاصطلاح المُستخدَم
+      // أصلاً بواجهة فلاتر لحدث balance-updated بالضبط (راجع
+      // NotificationProvider.handleBalanceUpdated).
+      notify({
+        userId: t.technician_id,
+        type: 'wallet',
+        title: 'تمت الموافقة على الشحن ✅',
+        body: 'تم تحديث رصيدك، يمكنك الآن تقديم العروض',
+        data: { topupId: t.id }
+      });
     } else {
       io.to(`user-${t.technician_id}`).emit('balance-updated', { topupId: t.id, status: 'rejected' });
+      // [NOTIF-PHASE2B-3] لا يوجد Push حالياً لحالة الرفض — نفس النص المُستخدَم
+      // أصلاً بواجهة فلاتر لهذه الحالة بالضبط، بلا أي تغيير على سلوك Push.
+      notify({
+        userId: t.technician_id,
+        type: 'wallet',
+        title: 'طلب الشحن مرفوض',
+        body: 'لم تتم الموافقة على طلب الشحن، راجع الدعم للمزيد',
+        data: { topupId: t.id }
+      });
     }
     res.json({ topup: db.prepare('SELECT * FROM topups WHERE id=?').get(t.id) });
   });
