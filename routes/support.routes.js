@@ -48,6 +48,18 @@ module.exports = function (deps) {
     io.to('admin-room').emit('support-created', { ticket });
     io.to(`user-${req.user.id}`).emit('support-created', { ticket });
 
+    // [FIX-SUPPORT-PUSH-01] الحدث أعلاه realtime فقط عبر socket.io، وNOTIF-
+    // PHASE2B-1 أدناه تخزين دائم فقط (لا يبعث Push حقيقياً — راجع تعليق
+    // utils/notification.js) — كلاهما لا يصل للأدمن إن كان offline/socket
+    // مقطوعاً وقتها وبلا فتح التطبيق لاحقاً. نفس الفجوة كانت موجودة هنا فقط،
+    // بينما /complaints و/support/:id/messages ترسلان Push فعلياً لهذا السبب.
+    const admins = db.prepare("SELECT fcm_token FROM users WHERE role='admin' AND fcm_token IS NOT NULL").all();
+    admins.forEach(a => sendPush(a.fcm_token,
+      '📋 تذكرة دعم جديدة',
+      `${req.user.name || ''}: ${clean(title)}`,
+      { type: 'support', ticketId: String(ticket.id) }
+    ));
+
     // [NOTIF-PHASE2B-1] نسخة دائمة لكل الأدمنية — لا تُبدّل ولا تُلغي البث
     // اللحظي أعلاه، فقط تضيف سجلاً يبقى حتى لو كان الأدمن غير متصل وقتها.
     getAdminIds().forEach(adminId => notify({
