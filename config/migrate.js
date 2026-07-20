@@ -2,7 +2,10 @@
 // شكل الجداول + البيانات الابتدائية (seed) فقط. db.js يستدعي migrate(db) مرة وحدة عند الإقلاع.
 // أي تعديل على الأعمدة أو بيانات seed مكانه هون بس — بدون ما تلمس منطق الاتصال بقاعدة البيانات.
 
-const bcrypt = require('bcryptjs');
+// [PERF-05] bcryptjs -> bcrypt (native) — see routes/auth.routes.js for the
+// full rationale. hashSync() signature/behavior unchanged; only used here at
+// startup (admin/reviewer/demo-account seeding), never on the request path.
+const bcrypt = require('bcrypt');
 const { IS_PROD } = require('./env');
 
 function migrate(db) {
