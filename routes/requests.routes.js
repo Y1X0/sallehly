@@ -12,9 +12,27 @@ module.exports = function (deps) {
   // كل من role='technician' بلا أي تصفية خدمة/مدينة إضافية — التصفية الفعلية
   // تحدث فقط بطرف القراءة GET /requests، تماماً كما لا يوجد أي تصفية على
   // البث اللحظي نفسه اليوم).
+  // [CRIT-FIX-01] استعلام واحد يُعاد استخدامه (مُجهَّز مرة واحدة عند إقلاع
+  // السيرفر) بدل db.prepare جديد بكل نداء — نفس نمط insertStmt بـ
+  // utils/notification.js. LIMIT 5000 سقف وقائي بحت مطابق تماماً لنفس نمط
+  // PERF-HARDEN-01 المُستخدَم بكل أرجاء المشروع (GET /admin/users، GET
+  // /requests...) — لا يوجد سيناريو واقعي حالي لهذا التطبيق فيه أكثر من 5000
+  // فني مسجَّل، فهذا لا يغيّر أي سلوك فعلي اليوم، فقط يمنع نمواً غير محدود
+  // مستقبلاً لنفس فئة المخاطرة المذكورة أدناه (CRIT-FIX-02).
+  const technicianIdsStmt = db.prepare("SELECT id FROM users WHERE role='technician' LIMIT 5000");
   function getTechnicianIds() {
-    return db.prepare("SELECT id FROM users WHERE role='technician'").all().map(t => t.id);
+    return technicianIdsStmt.all().map(t => t.id);
   }
+
+  // [CRIT-FIX-01] كل نداءات notify() لدفعة كاملة من المستلمين تُنفَّذ الآن
+  // بمعاملة واحدة (db.transaction) بدل commit/fsync منفصل لكل صف — نفس
+  // النمط المُستخدَم أصلاً بهذا المشروع لأي إدراج دفعي (مثال: doComplete
+  // بـPOST /requests/:id/status أدناه). notify() نفسها (utils/notification.js)
+  // تبتلع أي خطأ فردي داخلياً ولا ترمي أبداً، فسلوك "فشل إشعار واحد لا يُسقط
+  // الباقي" يبقى كما هو تماماً حتى مع الدفعة الموحّدة.
+  const notifyBatch = db.transaction((userIds, buildPayload) => {
+    for (const userId of userIds) notify(buildPayload(userId));
+  });
 
   router.post('/requests', auth, requireRole('customer'), upload.single('problem_image'), (req, res) => {
     const { service, city, area, description, preferred_time } = req.body;
@@ -46,18 +64,41 @@ module.exports = function (deps) {
     // Notify admins with full data
     io.to('admin-room').emit('requests-updated', { request });
 
-    // [NOTIF-PHASE2B-2] نسخة دائمة لكل الفنيين — لا تُبدّل ولا تُلغي بث
-    // technicians-room أعلاه، فقط تضيف سجلاً يبقى حتى لو كان الفني غير متصل.
-    getTechnicianIds().forEach(techId => notify({
-      userId: techId,
-      type: 'request',
-      title: 'طلب جديد قريب منك',
-      body: `${request.service} في ${request.city}`,
-      data: { requestId: request.id },
-      requestId: request.id
-    }));
-
     res.json({ request });
+
+    // [CRIT-FIX-01] نسخة دائمة لكل الفنيين — لا تُبدّل ولا تُلغي بث
+    // technicians-room أعلاه، فقط تضيف سجلاً يبقى حتى لو كان الفني غير متصل.
+    // مؤجَّلة عمداً لِـ setImmediate (بعد إرسال res.json أعلاه) وليست جزءاً
+    // من الاستجابة المتزامنة للعميل — كانت سابقاً حلقة db.prepare/insert
+    // متزامنة (فني واحد = نداء واحد) تُنفَّذ *قبل* res.json، أي كل عميل ينشئ
+    // طلباً كان يُحجَز فعلياً بمقدار زمن إدراج سجل واحد لكل فني مسجَّل على
+    // المنصة بأكملها قبل أن يصله رده — بحلقة الحدث المتزامنة الوحيدة
+    // لـ better-sqlite3، هذا كان يُجمّد أي طلب آخر من أي مستخدم آخر بالمنصة
+    // بالتوازي (نفس فئة العلّة الموثَّقة بـ[PERF-01]/[PERF-HARDEN-01] أعلاه
+    // بهذا الملف بالضبط، وسبق أن سببت حادثة أداء فعلية على الإنتاج — راجع
+    // منطق middleware/perf-monitor.js). الآن: العميل يستلم رده فوراً بغض
+    // النظر عن عدد الفنيين، والدفعة الكاملة تُنفَّذ بمعاملة واحدة (notifyBatch)
+    // بجزء لاحق من حلقة الحدث. try/catch إلزامي هنا تحديداً (وليس اختيارياً)
+    // — أي استثناء غير مُلتقَط داخل setImmediate لا تراه Express إطلاقاً
+    // (خارج دورة الطلب/الرد كلياً)، فيصل مباشرة لمعالج process.on('uncaughtException')
+    // بـserver.js الذي يُنفّذ إغلاقاً كاملاً وإعادة تشغيل للسيرفر — عطل واحد
+    // بجلب قائمة الفنيين هنا كان سيعيد تشغيل السيرفر بأكمله، وهذا أسوأ بكثير
+    // من العلّة الأصلية.
+    setImmediate(() => {
+      try {
+        const technicianIds = getTechnicianIds();
+        notifyBatch(technicianIds, (techId) => ({
+          userId: techId,
+          type: 'request',
+          title: 'طلب جديد قريب منك',
+          body: `${request.service} في ${request.city}`,
+          data: { requestId: request.id },
+          requestId: request.id
+        }));
+      } catch (e) {
+        console.error('[CRIT-FIX-01] فشل بث إشعار الطلب الجديد للفنيين:', e.message);
+      }
+    });
   });
 
   router.get('/requests', auth, (req, res) => {
