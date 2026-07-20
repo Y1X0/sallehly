@@ -23,6 +23,27 @@ module.exports = function (deps) {
     // [SEC-FIX-03] Topup notifications only to admin + the technician themselves
     io.to('admin-room').emit('topup-created', { topup });
     io.to(`user-${req.user.id}`).emit('topup-created', { topup });
+
+    // [FIX-NOTIF-GAP-01] كان بلا Push ولا سجلّ دائم — نفس فجوة تذاكر الدعم
+    // القديمة بالضبط (الحدث اللحظي أعلاه فقط يصل لو لوحة الأدمن مفتوحة الآن).
+    const admins = db.prepare("SELECT id, fcm_token FROM users WHERE role='admin'").all();
+    admins.forEach(a => {
+      if (a.fcm_token) {
+        sendPush(a.fcm_token,
+          '💳 طلب شحن رصيد جديد',
+          `${req.user.name || ''} قدّم إثبات دفع لباقة ${pkg.name}`,
+          { type: 'topup' }
+        );
+      }
+      notify({
+        userId: a.id,
+        type: 'topup',
+        title: 'طلب شحن رصيد جديد',
+        body: `${req.user.name || ''} قدّم إثبات دفع لباقة ${pkg.name}`,
+        data: { topupId: topup.id }
+      });
+    });
+
     res.json({ topup: db.prepare('SELECT * FROM topups WHERE id=?').get(info.lastInsertRowid) });
   });
 
@@ -83,8 +104,16 @@ module.exports = function (deps) {
       });
     } else {
       io.to(`user-${t.technician_id}`).emit('balance-updated', { topupId: t.id, status: 'rejected' });
-      // [NOTIF-PHASE2B-3] لا يوجد Push حالياً لحالة الرفض — نفس النص المُستخدَم
-      // أصلاً بواجهة فلاتر لهذه الحالة بالضبط، بلا أي تغيير على سلوك Push.
+      // [FIX-NOTIF-GAP-01] أُضيف Push هنا أيضاً — كان الرفض يصل لحظياً وبسجل
+      // دائم فقط، بينما الموافقة (أعلاه) كانت الوحيدة التي تصل بـPush فعلي.
+      const rejectedTech = db.prepare('SELECT fcm_token FROM users WHERE id=?').get(t.technician_id);
+      if (rejectedTech?.fcm_token) {
+        sendPush(rejectedTech.fcm_token,
+          '❌ تم رفض طلب الشحن',
+          adminNote || 'لم تتم الموافقة على طلب الشحن، راجع الدعم للمزيد',
+          { type: 'topup' }
+        );
+      }
       notify({
         userId: t.technician_id,
         type: 'wallet',
