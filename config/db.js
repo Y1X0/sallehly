@@ -160,6 +160,24 @@ function cleanupExpiredPendingUsers() {
 }
 if (IS_PROD) setInterval(cleanupExpiredPendingUsers, 60 * 60 * 1000).unref();
 
+// [NOTIF-RETENTION-01] تنظيف دوري لجدول notifications (راجع utils/notification.js)
+// بدل تراكمه للأبد — خصوصاً مع بث دفعي لكل الفنيين على كل طلب جديد (راجع
+// CRIT-FIX-01 بـroutes/requests.routes.js)، هذا الجدول ينمو أسرع من غيره
+// بكثير. حد عمر ثابت (90 يوماً) بدل عدد صفوف، نفس نمط
+// cleanupExpiredPendingUsers أعلاه بالضبط ونفس صيغة مقارنة created_at
+// المُستخدَمة أصلاً بـrouter.get('/admin/stats') (routes/admin.routes.js:
+// datetime('now','-N days')) بدل مقارنة نص ISO يدوية بجافاسكربت. 90 يوماً
+// يطبَّق بالتساوي على كل المستخدمين (لا يستهدف مستخدماً بعينه)، ولا يحذف أي
+// إشعار حديث — فقط ما تجاوز عمره 90 يوماً، مقروءاً كان أو غير مقروء (إشعار
+// بعمر 3 أشهر لم يُفتَح لن يُفتَح لاحقاً على الأغلب، وإبقاؤه للأبد لا يمنع
+// النمو غير المحدود الذي يستهدفه هذا التنظيف أصلاً).
+function cleanupOldNotifications() {
+  try {
+    db.prepare("DELETE FROM notifications WHERE created_at < datetime('now','-90 days')").run();
+  } catch (e) { console.error('cleanup notifications failed:', e.message); }
+}
+if (IS_PROD) setInterval(cleanupOldNotifications, 24 * 60 * 60 * 1000).unref();
+
 
 migrate(db);
 
