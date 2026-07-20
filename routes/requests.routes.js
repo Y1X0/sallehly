@@ -6,6 +6,7 @@ module.exports = function (deps) {
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, upload } = deps.middleware;
   const { clean, calcRating, notify } = deps.utils;
+  const { sendPush } = deps.services;
   const router = express.Router();
 
   // [NOTIF-PHASE2B-2] نفس جمهور بث 'new-request-created' بالضبط (technicians-room،
@@ -189,6 +190,15 @@ module.exports = function (deps) {
     // [NOTIF-PHASE2B-2] نسخة دائمة للفني فقط — العميل هو من نفّذ الإلغاء
     // (لا داعي لإشعاره بفعله هو نفسه)، أما الفني (إن وُجد) فهذا خبر جديد له.
     if (request.technician_id) {
+      // [FIX-NOTIF-GAP-01] كان بلا Push إطلاقاً — فقط لحظي + دائم.
+      const tech = db.prepare('SELECT fcm_token FROM users WHERE id=?').get(request.technician_id);
+      if (tech?.fcm_token) {
+        sendPush(tech.fcm_token,
+          '📋 تحديث على الطلب',
+          `تم إلغاء طلب ${request.service || ''} من قبل العميل`,
+          { type: 'request', requestId: String(request.id) }
+        );
+      }
       notify({
         userId: request.technician_id,
         type: 'request',
@@ -252,16 +262,28 @@ module.exports = function (deps) {
 
     // [NOTIF-PHASE2B-2] نسخة دائمة — للطرف (العميل و/أو الفني) الذي لم يكن
     // هو من نفّذ هذا التغيير فعلياً (قد يكون الأدمن هو المنفّذ، فيُشعَر كلاهما).
-    [request.customer_id, request.technician_id]
-      .filter(uid => uid && uid !== req.user.id)
-      .forEach(uid => notify({
+    // [FIX-NOTIF-GAP-01] وأُضيف هنا أيضاً Push حقيقي — كان هذا الحدث بلا Push
+    // إطلاقاً رغم كونه من أكثر الأحداث تكراراً (كل انتقال حالة طلب).
+    const notifyTargets = [request.customer_id, request.technician_id]
+      .filter(uid => uid && uid !== req.user.id);
+    notifyTargets.forEach(uid => {
+      const target = db.prepare('SELECT fcm_token FROM users WHERE id=?').get(uid);
+      if (target?.fcm_token) {
+        sendPush(target.fcm_token,
+          '📋 تحديث على الطلب',
+          `حالة طلب ${request.service || ''} أصبحت: ${status}`,
+          { type: 'request', requestId: String(request.id) }
+        );
+      }
+      notify({
         userId: uid,
         type: 'request',
         title: 'تحديث على الطلب',
         body: 'حالة الطلب أصبحت: ' + status,
         data: { requestId: request.id },
         requestId: request.id
-      }));
+      });
+    });
 
     res.json({ request });
   });

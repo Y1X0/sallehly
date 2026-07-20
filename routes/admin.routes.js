@@ -5,8 +5,8 @@ module.exports = function (deps) {
   const { db, path } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, requireSuperAdmin } = deps.middleware;
-  const { clean, logAudit, anonymizeUser } = deps.utils;
-  const { createDbBackup } = deps.services;
+  const { clean, logAudit, anonymizeUser, notify } = deps.utils;
+  const { createDbBackup, sendPush } = deps.services;
   const router = express.Router();
 
   router.post('/admin/backup', auth, requireRole('admin'), async (req, res) => {
@@ -219,6 +219,25 @@ module.exports = function (deps) {
       details: { amount, balance_after: after, reason }
     });
     io.to(`user-${id}`).emit('balance-updated', { balance: after, status: 'admin-adjusted' });
+
+    // [FIX-NOTIF-GAP-01] كان بلا Push ولا سجلّ دائم — نفس نمط topup approved
+    // أدناه بـtopups.routes.js (type='wallet' موحّد مع NotificationProvider.handleBalanceUpdated).
+    const targetUser = db.prepare('SELECT fcm_token FROM users WHERE id=?').get(id);
+    if (targetUser?.fcm_token) {
+      sendPush(targetUser.fcm_token,
+        amount > 0 ? '💰 تمت إضافة رصيد لحسابك' : '⚠️ تم خصم من رصيدك',
+        reason,
+        { type: 'topup' }
+      );
+    }
+    notify({
+      userId: id,
+      type: 'wallet',
+      title: amount > 0 ? 'تمت إضافة رصيد لحسابك' : 'تم خصم من رصيدك',
+      body: reason,
+      data: { adjustedBy: 'admin' }
+    });
+
     res.json({ balance: after });
   });
 
