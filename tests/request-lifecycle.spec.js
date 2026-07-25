@@ -111,6 +111,29 @@ test.describe.serial('[Lifecycle] دورة حياة الطلب الكاملة: p
     expect(body.request.commission_charged).toBe(0); // أول طلب مجاني للفني
   });
 
+  // [FIX-RATINGLIVE-01] لا يوجد اختبار سابق لهذا المسار إطلاقاً رغم وجوده
+  // منذ زمن — يثبت أن التقييم يُحسَب فعلياً بمتوسط وعدد صحيحين، وأن تكرار
+  // تقييم نفس الطلب يُرفض (قيد UNIQUE بجدول ratings).
+  test('5b) تقييم الفني بعد الإكمال: rating_avg وrating_count يتحدّثان فوراً بالسيرفر', async ({ request }) => {
+    const rateRes = await request.post(`/api/requests/${requestId}/rate`, {
+      headers: authHeader(customer.token),
+      form: { stars: '5', comment: 'خدمة ممتازة' },
+    });
+    expect(rateRes.ok()).toBeTruthy();
+
+    const meRes = await request.get('/api/me', { headers: authHeader(technician.token) });
+    expect(meRes.ok()).toBeTruthy();
+    const me = (await meRes.json()).user;
+    expect(Number(me.rating_avg)).toBe(5);
+    expect(Number(me.rating_count)).toBe(1);
+
+    const dupRes = await request.post(`/api/requests/${requestId}/rate`, {
+      headers: authHeader(customer.token),
+      form: { stars: '3' },
+    });
+    expect(dupRes.status()).toBe(409);
+  });
+
   test('6) الحالة النهائية: لا يمكن لأي طرف إعادتها لأي حالة نشطة بعد الآن', async ({ request }) => {
     const res = await request.post(`/api/requests/${requestId}/status`, {
       headers: authHeader(customer.token),

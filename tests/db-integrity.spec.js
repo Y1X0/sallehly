@@ -225,5 +225,28 @@ test.describe('[DB] تراجع كامل عند فشل معاملة إكمال ا
       form: { status: 'مكتمل' },
     });
     expect(retryRes.ok()).toBeTruthy();
+
+    // [FIX-WALLETDEDUCT-01] لا يوجد اختبار سابق يثبت مسار الخصم الفعلي الناجح
+    // (فقط المسار المجاني، والمسار الفاشل برصيد غير كافٍ) — يثبت هذا أن
+    // الرصيد يُخصم فعلياً بمقدار العمولة الصحيح فور نجاح الإكمال، والقيد
+    // يُسجَّل بدفتر الأستاذ، وcommission_charged يُحفظ بنفس المبلغ بالطلب.
+    const retryBody = await retryRes.json();
+    expect(retryBody.request.status).toBe('مكتمل');
+    expect(retryBody.request.commission_charged).toBe(2); // active_commission الافتراضية
+
+    const verifyDb = openTestDb();
+    try {
+      const tech = verifyDb.prepare('SELECT balance, completed_jobs, free_orders_used FROM users WHERE id=?').get(technician.user.id);
+      expect(tech.balance).toBe(98); // 100 - 2 (عمولة الطلب)
+      expect(tech.completed_jobs).toBe(1);
+      expect(tech.free_orders_used).toBe(2); // لم يزد — هذا المسار المدفوع
+
+      const ledgerRows = verifyDb.prepare("SELECT * FROM ledger WHERE user_id=? AND type='خصم عمولة طلب'").all(technician.user.id);
+      expect(ledgerRows).toHaveLength(1);
+      expect(ledgerRows[0].amount).toBe(-2);
+      expect(ledgerRows[0].balance_after).toBe(98);
+    } finally {
+      verifyDb.close();
+    }
   });
 });
