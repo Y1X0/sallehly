@@ -10,8 +10,24 @@ const { JWT_SECRET, IO_CORS_ORIGINS } = require('../config/env');
 
 function createSocket(app) {
   const server = http.createServer(app);
+  // [BW-FIX-01] بلا تحديد transports كانت الافتراضية Engine.IO تسمح بـ
+  // ['polling','websocket'] معاً — أي عميل لا يُكمل ترقية WebSocket بنجاح
+  // (شبكة جوال غير مستقرة، أو محاولات إعادة اتصال متتالية) يبقى (أو يعلق)
+  // على HTTP long-polling: طلب HTTP حقيقي فعلي كل ~25 ثانية لكل عميل متصل،
+  // إلى ما لا نهاية — يظهر في مقاييس Render كطلبات HTTP عادية تماماً، وهذا
+  // ما فسّر الحجم الكبير من الطلبات (261,751 خلال 7 أيام) رغم أن REST API
+  // نفسها لا علاقة لها بهذا إطلاقاً (Socket.IO منفصل كلياً عن أي route).
+  // websocket فقط هنا يمنع أي عميل من الاتصال عبر polling من الأساس —
+  // يفشل الاتصال بوضوح فوراً بدل توليد حجم طلبات صامت. Render يدعم
+  // WebSocket رسمياً على كل الخطط، فلا حاجة لإبقاء polling كـfallback.
+  // pingInterval/pingTimeout مطابقتان تماماً لقيم Engine.IO الافتراضية —
+  // تُكتَبان صراحة هنا فقط لتوثيقهما وتثبيتهما بدل الاعتماد على افتراضي
+  // ضمني قد يتغيّر بترقية مستقبلية للمكتبة.
   const io = new Server(server, {
-    cors: { origin: IO_CORS_ORIGINS, credentials: true }
+    cors: { origin: IO_CORS_ORIGINS, credentials: true },
+    transports: ['websocket'],
+    pingInterval: 25000,
+    pingTimeout: 20000
   });
 
   io.use((socket, next) => {
