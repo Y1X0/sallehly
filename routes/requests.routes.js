@@ -6,6 +6,7 @@ module.exports = function (deps) {
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, upload } = deps.middleware;
   const { clean, calcRating, notify } = deps.utils;
+  const { sendPush } = deps.services;
   const router = express.Router();
 
   // [NOTIF-PHASE2B-2] نفس جمهور بث 'new-request-created' بالضبط (technicians-room،
@@ -189,6 +190,15 @@ module.exports = function (deps) {
     // [NOTIF-PHASE2B-2] نسخة دائمة للفني فقط — العميل هو من نفّذ الإلغاء
     // (لا داعي لإشعاره بفعله هو نفسه)، أما الفني (إن وُجد) فهذا خبر جديد له.
     if (request.technician_id) {
+      // [FIX-NOTIF-GAP-01] كان بلا Push إطلاقاً — فقط لحظي + دائم.
+      const tech = db.prepare('SELECT fcm_token FROM users WHERE id=?').get(request.technician_id);
+      if (tech?.fcm_token) {
+        sendPush(tech.fcm_token,
+          '📋 تحديث على الطلب',
+          `تم إلغاء طلب ${request.service || ''} من قبل العميل`,
+          { type: 'request', requestId: String(request.id) }
+        );
+      }
       notify({
         userId: request.technician_id,
         type: 'request',
@@ -224,6 +234,7 @@ module.exports = function (deps) {
     }
     if (status === 'مكتمل' && req.user.role !== 'admin' && req.user.id !== r.customer_id) return res.status(403).json({ error: 'إكمال الطلب يكون من العميل فقط' });
     if (status === 'مكتمل' && r.technician_id && r.commission_charged === null) {
+      let charged = 0;
       const doComplete = db.transaction(() => {
         const tech = db.prepare('SELECT * FROM users WHERE id=?').get(r.technician_id);
         const COMMISSION = Number(tech?.active_commission ?? 2);
@@ -239,8 +250,58 @@ module.exports = function (deps) {
           db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note) VALUES(?,?,?,?,?)').run(tech.id, 'خصم عمولة طلب', -charge, after, `خصم عمولة الطلب رقم ${r.id}`);
         }
         db.prepare('UPDATE requests SET commission_charged=? WHERE id=?').run(charge, r.id);
+        charged = charge;
       });
       try { doComplete(); } catch (e) { return res.status(e.status || 500).json({ error: e.message }); }
+
+      // [FIX-WALLETDEDUCT-01] كان الخصم يحدث فعلياً بقاعدة البيانات (مؤكَّد
+      // باختبار tests/db-integrity.spec.js) لكن بلا أي حدث لحظي على الإطلاق —
+      // الفني كان يرى رصيده القديم بشاشة المحفظة حتى يعيد فتح التطبيق يدوياً،
+      // فيبدو الأمر وكأن الخصم لم يحدث إطلاقاً. نفس شكل الحدث المُستخدَم أصلاً
+      // عند الموافقة على شحن الرصيد (routes/topups.routes.js).
+      const updatedTech = db.prepare('SELECT balance, active_commission FROM users WHERE id=?').get(r.technician_id);
+      io.to(`user-${r.technician_id}`).emit('balance-updated', {
+        balance: updatedTech?.balance ?? 0,
+        active_commission: updatedTech?.active_commission ?? 2,
+        requestId: r.id,
+        status: charged > 0 ? 'commission-charged' : 'free-order'
+      });
+      if (charged > 0) {
+        notify({
+          userId: r.technician_id,
+          type: 'wallet',
+          title: 'تم خصم عمولة الطلب',
+          body: `تم خصم ${charged} د.أ من رصيدك بعد اكتمال الطلب رقم ${r.id}`,
+          data: { requestId: r.id }
+        });
+      }
+
+      // [FIX-RATEPROMPT-01] كان العميل (وهو غالباً من يُنهي الطلب بنفسه عبر
+      // زر "إنهاء الطلب") مستثنى من حلقة إشعار تغيّر الحالة العامة أدناه
+      // (تستثني منفّذ العملية نفسه) — فلا يصله أي إشعار يدعوه لتقييم الفني
+      // إطلاقاً رغم أن هذا بالضبط اللحظة الصحيحة لطلب التقييم. زر "قيّم الفني"
+      // موجود أصلاً بشاشة تفاصيل الطلب فور اكتمالها (customer_request_details_screen)
+      // — هذا فقط يضمن وصول دعوة فعلية له بدل انتظار عودته يدوياً للطلب.
+      // بث لحظي إضافي (بعكس sendPush/notify أدناه) — يعكس فوراً بجرس الإشعارات
+      // إن كان تطبيق العميل مفتوحاً هذه اللحظة بالذات، دون انتظار أي تحديث دوري.
+      io.to(`user-${r.customer_id}`).emit('rate-request-prompt', { requestId: r.id, service: r.service });
+
+      const customerForRating = db.prepare('SELECT fcm_token FROM users WHERE id=?').get(r.customer_id);
+      if (customerForRating?.fcm_token) {
+        sendPush(customerForRating.fcm_token,
+          '⭐ قيّم تجربتك',
+          `اكتمل طلب ${r.service} — شاركنا رأيك بتقييم الفني`,
+          { type: 'rate_request', requestId: String(r.id) }
+        );
+      }
+      notify({
+        userId: r.customer_id,
+        type: 'rate_request',
+        title: 'قيّم تجربتك',
+        body: `اكتمل طلب ${r.service} — شاركنا رأيك بتقييم الفني`,
+        data: { requestId: r.id },
+        requestId: r.id
+      });
     }
     db.prepare('UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(status, r.id);
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);
@@ -252,16 +313,28 @@ module.exports = function (deps) {
 
     // [NOTIF-PHASE2B-2] نسخة دائمة — للطرف (العميل و/أو الفني) الذي لم يكن
     // هو من نفّذ هذا التغيير فعلياً (قد يكون الأدمن هو المنفّذ، فيُشعَر كلاهما).
-    [request.customer_id, request.technician_id]
-      .filter(uid => uid && uid !== req.user.id)
-      .forEach(uid => notify({
+    // [FIX-NOTIF-GAP-01] وأُضيف هنا أيضاً Push حقيقي — كان هذا الحدث بلا Push
+    // إطلاقاً رغم كونه من أكثر الأحداث تكراراً (كل انتقال حالة طلب).
+    const notifyTargets = [request.customer_id, request.technician_id]
+      .filter(uid => uid && uid !== req.user.id);
+    notifyTargets.forEach(uid => {
+      const target = db.prepare('SELECT fcm_token FROM users WHERE id=?').get(uid);
+      if (target?.fcm_token) {
+        sendPush(target.fcm_token,
+          '📋 تحديث على الطلب',
+          `حالة طلب ${request.service || ''} أصبحت: ${status}`,
+          { type: 'request', requestId: String(request.id) }
+        );
+      }
+      notify({
         userId: uid,
         type: 'request',
         title: 'تحديث على الطلب',
         body: 'حالة الطلب أصبحت: ' + status,
         data: { requestId: request.id },
         requestId: request.id
-      }));
+      });
+    });
 
     res.json({ request });
   });
@@ -280,7 +353,23 @@ module.exports = function (deps) {
     if (!Number.isFinite(stars) || stars < 1 || stars > 5) return res.status(400).json({ error: 'اختر تقييم من 1 إلى 5' });
     const comment = clean(req.body.comment || '');
     if (comment.length > 500) return res.status(400).json({ error: 'التعليق طويل جداً، الحد الأقصى 500 حرف' });
-    try { db.prepare('INSERT INTO ratings(request_id,technician_id,customer_id,stars,comment) VALUES(?,?,?,?,?)').run(r.id, r.technician_id, req.user.id, stars, comment); calcRating(r.technician_id); safeEmit(r.id, 'rated', { requestId: r.id, stars }); res.json({ ok: true }); }
+    try {
+      db.prepare('INSERT INTO ratings(request_id,technician_id,customer_id,stars,comment) VALUES(?,?,?,?,?)').run(r.id, r.technician_id, req.user.id, stars, comment);
+      calcRating(r.technician_id);
+      safeEmit(r.id, 'rated', { requestId: r.id, stars });
+      // [FIX-RATINGLIVE-01] safeEmit أعلاه يبثّ فقط لغرفة هذا الطلب تحديداً
+      // (المشتركين فيها فعلياً هذه اللحظة) — الفني نادراً ما يكون منضمّاً لغرفة
+      // طلب أُغلق للتو، فكان متوسط تقييمه وعدد تقييماته لا يتحدّثان بواجهته
+      // إلا بعد إعادة تشغيل التطبيق (حيث يُعاد جلب /me من الصفر). بث إضافي
+      // لغرفة الفني الشخصية (نفس نمط user-${id} المُستخدَم بكل أرجاء المشروع).
+      const updatedTech = db.prepare('SELECT rating_avg, rating_count FROM users WHERE id=?').get(r.technician_id);
+      io.to(`user-${r.technician_id}`).emit('rating-updated', {
+        technicianId: r.technician_id,
+        ratingAvg: updatedTech?.rating_avg ?? 0,
+        ratingCount: updatedTech?.rating_count ?? 0
+      });
+      res.json({ ok: true });
+    }
     catch { res.status(409).json({ error: 'تم تقييم هذا الطلب مسبقاً' }); }
   });
 
