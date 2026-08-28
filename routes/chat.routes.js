@@ -126,22 +126,22 @@ module.exports = function (deps) {
     const reason = chatViolationReason(body);
     if (!reason) return false;
     db.prepare('INSERT INTO chat_violations(request_id,user_id,body,reason) VALUES(?,?,?,?)').run(r.id, req.user.id, String(body || '').slice(0, 500), reason);
-    return res.status(400).json({ error: '⚠️ الرسائل العادية مسموحة. الممنوع فقط مشاركة رقم هاتف أو واتساب أو تيليجرام أو إيميل أو روابط تواصل خارجية.' });
+    return res.status(400).json({ error: '⚠️ الرسائل العادية مسموحة. الممنوع فقط مشاركة رقم هاتف أو واتساب أو تيليجرام أو إيميل أو روابط تواصل خارجية.', code: 'CHAT_MESSAGE_BLOCKED' });
   }
 
   router.post('/requests/:id/messages', auth, messageLimiter, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
-    if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق' });
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق', code: 'CHAT_ON_CLOSED_REQUEST' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
-      return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين' });
+      return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين', code: 'CHAT_BLOCKED_BY_USER' });
     }
-    const body = clean(req.body.body); if (body.length < 1) return res.status(400).json({ error: 'الرسالة فارغة' });
-    if (body.length > 1000) return res.status(400).json({ error: 'الرسالة طويلة جداً، الحد الأقصى 1000 حرف' });
+    const body = clean(req.body.body); if (body.length < 1) return res.status(400).json({ error: 'الرسالة فارغة', code: 'CHAT_MESSAGE_EMPTY' });
+    if (body.length > 1000) return res.status(400).json({ error: 'الرسالة طويلة جداً، الحد الأقصى 1000 حرف', code: 'CHAT_MESSAGE_TOO_LONG' });
     // [SEC-FIX-C1] راجع التعليق فوق isSpoofedMediaBody أعلى الملف.
-    if (isSpoofedMediaBody(body)) return res.status(400).json({ error: 'صيغة رسالة غير مسموحة' });
+    if (isSpoofedMediaBody(body)) return res.status(400).json({ error: 'صيغة رسالة غير مسموحة', code: 'CHAT_SPOOFED_MEDIA' });
     if (rejectBlockedChat(req, res, r, body)) return;
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
     markChatRead(r.id, req.user.id);
@@ -187,14 +187,14 @@ module.exports = function (deps) {
   // تغيير على سلوك الاستخدام الطبيعي (30 رسالة/دقيقة بالإنتاج تكفي أي محادثة حقيقية).
   router.post('/requests/:id/audio', auth, messageLimiter, uploadAudio.single('audio'), (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
-    if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق' });
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق', code: 'CHAT_ON_CLOSED_REQUEST' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
-      return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين' });
+      return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين', code: 'CHAT_BLOCKED_BY_USER' });
     }
-    if (!req.file) return res.status(400).json({ error: 'لم يتم استقبال التسجيل الصوتي' });
+    if (!req.file) return res.status(400).json({ error: 'لم يتم استقبال التسجيل الصوتي', code: 'CHAT_AUDIO_NOT_RECEIVED' });
     const url = '/uploads/audios/' + req.file.filename;
     // [FIX-AUDIODUR-01] مدة التسجيل الفعلية بالثواني (يرسلها العميل — يعرفها
     // بدقة من مؤقّت التسجيل نفسه). اختيارية ومُتحقَّق منها: عدد صحيح موجب
@@ -218,14 +218,14 @@ module.exports = function (deps) {
   // أي حد طلبات، الآن نفس حد الرسائل النصية.
   router.post('/requests/:id/images', auth, messageLimiter, upload.single('image'), (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
-    if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق' });
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق', code: 'CHAT_ON_CLOSED_REQUEST' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
-      return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين' });
+      return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين', code: 'CHAT_BLOCKED_BY_USER' });
     }
-    if (!req.file) return res.status(400).json({ error: 'لم يتم استقبال الصورة' });
+    if (!req.file) return res.status(400).json({ error: 'لم يتم استقبال الصورة', code: 'CHAT_IMAGE_NOT_RECEIVED' });
     const url = '/uploads/requests/' + req.file.filename;
     const body = '[image]' + url;
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
@@ -240,9 +240,9 @@ module.exports = function (deps) {
 
   router.get('/requests/:id/messages', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     markChatRead(r.id, req.user.id);
     // [SEC-FIX-03] Targeted badges updated on read
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
@@ -257,13 +257,13 @@ module.exports = function (deps) {
   // [FIX-UGC-01] الإبلاغ عن رسالة مسيئة (Google Play UGC policy)
   router.post('/requests/:id/report-message', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     const messageId = parseInt(req.body.messageId, 10) || null;
     const reason = clean(req.body.reason);
-    if (!reason || reason.length < 2) return res.status(400).json({ error: 'الرجاء اختيار سبب البلاغ' });
-    if (reason.length > 200) return res.status(400).json({ error: 'سبب البلاغ طويل جداً' });
+    if (!reason || reason.length < 2) return res.status(400).json({ error: 'الرجاء اختيار سبب البلاغ', code: 'REPORT_REASON_REQUIRED' });
+    if (reason.length > 200) return res.status(400).json({ error: 'سبب البلاغ طويل جداً', code: 'REPORT_REASON_TOO_LONG' });
     let messageBody = null;
     let reportedUserId = null;
     if (messageId) {
@@ -280,11 +280,11 @@ module.exports = function (deps) {
   // [FIX-UGC-01] حظر الطرف الآخر بهذا الطلب — يمنع التراسل بالاتجاهين فوراً.
   router.post('/requests/:id/block', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية' });
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
-    if (!otherPartyId) return res.status(400).json({ error: 'لا يوجد طرف آخر لحظره بعد بهذا الطلب' });
+    if (!otherPartyId) return res.status(400).json({ error: 'لا يوجد طرف آخر لحظره بعد بهذا الطلب', code: 'CHAT_NO_OTHER_PARTY' });
     db.prepare('INSERT OR IGNORE INTO user_blocks(blocker_id,blocked_id) VALUES(?,?)').run(req.user.id, otherPartyId);
     res.json({ ok: true, blocked: true });
   });
@@ -292,7 +292,7 @@ module.exports = function (deps) {
   // [FIX-UGC-01] إلغاء حظر الطرف الآخر بهذا الطلب.
   router.delete('/requests/:id/block', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
     if (otherPartyId) db.prepare('DELETE FROM user_blocks WHERE blocker_id=? AND blocked_id=?').run(req.user.id, otherPartyId);
     res.json({ ok: true, blocked: false });
@@ -301,7 +301,7 @@ module.exports = function (deps) {
   // [FIX-UGC-01] هل أنا حاظر الطرف الآخر، أو هو حاظرني؟ (لعرض الحالة الصحيحة بالواجهة)
   router.get('/requests/:id/block-status', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
     if (!otherPartyId) return res.json({ blockedByMe: false, blockedMe: false, otherUserId: null });
     const blockedByMe = !!db.prepare('SELECT id FROM user_blocks WHERE blocker_id=? AND blocked_id=?').get(req.user.id, otherPartyId);
@@ -321,12 +321,12 @@ module.exports = function (deps) {
   // تماماً. لا تحذف أي محتوى ولا تحظر أي حساب من هنا؛ فقط توثّق أن الأدمن راجعها.
   router.post('/chat-violations/:id/status', auth, requireRole('admin'), (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح', code: 'INVALID_ID' });
     const status = clean(req.body.status || '');
     const allowed = ['مفتوح', 'تمت المراجعة', 'تم اتخاذ إجراء'];
-    if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة' });
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة', code: 'STATUS_INVALID' });
     const existing = db.prepare('SELECT id FROM chat_violations WHERE id=?').get(id);
-    if (!existing) return res.status(404).json({ error: 'المخالفة غير موجودة' });
+    if (!existing) return res.status(404).json({ error: 'المخالفة غير موجودة', code: 'VIOLATION_NOT_FOUND' });
     db.prepare('UPDATE chat_violations SET status=? WHERE id=?').run(status, id);
     logAudit({
       adminId: req.user.id, actorName: req.user.name,
@@ -350,12 +350,12 @@ module.exports = function (deps) {
   // status ('قيد المراجعة' افتراضياً) لم يكن أي مسار يحدّثه إطلاقاً.
   router.post('/message-reports/:id/status', auth, requireRole('admin'), (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح', code: 'INVALID_ID' });
     const status = clean(req.body.status || '');
     const allowed = ['قيد المراجعة', 'تم اتخاذ إجراء', 'مرفوض'];
-    if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة' });
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة', code: 'STATUS_INVALID' });
     const existing = db.prepare('SELECT id FROM message_reports WHERE id=?').get(id);
-    if (!existing) return res.status(404).json({ error: 'البلاغ غير موجود' });
+    if (!existing) return res.status(404).json({ error: 'البلاغ غير موجود', code: 'REPORT_NOT_FOUND' });
     db.prepare('UPDATE message_reports SET status=? WHERE id=?').run(status, id);
     logAudit({
       adminId: req.user.id, actorName: req.user.name,

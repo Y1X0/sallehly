@@ -45,10 +45,10 @@ module.exports = function (deps) {
   // بنفس ما هو مطلوب صراحة ("Only owner can mark it").
   router.post('/notifications/:id/read', auth, (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح', code: 'INVALID_ID' });
     const notif = db.prepare('SELECT * FROM notifications WHERE id=?').get(id);
-    if (!notif) return res.status(404).json({ error: 'الإشعار غير موجود' });
-    if (Number(notif.user_id) !== Number(req.user.id)) return res.status(403).json({ error: 'غير مصرح' });
+    if (!notif) return res.status(404).json({ error: 'الإشعار غير موجود', code: 'NOTIFICATION_NOT_FOUND' });
+    if (Number(notif.user_id) !== Number(req.user.id)) return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
 
     if (!notif.is_read) {
       db.prepare('UPDATE notifications SET is_read=1, read_at=CURRENT_TIMESTAMP WHERE id=?').run(id);

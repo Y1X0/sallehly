@@ -15,7 +15,7 @@ const { IS_PROD, ALLOWED_ORIGINS } = require('../config/env');
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: IS_PROD ? 20 : 1000,
-  message: { error: 'محاولات تسجيل دخول كثيرة، حاول بعد 15 دقيقة' },
+  message: { error: 'محاولات تسجيل دخول كثيرة، حاول بعد 15 دقيقة', code: 'RATE_LIMIT_LOGIN' },
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -23,7 +23,7 @@ const loginLimiter = rateLimit({
 const registerLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
   max: IS_PROD ? 10 : 1000,
-  message: { error: 'تم تجاوز حد إنشاء الحسابات، حاول بعد ساعة' },
+  message: { error: 'تم تجاوز حد إنشاء الحسابات، حاول بعد ساعة', code: 'RATE_LIMIT_REGISTER' },
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -38,7 +38,7 @@ const registerLimiter = rateLimit({
 const passwordResetLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: IS_PROD ? 5 : 1000,
-  message: { error: 'محاولات كثيرة جداً لإعادة تعيين كلمة السر، حاول بعد 15 دقيقة' },
+  message: { error: 'محاولات كثيرة جداً لإعادة تعيين كلمة السر، حاول بعد 15 دقيقة', code: 'RATE_LIMIT_PASSWORD_RESET' },
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -53,7 +53,7 @@ const passwordResetLimiter = rateLimit({
 const messageLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: IS_PROD ? 30 : 1000,
-  message: { error: 'رسائل كثيرة جداً خلال وقت قصير، حاول بعد قليل' },
+  message: { error: 'رسائل كثيرة جداً خلال وقت قصير، حاول بعد قليل', code: 'RATE_LIMIT_MESSAGE' },
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -61,7 +61,7 @@ const messageLimiter = rateLimit({
 const offerLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: IS_PROD ? 20 : 1000,
-  message: { error: 'عروض كثيرة جداً خلال وقت قصير، حاول بعد قليل' },
+  message: { error: 'عروض كثيرة جداً خلال وقت قصير، حاول بعد قليل', code: 'RATE_LIMIT_OFFER' },
   standardHeaders: true,
   legacyHeaders: false
 });
@@ -103,13 +103,13 @@ function csrfCheck(req, res, next) {
     const referer = req.headers.referer;
     // Allow requests with no origin (same-origin fetch, server-to-server)
     if (origin && !ALLOWED_ORIGINS.includes(origin)) {
-      return res.status(403).json({ error: 'طلب غير مصرح به (CSRF)' });
+      return res.status(403).json({ error: 'طلب غير مصرح به (CSRF)', code: 'CSRF_REJECTED' });
     }
     if (!origin && referer) {
       try {
         const refOrigin = new URL(referer).origin;
         if (!ALLOWED_ORIGINS.includes(refOrigin)) {
-          return res.status(403).json({ error: 'طلب غير مصرح به (CSRF)' });
+          return res.status(403).json({ error: 'طلب غير مصرح به (CSRF)', code: 'CSRF_REJECTED' });
         }
       } catch { /* invalid referer — let it pass, rate-limiting handles abuse */ }
     }
@@ -121,8 +121,11 @@ function csrfCheck(req, res, next) {
 function apiErrorHandler(err, req, res, next) {
   if (err) {
     const msg = err.message || 'حدث خطأ في الخادم';
-    if (String(msg).includes('File too large')) return res.status(400).json({ error: 'حجم الصورة كبير، الحد الأقصى 3MB' });
-    if (String(msg).includes('نوع الملف') || String(msg).includes('نوع التسجيل')) return res.status(400).json({ error: msg });
+    if (String(msg).includes('File too large')) return res.status(400).json({ error: 'حجم الصورة كبير، الحد الأقصى 3MB', code: 'FILE_TOO_LARGE' });
+    if (String(msg).includes('نوع الملف') || String(msg).includes('نوع التسجيل')) {
+      const code = String(msg).includes('نوع الملف') ? 'FILE_TYPE_NOT_ALLOWED' : 'AUDIO_TYPE_NOT_ALLOWED';
+      return res.status(400).json({ error: msg, code });
+    }
     // In production, don't leak internal error details
     if (IS_PROD) return res.status(400).json({ error: 'حدث خطأ في الطلب' });
     return res.status(400).json({ error: msg });

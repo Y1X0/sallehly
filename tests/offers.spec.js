@@ -213,7 +213,13 @@ test.describe.serial('دورة العروض ومنطق العمولة المال
     expect(res.status()).toBe(402);
     const body = await res.json();
     expect(body.code).toBe('INSUFFICIENT_BALANCE');
-    expect(body.free_quota_used).toBeGreaterThanOrEqual(2);
+    // [FIX-ERRCODE-02] required_balance/current_balance/free_quota_used moved
+    // from flat top-level fields to a nested `params` object, matching the
+    // {error, code, params?} shape used by every other dynamic-data error
+    // site across the codebase (see routes/offers.routes.js and the sibling
+    // OFFER_ACTIVE_REQUEST_EXISTS site). Nothing outside this test read the
+    // old flat fields.
+    expect(body.params.free_quota_used).toBeGreaterThanOrEqual(2);
   });
 });
 

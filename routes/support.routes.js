@@ -18,7 +18,7 @@ module.exports = function (deps) {
 
   router.post('/support', auth, (req, res) => {
     const { type, title, body } = req.body || {};
-    if (clean(title).length < 3 || clean(body).length < 10 || clean(title).length > 120 || clean(body).length > 2000) return res.status(400).json({ error: 'اكتب عنوان وتفاصيل واضحة للدعم' });
+    if (clean(title).length < 3 || clean(body).length < 10 || clean(title).length > 120 || clean(body).length > 2000) return res.status(400).json({ error: 'اكتب عنوان وتفاصيل واضحة للدعم', code: 'SUPPORT_INVALID_FIELDS' });
     const allowedTypes = [
       'مشكلة طلب',
       'مشكلة حساب',
@@ -32,12 +32,12 @@ module.exports = function (deps) {
     ];
     const ticketType = clean(type || 'عام');
     if (!allowedTypes.includes(ticketType)) {
-      return res.status(400).json({ error: 'نوع التذكرة غير صحيح: ' + ticketType });
+      return res.status(400).json({ error: 'نوع التذكرة غير صحيح: ' + ticketType, code: 'SUPPORT_INVALID_TYPE', params: { ticketType } });
     }
     // [FIX-06] السماح بتذكرة واحدة مفتوحة فقط لكل مستخدم
     const openTicket = db.prepare("SELECT id FROM support_tickets WHERE user_id=? AND status='open' LIMIT 1").get(req.user.id);
     if (openTicket) {
-      return res.status(409).json({ error: 'لديك تذكرة دعم مفتوحة بالفعل. انتظر رد الإدارة أو أكمل المحادثة الحالية.' });
+      return res.status(409).json({ error: 'لديك تذكرة دعم مفتوحة بالفعل. انتظر رد الإدارة أو أكمل المحادثة الحالية.', code: 'SUPPORT_TICKET_ALREADY_OPEN' });
     }
     const info = db.prepare('INSERT INTO support_tickets(user_id,type,title,body) VALUES(?,?,?,?)')
       .run(req.user.id, ticketType, clean(title), clean(body));
@@ -83,7 +83,7 @@ module.exports = function (deps) {
 
   router.post('/support/:id/status', auth, requireRole('admin'), (req, res) => {
     const status = clean(req.body.status || 'open');
-    if (!['open', 'closed'].includes(status)) return res.status(400).json({ error: 'حالة الدعم غير صحيحة' });
+    if (!['open', 'closed'].includes(status)) return res.status(400).json({ error: 'حالة الدعم غير صحيحة', code: 'SUPPORT_STATUS_INVALID' });
     db.prepare('UPDATE support_tickets SET status=? WHERE id=?').run(status, req.params.id);
     const ticket = db.prepare('SELECT * FROM support_tickets WHERE id=?').get(req.params.id);
     // [REALTIME] أبلغ صاحب التذكرة فوراً بتغيّر الحالة (لإظهار/إخفاء اختصار الدعم).
@@ -98,7 +98,7 @@ module.exports = function (deps) {
   // ── FCM Token: يحفظ token الجهاز لإرسال إشعارات خارجية ──
   router.post('/fcm-token', auth, (req, res) => {
     const { token } = req.body;
-    if (!token || typeof token !== 'string') return res.status(400).json({ error: 'token مطلوب' });
+    if (!token || typeof token !== 'string') return res.status(400).json({ error: 'token مطلوب', code: 'FCM_TOKEN_REQUIRED' });
     db.prepare('UPDATE users SET fcm_token=? WHERE id=?').run(token, req.user.id);
     res.json({ ok: true });
   });
@@ -109,8 +109,8 @@ module.exports = function (deps) {
   router.post('/complaints', auth, requireRole('customer'), (req, res) => {
     const { request_id } = req.body;
     const body = clean(req.body.body || '');
-    if (body.length < 1) return res.status(400).json({ error: 'الشكوى فارغة' });
-    if (body.length > 1000) return res.status(400).json({ error: 'الشكوى طويلة جداً، الحد الأقصى 1000 حرف' });
+    if (body.length < 1) return res.status(400).json({ error: 'الشكوى فارغة', code: 'COMPLAINT_EMPTY' });
+    if (body.length > 1000) return res.status(400).json({ error: 'الشكوى طويلة جداً، الحد الأقصى 1000 حرف', code: 'COMPLAINT_TOO_LONG' });
 
     // تحقق أن الطلب فعلاً يخص هذا العميل (إن أُرسل request_id)
     const request = request_id
@@ -164,12 +164,12 @@ module.exports = function (deps) {
   // ── تحديث حالة الشكوى (أدمن فقط) — يستخدم عمود status الموجود أصلاً بالجدول ──
   router.post('/complaints/:id/status', auth, requireRole('admin'), (req, res) => {
     const id = parseInt(req.params.id, 10);
-    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح', code: 'INVALID_ID' });
     const status = clean(req.body.status || '');
     const allowed = ['open', 'in_review', 'resolved', 'rejected'];
-    if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة' });
+    if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة', code: 'STATUS_INVALID' });
     const existing = db.prepare('SELECT id FROM complaints WHERE id=?').get(id);
-    if (!existing) return res.status(404).json({ error: 'الشكوى غير موجودة' });
+    if (!existing) return res.status(404).json({ error: 'الشكوى غير موجودة', code: 'COMPLAINT_NOT_FOUND' });
     db.prepare('UPDATE complaints SET status=? WHERE id=?').run(status, id);
     const complaint = db.prepare('SELECT * FROM complaints WHERE id=?').get(id);
     io.to('admin-room').emit('complaint-status-updated', { complaint });
@@ -204,11 +204,11 @@ module.exports = function (deps) {
       WHERE t.id=?
     `).get(req.params.id);
 
-    if (!ticket) return res.status(404).json({ error: 'التذكرة غير موجودة' });
+    if (!ticket) return res.status(404).json({ error: 'التذكرة غير موجودة', code: 'SUPPORT_TICKET_NOT_FOUND' });
 
     // IDOR guard: only the ticket owner or admin can read the ticket
     if (req.user.role !== 'admin' && ticket.user_id !== req.user.id)
-      return res.status(403).json({ error: 'غير مصرح' });
+      return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
 
     const messages = db.prepare(`
       SELECT m.*, u.name sender_name, u.role sender_role
@@ -224,23 +224,23 @@ module.exports = function (deps) {
   router.post('/support/:id/messages', auth, (req, res) => {
     const ticket = db.prepare('SELECT * FROM support_tickets WHERE id=?').get(req.params.id);
 
-    if (!ticket) return res.status(404).json({ error: 'التذكرة غير موجودة' });
+    if (!ticket) return res.status(404).json({ error: 'التذكرة غير موجودة', code: 'SUPPORT_TICKET_NOT_FOUND' });
 
     // IDOR guard: only the ticket owner or admin can post messages
     if (req.user.role !== 'admin' && ticket.user_id !== req.user.id)
-      return res.status(403).json({ error: 'غير مصرح' });
+      return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
 
     if (ticket.status === 'closed') {
-      return res.status(400).json({ error: 'الدردشة منتهية' });
+      return res.status(400).json({ error: 'الدردشة منتهية', code: 'SUPPORT_CHAT_CLOSED' });
     }
 
     const body = clean(req.body.body || '');
 
     if (body.length < 1) {
-      return res.status(400).json({ error: 'اكتب رسالة' });
+      return res.status(400).json({ error: 'اكتب رسالة', code: 'SUPPORT_MESSAGE_EMPTY' });
     }
     if (body.length > 1000) {
-      return res.status(400).json({ error: 'الرسالة طويلة جداً، الحد الأقصى 1000 حرف' });
+      return res.status(400).json({ error: 'الرسالة طويلة جداً، الحد الأقصى 1000 حرف', code: 'CHAT_MESSAGE_TOO_LONG' });
     }
 
     db.prepare(`
