@@ -27,4 +27,19 @@ function userPublic(u) {
   return x;
 }
 
-module.exports = { escapeLike, hasSafeExt, safeUploadName, clean, userPublic };
+// [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة وحدة تستخدمها REST
+// (routes/chat.routes.js) وSocket.IO (services/socket.js) لنفس القرار:
+// هل يقدر هذا المستخدم يشارك بمحادثة هذا الطلب؟ كانت هذه القاعدة مكتوبة
+// مرتين بشكل منفصل، وانحرفت فعلياً مرتين ([SEC-FIX-CHATSCOPE-01] ثم
+// [SEC-FIX-CHATSCOPE-02]) لأن تعديل نسخة لا يضمن تعديل الأخرى. دالة واحدة
+// تمنع فئة الخطأ بالكامل بدل تصحيح كل حادثة على حدة. مقصورة على الفني
+// المؤكَّد (request.technician_id) أو العميل صاحب الطلب أو الأدمن — لا
+// تشمل فنياً بعرض pending/rejected بأي حال.
+function canAccessRequestChat(user, request) {
+  if (!user || !request) return false;
+  return user.role === 'admin' ||
+    Number(user.id) === Number(request.customer_id) ||
+    (request.technician_id != null && Number(user.id) === Number(request.technician_id));
+}
+
+module.exports = { escapeLike, hasSafeExt, safeUploadName, clean, userPublic, canAccessRequestChat };

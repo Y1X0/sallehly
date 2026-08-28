@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
 const { db } = require('../config/db');
 const { JWT_SECRET, IO_CORS_ORIGINS } = require('../config/env');
+const { canAccessRequestChat } = require('../utils/helpers');
 
 function createSocket(app) {
   const server = http.createServer(app);
@@ -67,14 +68,11 @@ function createSocket(app) {
       // Only allow joining rooms for requests the user is part of
       const r = db.prepare('SELECT * FROM requests WHERE id=?').get(requestId);
       if (!r) return;
-      // [SEC-FIX-CHATSCOPE-02] راجع DECISIONS.md — كان هذا الفحص يسمح لأي فني
-      // له عرض 'pending' (لم يُقبَل بعد) بالانضمام للغرفة اللحظية واستقبال كل
-      // محتوى المحادثة (messages-updated يبث سجل الرسائل كاملاً)، رغم أن
-      // routes/chat.routes.js (REST) صار مقصوراً على الفني المؤكَّد فقط
-      // [SEC-FIX-CHATSCOPE-01]. هذا فحص منفصل تماماً لم يُلمَس بذلك الإصلاح —
-      // نفس القاعدة الآن بالضبط: الفني المؤكَّد (r.technician_id) فقط.
-      const isAllowed = socket.user.role === 'admin' || r.customer_id === socket.user.id || r.technician_id === socket.user.id;
-      if (isAllowed) socket.join(String(requestId));
+      // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع
+      // routes/chat.routes.js (utils/helpers.js) بدل نسخة مكتوبة هنا يدوياً.
+      // هذا الفحص تحديداً انحرف مرتين ([SEC-FIX-CHATSCOPE-01]، [SEC-FIX-CHATSCOPE-02])
+      // قبل التوحيد — دالة واحدة تمنع تكرار الانحراف بدل الاعتماد على تذكّر تحديث نسختين.
+      if (canAccessRequestChat(socket.user, r)) socket.join(String(requestId));
     });
     socket.on('leave-request', (requestId) => { if (requestId) socket.leave(String(requestId)); });
   });

@@ -103,7 +103,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, upload, uploadAudio } = deps.middleware;
-  const { clean, getMessages, markChatRead, logAudit } = deps.utils;
+  const { clean, getMessages, markChatRead, logAudit, canAccessRequestChat } = deps.utils;
   const { sendPush } = deps.services;
   const { messageLimiter } = deps.limiters;
   const router = express.Router();
@@ -135,7 +135,8 @@ module.exports = function (deps) {
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
     // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
     // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع services/socket.js.
+    if (!canAccessRequestChat(req.user, r)) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق', code: 'CHAT_ON_CLOSED_REQUEST' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
       return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين', code: 'CHAT_BLOCKED_BY_USER' });
@@ -193,7 +194,8 @@ module.exports = function (deps) {
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
     // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
     // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع services/socket.js.
+    if (!canAccessRequestChat(req.user, r)) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق', code: 'CHAT_ON_CLOSED_REQUEST' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
       return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين', code: 'CHAT_BLOCKED_BY_USER' });
@@ -226,7 +228,8 @@ module.exports = function (deps) {
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
     // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
     // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع services/socket.js.
+    if (!canAccessRequestChat(req.user, r)) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق', code: 'CHAT_ON_CLOSED_REQUEST' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
       return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين', code: 'CHAT_BLOCKED_BY_USER' });
@@ -250,7 +253,8 @@ module.exports = function (deps) {
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
     // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
     // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع services/socket.js.
+    if (!canAccessRequestChat(req.user, r)) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     markChatRead(r.id, req.user.id);
     // [SEC-FIX-03] Targeted badges updated on read
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
@@ -269,7 +273,8 @@ module.exports = function (deps) {
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
     // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
     // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع services/socket.js.
+    if (!canAccessRequestChat(req.user, r)) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     const messageId = parseInt(req.body.messageId, 10) || null;
     const reason = clean(req.body.reason);
     if (!reason || reason.length < 2) return res.status(400).json({ error: 'الرجاء اختيار سبب البلاغ', code: 'REPORT_REASON_REQUIRED' });
@@ -294,7 +299,8 @@ module.exports = function (deps) {
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
     // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
     // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع services/socket.js.
+    if (!canAccessRequestChat(req.user, r)) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
     if (!otherPartyId) return res.status(400).json({ error: 'لا يوجد طرف آخر لحظره بعد بهذا الطلب', code: 'CHAT_NO_OTHER_PARTY' });
     db.prepare('INSERT OR IGNORE INTO user_blocks(blocker_id,blocked_id) VALUES(?,?)').run(req.user.id, otherPartyId);
