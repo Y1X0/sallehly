@@ -20,17 +20,17 @@ function sign(user) {
 function auth(req, res, next) {
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : req.cookies.token;
-  if (!token) return res.status(401).json({ error: 'يرجى تسجيل الدخول' });
+  if (!token) return res.status(401).json({ error: 'يرجى تسجيل الدخول', code: 'AUTH_REQUIRED' });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     // Revocation check: ensure account still active in DB
     const liveUser = db.prepare('SELECT id, role, name, is_active, token_version, is_super_admin FROM users WHERE id=?').get(decoded.id);
-    if (!liveUser || !liveUser.is_active) return res.status(401).json({ error: 'الجلسة منتهية أو الحساب موقوف' });
+    if (!liveUser || !liveUser.is_active) return res.status(401).json({ error: 'الجلسة منتهية أو الحساب موقوف', code: 'AUTH_SESSION_INVALID' });
     // [SEC-FIX-09] توكن صادر قبل آخر تسجيل خروج/تغيير كلمة سر لهذا الحساب —
     // decoded.tokenVersion غير موجود أصلاً بالتوكنات القديمة الموقّعة قبل هذا
     // التعديل، فتُعامَل كـ0 (تبقى صالحة ما لم يُسجَّل خروج فعلي بعد الترقية).
     if ((decoded.tokenVersion || 0) !== (liveUser.token_version || 0)) {
-      return res.status(401).json({ error: 'الجلسة منتهية أو الحساب موقوف' });
+      return res.status(401).json({ error: 'الجلسة منتهية أو الحساب موقوف', code: 'AUTH_SESSION_INVALID' });
     }
     // [FIX-AUTH-03-REST] نفس إصلاح السوكت تماماً (services/socket.js) — يُبنى
     // req.user من بيانات القاعدة الحيّة (role/name) بدل القيم المجمّدة داخل
@@ -40,11 +40,11 @@ function auth(req, res, next) {
     // تماماً — لا تُشتق أبداً من التوكن نفسه (لا يحمل هذه القيمة أصلاً).
     req.user = { id: liveUser.id, role: liveUser.role, name: liveUser.name, isSuperAdmin: !!liveUser.is_super_admin };
     next();
-  } catch { return res.status(401).json({ error: 'جلسة غير صالحة' }); }
+  } catch { return res.status(401).json({ error: 'جلسة غير صالحة', code: 'AUTH_TOKEN_INVALID' }); }
 }
 
 function requireRole(...roles) {
-  return (req, res, next) => roles.includes(req.user.role) ? next() : res.status(403).json({ error: 'لا تملك صلاحية' });
+  return (req, res, next) => roles.includes(req.user.role) ? next() : res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
 }
 
 // [FIX-SUPERADMIN-01] أشد صرامة من requireRole('admin') — لصلاحيات حسّاسة
@@ -54,7 +54,7 @@ function requireRole(...roles) {
 function requireSuperAdmin(req, res, next) {
   return req.user.role === 'admin' && req.user.isSuperAdmin
     ? next()
-    : res.status(403).json({ error: 'هذا الإجراء يتطلب صلاحية المدير الأعلى (Super Admin)' });
+    : res.status(403).json({ error: 'هذا الإجراء يتطلب صلاحية المدير الأعلى (Super Admin)', code: 'AUTH_SUPERADMIN_REQUIRED' });
 }
 
 module.exports = { auth, requireRole, requireSuperAdmin, sign };

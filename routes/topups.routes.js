@@ -11,11 +11,11 @@ module.exports = function (deps) {
 
   router.post('/topups', auth, requireRole('technician'), upload.single('receipt'), (req, res) => {
     const pkg = db.prepare('SELECT * FROM packages WHERE id=? AND is_active=1').get(req.body.package_id);
-    if (!pkg) return res.status(404).json({ error: 'الباقة غير موجودة' });
+    if (!pkg) return res.status(404).json({ error: 'الباقة غير موجودة', code: 'PACKAGE_NOT_FOUND' });
     // منع إرسال أكثر من طلب شحن معلق في نفس الوقت
     const pendingCount = db.prepare("SELECT COUNT(*) c FROM topups WHERE technician_id=? AND status='pending'").get(req.user.id).c;
-    if (pendingCount >= 2) return res.status(429).json({ error: 'لديك طلبات شحن قيد المراجعة. انتظر موافقة الإدارة أولاً' });
-    if (!req.file) return res.status(400).json({ error: 'يجب رفع صورة إثبات الدفع' });
+    if (pendingCount >= 2) return res.status(429).json({ error: 'لديك طلبات شحن قيد المراجعة. انتظر موافقة الإدارة أولاً', code: 'TOPUP_TOO_MANY_PENDING' });
+    if (!req.file) return res.status(400).json({ error: 'يجب رفع صورة إثبات الدفع', code: 'TOPUP_RECEIPT_REQUIRED' });
     const receipt_url = '/uploads/payments/' + req.file.filename;
     const info = db.prepare('INSERT INTO topups(technician_id,package_id,amount,bonus,receipt_url) VALUES(?,?,?,?,?)').run(req.user.id, pkg.id, pkg.amount, pkg.bonus, receipt_url);
     const topup = db.prepare('SELECT * FROM topups WHERE id=?').get(info.lastInsertRowid);
@@ -58,11 +58,11 @@ module.exports = function (deps) {
 
   router.post('/admin/topups/:id/review', auth, requireRole('admin'), (req, res) => {
     const t = db.prepare('SELECT * FROM topups WHERE id=?').get(req.params.id);
-    if (!t || t.status !== 'pending') return res.status(400).json({ error: 'طلب الشحن غير صالح' });
+    if (!t || t.status !== 'pending') return res.status(400).json({ error: 'طلب الشحن غير صالح', code: 'TOPUP_INVALID' });
     const status = clean(req.body.status);
-    if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'قرار غير صحيح' });
+    if (!['approved', 'rejected'].includes(status)) return res.status(400).json({ error: 'قرار غير صحيح', code: 'DECISION_INVALID' });
     const adminNote = clean(req.body.admin_note || '');
-    if (adminNote.length > 500) return res.status(400).json({ error: 'ملاحظة المراجعة طويلة جداً' });
+    if (adminNote.length > 500) return res.status(400).json({ error: 'ملاحظة المراجعة طويلة جداً', code: 'TOPUP_NOTE_TOO_LONG' });
     const doReview = db.transaction(() => {
       if (status === 'approved') {
         const tech = db.prepare('SELECT * FROM users WHERE id=?').get(t.technician_id);
@@ -129,7 +129,7 @@ module.exports = function (deps) {
     let id = req.user.id;
     if (req.user.role === 'admin' && req.query.user_id) {
       const parsed = parseInt(req.query.user_id, 10);
-      if (isNaN(parsed) || parsed <= 0) return res.status(400).json({ error: 'معرّف المستخدم غير صحيح' });
+      if (isNaN(parsed) || parsed <= 0) return res.status(400).json({ error: 'معرّف المستخدم غير صحيح', code: 'LEDGER_INVALID_USER_ID' });
       id = parsed;
     }
     res.json({ ledger: db.prepare('SELECT * FROM ledger WHERE user_id=? ORDER BY id DESC').all(id) });
