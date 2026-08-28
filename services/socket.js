@@ -67,11 +67,13 @@ function createSocket(app) {
       // Only allow joining rooms for requests the user is part of
       const r = db.prepare('SELECT * FROM requests WHERE id=?').get(requestId);
       if (!r) return;
-      // [FIX-CHAT-01] نفس فحص حالة العرض المُضاف بـchat.routes.js — بدونه هنا
-      // تحديداً، فني رُفض عرضه (status='rejected') يبقى قادراً على الانضمام
-      // للغرفة اللحظية واستقبال كل رسالة جديدة، حتى لو مُنع من REST.
-      const isAllowed = socket.user.role === 'admin' || r.customer_id === socket.user.id || r.technician_id === socket.user.id ||
-        (socket.user.role === 'technician' && db.prepare("SELECT id FROM offers WHERE request_id=? AND technician_id=? AND status IN ('pending','accepted') LIMIT 1").get(requestId, socket.user.id));
+      // [SEC-FIX-CHATSCOPE-02] راجع DECISIONS.md — كان هذا الفحص يسمح لأي فني
+      // له عرض 'pending' (لم يُقبَل بعد) بالانضمام للغرفة اللحظية واستقبال كل
+      // محتوى المحادثة (messages-updated يبث سجل الرسائل كاملاً)، رغم أن
+      // routes/chat.routes.js (REST) صار مقصوراً على الفني المؤكَّد فقط
+      // [SEC-FIX-CHATSCOPE-01]. هذا فحص منفصل تماماً لم يُلمَس بذلك الإصلاح —
+      // نفس القاعدة الآن بالضبط: الفني المؤكَّد (r.technician_id) فقط.
+      const isAllowed = socket.user.role === 'admin' || r.customer_id === socket.user.id || r.technician_id === socket.user.id;
       if (isAllowed) socket.join(String(requestId));
     });
     socket.on('leave-request', (requestId) => { if (requestId) socket.leave(String(requestId)); });
