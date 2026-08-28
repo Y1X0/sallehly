@@ -132,8 +132,10 @@ module.exports = function (deps) {
   router.post('/requests/:id/messages', auth, messageLimiter, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
-    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
+    // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
+    // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق', code: 'CHAT_ON_CLOSED_REQUEST' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
       return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين', code: 'CHAT_BLOCKED_BY_USER' });
@@ -188,8 +190,10 @@ module.exports = function (deps) {
   router.post('/requests/:id/audio', auth, messageLimiter, uploadAudio.single('audio'), (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
-    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
+    // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
+    // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق', code: 'CHAT_ON_CLOSED_REQUEST' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
       return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين', code: 'CHAT_BLOCKED_BY_USER' });
@@ -219,8 +223,10 @@ module.exports = function (deps) {
   router.post('/requests/:id/images', auth, messageLimiter, upload.single('image'), (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
-    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
+    // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
+    // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     if (['مكتمل', 'ملغي'].includes(r.status) && req.user.role !== 'admin') return res.status(400).json({ error: 'لا يمكن إرسال رسائل على طلب مغلق', code: 'CHAT_ON_CLOSED_REQUEST' });
     if (req.user.role !== 'admin' && isBlockedEitherWay(req.user.id, getOtherPartyId(r, req.user.id))) {
       return res.status(403).json({ error: 'لا يمكنك إرسال رسائل — تم حظر التواصل بين الطرفين', code: 'CHAT_BLOCKED_BY_USER' });
@@ -241,8 +247,10 @@ module.exports = function (deps) {
   router.get('/requests/:id/messages', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
-    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
+    // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
+    // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     markChatRead(r.id, req.user.id);
     // [SEC-FIX-03] Targeted badges updated on read
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
@@ -258,8 +266,10 @@ module.exports = function (deps) {
   router.post('/requests/:id/report-message', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
-    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
+    // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
+    // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     const messageId = parseInt(req.body.messageId, 10) || null;
     const reason = clean(req.body.reason);
     if (!reason || reason.length < 2) return res.status(400).json({ error: 'الرجاء اختيار سبب البلاغ', code: 'REPORT_REASON_REQUIRED' });
@@ -281,8 +291,10 @@ module.exports = function (deps) {
   router.post('/requests/:id/block', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
-    const hasOffer = req.user.role === 'technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id && !hasOffer) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
+    // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
+    // (بأي حالة، حتى مرفوض) بالوصول، لا الفني المؤكَّد فقط. الآن مطابق تماماً
+    // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
+    if (req.user.role !== 'admin' && req.user.id !== r.customer_id && req.user.id !== r.technician_id) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
     if (!otherPartyId) return res.status(400).json({ error: 'لا يوجد طرف آخر لحظره بعد بهذا الطلب', code: 'CHAT_NO_OTHER_PARTY' });
     db.prepare('INSERT OR IGNORE INTO user_blocks(blocker_id,blocked_id) VALUES(?,?)').run(req.user.id, otherPartyId);

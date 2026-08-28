@@ -415,3 +415,53 @@ test.describe.serial('الدردشة على الطلبات', () => {
     expect(m2.body).not.toContain('|');
   });
 });
+
+// [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان أي فني قدّم عرضاً (حتى مرفوضاً)
+// يبقى قادراً على قراءة/كتابة محادثة الطلب للأبد. هذا يثبت مباشرة أن فنياً
+// رُفض عرضه صراحة يُمنع الآن من كل مسارات الدردشة، رغم أن له صفاً بجدول offers.
+test.describe('[SEC-FIX-CHATSCOPE-01] فني رُفض عرضه لا يعود طرفاً بالمحادثة', () => {
+  test('بعد رفض عرض الفني ب (وقبول عرض الفني أ): الفني ب يُمنع من قراءة وكتابة محادثة الطلب', async ({ request }) => {
+    const customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار رفض العرض', city: CITY } });
+    const techA = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني أ يُقبل', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+    const techB = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني ب يُرفض', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      multipart: { service: SERVICE, city: CITY, area: AREA, description: 'وصف تجريبي لاختبار رفض عرض الفني والدردشة' },
+    });
+    const req1 = (await createRes.json()).request;
+
+    const offerARes = await request.post(`/api/requests/${req1.id}/offer`, { headers: authHeader(techA.token), form: { offer_price: '10', duration: 'خلال ساعة' } });
+    const offerBRes = await request.post(`/api/requests/${req1.id}/offer`, { headers: authHeader(techB.token), form: { offer_price: '12', duration: 'خلال ساعتين' } });
+    const offerAId = (await offerARes.json()).offers.find((o) => o.technician_id === techA.user.id).id;
+    const offerBId = (await offerBRes.json()).offers.find((o) => o.technician_id === techB.user.id).id;
+
+    // قبل أي قرار: كلا الفنيين له صف بـoffers، لكن لا أحد منهما "الفني المؤكَّد" بعد
+    await request.post(`/api/offers/${offerBId}/decision`, { headers: authHeader(customer.token), form: { decision: 'rejected' } });
+    await request.post(`/api/offers/${offerAId}/decision`, { headers: authHeader(customer.token), form: { decision: 'accepted' } });
+
+    // الفني أ (المقبول) يرسل رسالة بنجاح
+    const sendA = await request.post(`/api/requests/${req1.id}/messages`, { headers: authHeader(techA.token), form: { body: 'رسالة من الفني المقبول' } });
+    expect(sendA.status()).toBe(200);
+
+    // الفني ب (المرفوض) يُمنع من القراءة والكتابة كلياً، رغم صف offers الموجود له
+    const readB = await request.get(`/api/requests/${req1.id}/messages`, { headers: authHeader(techB.token) });
+    expect(readB.status()).toBe(403);
+    const sendB = await request.post(`/api/requests/${req1.id}/messages`, { headers: authHeader(techB.token), form: { body: 'محاولة رسالة من فني مرفوض' } });
+    expect(sendB.status()).toBe(403);
+
+    // ولا تصله رسالة العميل — يتحقق العميل نفسه أن الفني ب لا يظهر بأي رد يمكّنه من القراءة لاحقاً
+    const sendCustomer = await request.post(`/api/requests/${req1.id}/messages`, { headers: authHeader(customer.token), form: { body: 'رسالة للفني المقبول فقط' } });
+    expect(sendCustomer.status()).toBe(200);
+    const readBAgain = await request.get(`/api/requests/${req1.id}/messages`, { headers: authHeader(techB.token) });
+    expect(readBAgain.status()).toBe(403);
+  });
+});
