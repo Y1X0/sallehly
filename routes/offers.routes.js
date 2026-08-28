@@ -52,17 +52,24 @@ module.exports = function (deps) {
     if (!duration) return res.status(400).json({ error: 'أدخل مدة التنفيذ أو الوصول', code: 'OFFER_DURATION_REQUIRED' });
     if (duration.length > 100) return res.status(400).json({ error: 'مدة التنفيذ طويلة جداً', code: 'OFFER_DURATION_TOO_LONG' });
     if (note.length > 500) return res.status(400).json({ error: 'الملاحظة طويلة جداً، الحد الأقصى 500 حرف', code: 'OFFER_NOTE_TOO_LONG' });
-    db.prepare(`INSERT INTO offers(request_id,technician_id,price,duration,note,status) VALUES(?,?,?,?,?,'pending')
-      ON CONFLICT(request_id,technician_id) DO UPDATE SET price=excluded.price,duration=excluded.duration,note=excluded.note,status='pending',updated_at=CURRENT_TIMESTAMP`)
-      .run(r.id, req.user.id, price, duration, note);
-    // [FIX-OFFERQUOTA-01] يُزاد فقط عند أول عرض فعلي على هذا الطلب تحديداً
-    // (oldOffer كان فارغاً قبل الإدراج أعلاه) — تعديل السعر على عرض معلّق
-    // موجود مسبقاً على نفس الطلب (نفس شرط ON CONFLICT أعلاه) لا يُحتسب محاولة
-    // ثانية، وسحب العرض لاحقاً لا يُنقص هذا العدّاد أبداً.
-    if (!oldOffer) {
-      db.prepare('UPDATE users SET free_offers_used = free_offers_used + 1 WHERE id=?').run(req.user.id);
-    }
-    db.prepare("UPDATE requests SET status='وصلت عروض', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('بانتظار العروض','وصلت عروض')").run(r.id);
+    // [DATA-INTEGRITY-01] راجع DECISIONS.md — الإدراج + تحديث عدّاد الحصة +
+    // تحديث حالة الطلب الآن معاملة واحدة (نفس نمط doComplete بـ
+    // routes/requests.routes.js) بدل ثلاث كتابات منفصلة، حتى لا يترك انهيار
+    // العملية بينها عرضاً موجوداً بلا احتساب حصة أو حالة طلب غير محدَّثة.
+    const submitOffer = db.transaction(() => {
+      db.prepare(`INSERT INTO offers(request_id,technician_id,price,duration,note,status) VALUES(?,?,?,?,?,'pending')
+        ON CONFLICT(request_id,technician_id) DO UPDATE SET price=excluded.price,duration=excluded.duration,note=excluded.note,status='pending',updated_at=CURRENT_TIMESTAMP`)
+        .run(r.id, req.user.id, price, duration, note);
+      // [FIX-OFFERQUOTA-01] يُزاد فقط عند أول عرض فعلي على هذا الطلب تحديداً
+      // (oldOffer كان فارغاً قبل الإدراج أعلاه) — تعديل السعر على عرض معلّق
+      // موجود مسبقاً على نفس الطلب (نفس شرط ON CONFLICT أعلاه) لا يُحتسب محاولة
+      // ثانية، وسحب العرض لاحقاً لا يُنقص هذا العدّاد أبداً.
+      if (!oldOffer) {
+        db.prepare('UPDATE users SET free_offers_used = free_offers_used + 1 WHERE id=?').run(req.user.id);
+      }
+      db.prepare("UPDATE requests SET status='وصلت عروض', updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('بانتظار العروض','وصلت عروض')").run(r.id);
+    });
+    submitOffer();
 
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);
     const offers = db.prepare('SELECT * FROM offers WHERE request_id=? ORDER BY id DESC').all(r.id);
@@ -130,16 +137,27 @@ module.exports = function (deps) {
     // قرار "قبول" عليه من جديد، وهذا كان يعيد تعيين الطلب لفني مختلف عن الفني
     // المؤكَّد فعلياً حالياً (r.technician_id) بصمت وبدون أي تنبيه للفني الأول.
     if (offer.status !== 'pending') return res.status(400).json({ error: 'تم اتخاذ قرار على هذا العرض مسبقاً', code: 'OFFER_DECISION_ALREADY_MADE' });
+    // [DATA-INTEGRITY-01] راجع DECISIONS.md — كل فرع (قبول/رفض) الآن معاملة
+    // واحدة (نفس نمط doComplete بـrequests.routes.js) بدل كتابات منفصلة.
+    // فرع القبول تحديداً هو الأخطر: كان انهيار العملية بين "رفض كل العروض
+    // الأخرى" و"تعيين الفني" يترك الطلب بلا أي عرض مقبول ولا فني معيَّن، بلا
+    // أي رسالة خطأ للعميل.
     if (decision === 'rejected') {
-      db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.id);
-      const pending = db.prepare("SELECT COUNT(*) c FROM offers WHERE request_id=? AND status='pending'").get(offer.request_id).c;
-      db.prepare("UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND technician_id IS NULL").run(pending ? 'وصلت عروض' : 'بانتظار العروض', offer.request_id);
+      const applyRejection = db.transaction(() => {
+        db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.id);
+        const pending = db.prepare("SELECT COUNT(*) c FROM offers WHERE request_id=? AND status='pending'").get(offer.request_id).c;
+        db.prepare("UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND technician_id IS NULL").run(pending ? 'وصلت عروض' : 'بانتظار العروض', offer.request_id);
+      });
+      applyRejection();
     } else {
       const active = db.prepare("SELECT id FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1").get(offer.technician_id);
       if (active) return res.status(409).json({ error: 'الفني أصبح لديه طلب نشط حالياً، اختر عرضاً آخر', code: 'OFFER_TECHNICIAN_BUSY' });
-      db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=?").run(offer.request_id);
-      db.prepare("UPDATE offers SET status='accepted', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.id);
-      db.prepare("UPDATE requests SET technician_id=?, offer_price=?, arrival_time=?, status='تم اختيار عرض', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.technician_id, offer.price, offer.duration, offer.request_id);
+      const applyAcceptance = db.transaction(() => {
+        db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=?").run(offer.request_id);
+        db.prepare("UPDATE offers SET status='accepted', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.id);
+        db.prepare("UPDATE requests SET technician_id=?, offer_price=?, arrival_time=?, status='تم اختيار عرض', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.technician_id, offer.price, offer.duration, offer.request_id);
+      });
+      applyAcceptance();
     }
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(offer.request_id);
     const offers = db.prepare('SELECT * FROM offers WHERE request_id=? ORDER BY id DESC').all(offer.request_id);
