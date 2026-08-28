@@ -337,19 +337,19 @@ function sign(user){ return jwt.sign({ id:user.id, role:user.role, name:user.nam
 function auth(req,res,next){
   const h = req.headers.authorization || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : req.cookies.token;
-  if(!token) return res.status(401).json({error:'يرجى تسجيل الدخول'});
-  try { req.user = jwt.verify(token, JWT_SECRET); } catch { return res.status(401).json({error:'جلسة غير صالحة'}); }
+  if(!token) return res.status(401).json({error:'يرجى تسجيل الدخول', code:'AUTH_REQUIRED'});
+  try { req.user = jwt.verify(token, JWT_SECRET); } catch { return res.status(401).json({error:'جلسة غير صالحة', code:'AUTH_SESSION_INVALID'}); }
   // [FIX-SUSPEND-AUTH-01] كان توكن JWT صالحاً لمدة 7 أيام كاملة بغض النظر عن
   // حالة الحساب — إيقاف حساب من لوحة الإدارة (users/:id/toggle) لم يكن يمنع
   // من يملك توكناً صادراً مسبقاً من الاستمرار باستخدام كل الـ API لغاية 7
   // أيام لاحقة رغم إيقافه. الآن يُتحقق من is_active الفعلي بقاعدة البيانات
   // مع كل طلب مصادَق، بنفس فحص تسجيل الدخول أعلاه بالضبط.
   const u = db.prepare('SELECT is_active FROM users WHERE id=?').get(req.user.id);
-  if(!u) return res.status(401).json({error:'جلسة غير صالحة'});
-  if(!u.is_active) return res.status(403).json({error:'الحساب موقوف'});
+  if(!u) return res.status(401).json({error:'جلسة غير صالحة', code:'AUTH_SESSION_INVALID'});
+  if(!u.is_active) return res.status(403).json({error:'الحساب موقوف', code:'AUTH_ACCOUNT_SUSPENDED'});
   next();
 }
-function requireRole(...roles){ return (req,res,next)=> roles.includes(req.user.role) ? next() : res.status(403).json({error:'لا تملك صلاحية'}); }
+function requireRole(...roles){ return (req,res,next)=> roles.includes(req.user.role) ? next() : res.status(403).json({error:'لا تملك صلاحية', code:'AUTH_FORBIDDEN'}); }
 function clean(s){ return String(s||'').trim(); }
 function userPublic(u){ if(!u) return null; const {password_hash, ...x}=u; return x; }
 function calcRating(techId){
@@ -392,18 +392,18 @@ app.post('/api/auth/register', upload.single('avatar'), async (req,res)=>{
   const services = Array.isArray(req.body.services) ? req.body.services.join(',') : clean(req.body.services);
   const areas = Array.isArray(req.body.areas) ? req.body.areas.join(',') : clean(req.body.areas);
   const avatar_url = req.file ? '/uploads/avatars/' + req.file.filename : '';
-  if(!['customer','technician'].includes(role)) return res.status(400).json({error:'نوع الحساب غير صحيح'});
-  if(name.length < 2) return res.status(400).json({error:'الرجاء إدخال الاسم الكامل'});
-  if(role==='technician' && !avatar_url) return res.status(400).json({error:'الصورة الشخصية مطلوبة للفني فقط'});
-  if(!validator.isEmail(email)) return res.status(400).json({error:'البريد غير صحيح'});
-  if(!/^07\d{8}$/.test(phone)) return res.status(400).json({error:'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام'});
-  if(password.length < 8) return res.status(400).json({error:'كلمة السر يجب أن تكون 8 أحرف على الأقل'});
-  if(role==='technician' && !/^\d{10}$/.test(national_number)) return res.status(400).json({error:'الرقم الوطني يجب أن يكون 10 أرقام'});
+  if(!['customer','technician'].includes(role)) return res.status(400).json({error:'نوع الحساب غير صحيح', code:'REGISTER_INVALID_ROLE'});
+  if(name.length < 2) return res.status(400).json({error:'الرجاء إدخال الاسم الكامل', code:'REGISTER_NAME_REQUIRED'});
+  if(role==='technician' && !avatar_url) return res.status(400).json({error:'الصورة الشخصية مطلوبة للفني فقط', code:'REGISTER_TECH_AVATAR_REQUIRED'});
+  if(!validator.isEmail(email)) return res.status(400).json({error:'البريد غير صحيح', code:'REGISTER_INVALID_EMAIL'});
+  if(!/^07\d{8}$/.test(phone)) return res.status(400).json({error:'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code:'REGISTER_INVALID_PHONE'});
+  if(password.length < 8) return res.status(400).json({error:'كلمة السر يجب أن تكون 8 أحرف على الأقل', code:'PASSWORD_TOO_SHORT'});
+  if(role==='technician' && !/^\d{10}$/.test(national_number)) return res.status(400).json({error:'الرقم الوطني يجب أن يكون 10 أرقام', code:'REGISTER_INVALID_NATIONAL_NUMBER'});
   const existUser = db.prepare('SELECT id FROM users WHERE email=? OR phone=?').get(email, phone);
-  if(existUser) return res.status(409).json({error:'البريد أو رقم الهاتف مستخدم مسبقاً'});
+  if(existUser) return res.status(409).json({error:'البريد أو رقم الهاتف مستخدم مسبقاً', code:'REGISTER_EMAIL_OR_PHONE_TAKEN'});
   if(role==='technician' && national_number){
     const existNat = db.prepare('SELECT id FROM users WHERE national_number=?').get(national_number);
-    if(existNat) return res.status(409).json({error:'الرقم الوطني مستخدم مسبقاً'});
+    if(existNat) return res.status(409).json({error:'الرقم الوطني مستخدم مسبقاً', code:'REGISTER_NATIONAL_NUMBER_TAKEN'});
   }
   try{
     const hash = bcrypt.hashSync(password, 12);
@@ -417,8 +417,8 @@ app.post('/api/auth/register', upload.single('avatar'), async (req,res)=>{
     res.json({ok:true, message:'تم إرسال كود التحقق إلى بريدك الإلكتروني', email});
   } catch(e){
     console.error('Register error:', e.message);
-    if(String(e.message).includes('UNIQUE')) return res.status(409).json({error:'البريد أو رقم الهاتف أو الرقم الوطني مستخدم مسبقاً'});
-    res.status(500).json({error:'تعذر إنشاء الحساب'});
+    if(String(e.message).includes('UNIQUE')) return res.status(409).json({error:'البريد أو رقم الهاتف أو الرقم الوطني مستخدم مسبقاً', code:'REGISTER_DUPLICATE'});
+    res.status(500).json({error:'تعذر إنشاء الحساب', code:'ACCOUNT_CREATE_FAILED'});
   }
 });
 
@@ -426,14 +426,14 @@ app.post('/api/auth/register', upload.single('avatar'), async (req,res)=>{
 app.post('/api/auth/verify', (req,res)=>{
   const email = clean(req.body.email).toLowerCase();
   const code = clean(req.body.code);
-  if(!email || !code) return res.status(400).json({error:'البريد والكود مطلوبان'});
+  if(!email || !code) return res.status(400).json({error:'البريد والكود مطلوبان', code:'OTP_MISSING_FIELDS'});
   const otp = db.prepare('SELECT * FROM otp_codes WHERE email=? AND used=0 ORDER BY id DESC LIMIT 1').get(email);
-  if(!otp) return res.status(400).json({error:'لم يتم إرسال كود لهذا البريد، سجّل مجدداً'});
-  if(Date.now() > otp.expires_at) return res.status(400).json({error:'انتهت صلاحية الكود، اضغط إعادة الإرسال'});
-  if(otp.code !== code) return res.status(400).json({error:'الكود غير صحيح'});
+  if(!otp) return res.status(400).json({error:'لم يتم إرسال كود لهذا البريد، سجّل مجدداً', code:'OTP_NOT_FOUND'});
+  if(Date.now() > otp.expires_at) return res.status(400).json({error:'انتهت صلاحية الكود، اضغط إعادة الإرسال', code:'OTP_EXPIRED'});
+  if(otp.code !== code) return res.status(400).json({error:'الكود غير صحيح', code:'OTP_INVALID'});
   db.prepare('UPDATE otp_codes SET used=1 WHERE id=?').run(otp.id);
   const pending = db.prepare('SELECT * FROM pending_users WHERE email=?').get(email);
-  if(!pending) return res.status(400).json({error:'بيانات التسجيل غير موجودة، سجّل مجدداً'});
+  if(!pending) return res.status(400).json({error:'بيانات التسجيل غير موجودة، سجّل مجدداً', code:'OTP_REGISTRATION_MISSING'});
   try{
     const info = db.prepare('INSERT INTO users(role,name,email,phone,password_hash,national_number,city,services,areas,avatar_url) VALUES(?,?,?,?,?,?,?,?,?,?)')
       .run(pending.role,pending.name,pending.email,pending.phone,pending.password_hash,pending.national_number,pending.city,pending.services,pending.areas,pending.avatar_url);
@@ -443,8 +443,8 @@ app.post('/api/auth/verify', (req,res)=>{
     res.cookie('token', token, AUTH_COOKIE_OPTS);
     res.json({ok:true, token, user:userPublic(user)});
   }catch(e){
-    if(String(e.message).includes('UNIQUE')) return res.status(409).json({error:'الحساب موجود مسبقاً'});
-    res.status(500).json({error:'تعذر إنشاء الحساب'});
+    if(String(e.message).includes('UNIQUE')) return res.status(409).json({error:'الحساب موجود مسبقاً', code:'ACCOUNT_ALREADY_EXISTS'});
+    res.status(500).json({error:'تعذر إنشاء الحساب', code:'ACCOUNT_CREATE_FAILED'});
   }
 });
 
@@ -452,7 +452,7 @@ app.post('/api/auth/verify', (req,res)=>{
 app.post('/api/auth/resend-otp', async (req,res)=>{
   const email = clean(req.body.email).toLowerCase();
   const pending = db.prepare('SELECT * FROM pending_users WHERE email=?').get(email);
-  if(!pending) return res.status(400).json({error:'لا يوجد طلب تسجيل لهذا البريد'});
+  if(!pending) return res.status(400).json({error:'لا يوجد طلب تسجيل لهذا البريد', code:'OTP_RESEND_NO_PENDING'});
   const code = String(Math.floor(100000 + Math.random() * 900000));
   const expires = Date.now() + 10 * 60 * 1000;
   db.prepare('DELETE FROM otp_codes WHERE email=?').run(email);
@@ -464,8 +464,8 @@ app.post('/api/auth/resend-otp', async (req,res)=>{
 app.post('/api/auth/login', (req,res)=>{
   const email = clean(req.body.email).toLowerCase(); const password = String(req.body.password||'');
   const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
-  if(!user || !bcrypt.compareSync(password, user.password_hash)) return res.status(401).json({error:'بيانات الدخول غير صحيحة'});
-  if(!user.is_active) return res.status(403).json({error:'الحساب موقوف'});
+  if(!user || !bcrypt.compareSync(password, user.password_hash)) return res.status(401).json({error:'بيانات الدخول غير صحيحة', code:'AUTH_INVALID_CREDENTIALS'});
+  if(!user.is_active) return res.status(403).json({error:'الحساب موقوف', code:'AUTH_ACCOUNT_SUSPENDED'});
   const token = sign(user); res.cookie('token', token, AUTH_COOKIE_OPTS); res.json({token,user:userPublic(user)});
 });
 app.post('/api/auth/logout', (req,res)=>{ res.clearCookie('token'); res.json({ok:true}); });
@@ -488,7 +488,7 @@ app.post('/api/requests', auth, requireRole('customer'), upload.single('problem_
   const lat = req.body.lat ? Number(req.body.lat) : null;
   const lng = req.body.lng ? Number(req.body.lng) : null;
   const problemImage = req.file ? '/uploads/requests/' + req.file.filename : '';
-  if(!clean(service)||!clean(city)||clean(description).length<10) return res.status(400).json({error:'أكمل بيانات الطلب: الخدمة، المحافظة، ووصف لا يقل عن 10 أحرف'});
+  if(!clean(service)||!clean(city)||clean(description).length<10) return res.status(400).json({error:'أكمل بيانات الطلب: الخدمة، المحافظة، ووصف لا يقل عن 10 أحرف', code:'REQUEST_INVALID_FIELDS'});
   const info = db.prepare('INSERT INTO requests(customer_id,service,city,area,lat,lng,description,preferred_time,problem_image_url,status) VALUES(?,?,?,?,?,?,?,?,?,?)')
     .run(req.user.id, clean(service), clean(city), clean(area), lat, lng, clean(description), clean(preferred_time), problemImage, 'بانتظار العروض');
   const request = db.prepare('SELECT * FROM requests WHERE id=?').get(info.lastInsertRowid);
@@ -511,8 +511,8 @@ app.get('/api/requests', auth, (req,res)=>{
 });
 app.delete('/api/requests/:id', auth, requireRole('customer'), (req,res)=>{
   const r=db.prepare('SELECT * FROM requests WHERE id=? AND customer_id=?').get(req.params.id, req.user.id);
-  if(!r) return res.status(404).json({error:'الطلب غير موجود'});
-  if(['مكتمل'].includes(r.status)) return res.status(400).json({error:'لا يمكن حذف طلب مكتمل من السجل'});
+  if(!r) return res.status(404).json({error:'الطلب غير موجود', code:'REQUEST_NOT_FOUND'});
+  if(['مكتمل'].includes(r.status)) return res.status(400).json({error:'لا يمكن حذف طلب مكتمل من السجل', code:'REQUEST_CANNOT_DELETE_COMPLETED'});
   db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(r.id);
   db.prepare("UPDATE requests SET status='ملغي', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(r.id);
   const request=db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);
@@ -522,15 +522,15 @@ app.delete('/api/requests/:id', auth, requireRole('customer'), (req,res)=>{
 });
 app.post('/api/requests/:id/offer', auth, requireRole('technician'), (req,res)=>{
   const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-  if(!r) return res.status(404).json({error:'الطلب غير موجود'});
-  if(r.status!=='بانتظار العروض') return res.status(400).json({error:'هذا الطلب لم يعد يستقبل عروضاً'});
+  if(!r) return res.status(404).json({error:'الطلب غير موجود', code:'REQUEST_NOT_FOUND'});
+  if(r.status!=='بانتظار العروض') return res.status(400).json({error:'هذا الطلب لم يعد يستقبل عروضاً', code:'REQUEST_NOT_ACCEPTING_OFFERS'});
   const active = db.prepare("SELECT id, service FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') AND id<>? ORDER BY id DESC LIMIT 1").get(req.user.id, r.id);
-  if(active) return res.status(409).json({error:`لا يمكنك إرسال عرض جديد قبل إنهاء طلبك الحالي رقم ${active.id} - ${active.service}`});
+  if(active) return res.status(409).json({error:`لا يمكنك إرسال عرض جديد قبل إنهاء طلبك الحالي رقم ${active.id} - ${active.service}`, code:'OFFER_ACTIVE_REQUEST_EXISTS', params:{id:active.id, service:active.service}});
   const price = Number(req.body.offer_price);
   const duration = clean(req.body.duration || req.body.arrival_time);
   const note = clean(req.body.note || '');
-  if(!price || price<1) return res.status(400).json({error:'أدخل سعر صحيح'});
-  if(!duration) return res.status(400).json({error:'أدخل مدة التنفيذ أو الوصول'});
+  if(!price || price<1) return res.status(400).json({error:'أدخل سعر صحيح', code:'OFFER_INVALID_PRICE'});
+  if(!duration) return res.status(400).json({error:'أدخل مدة التنفيذ أو الوصول', code:'OFFER_DURATION_REQUIRED'});
   db.prepare(`INSERT INTO offers(request_id,technician_id,price,duration,note,status) VALUES(?,?,?,?,?,'pending')
     ON CONFLICT(request_id,technician_id) DO UPDATE SET price=excluded.price,duration=excluded.duration,note=excluded.note,status='pending',updated_at=CURRENT_TIMESTAMP`)
     .run(r.id, req.user.id, price, duration, note);
@@ -543,9 +543,9 @@ app.post('/api/requests/:id/offer', auth, requireRole('technician'), (req,res)=>
 
 app.get('/api/requests/:id/offers', auth, (req,res)=>{
   const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-  if(!r) return res.status(404).json({error:'الطلب غير موجود'});
+  if(!r) return res.status(404).json({error:'الطلب غير موجود', code:'REQUEST_NOT_FOUND'});
   const allowed = req.user.role==='admin' || r.customer_id===req.user.id || r.technician_id===req.user.id || req.user.role==='technician';
-  if(!allowed) return res.status(403).json({error:'غير مصرح'});
+  if(!allowed) return res.status(403).json({error:'غير مصرح', code:'FORBIDDEN_GENERIC'});
   let rows = db.prepare(`SELECT o.*, u.name technician_name, u.city technician_city, u.areas technician_areas, u.avatar_url, u.rating_avg, u.rating_count, u.completed_jobs
     FROM offers o JOIN users u ON u.id=o.technician_id WHERE o.request_id=? ORDER BY CASE o.status WHEN 'accepted' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, o.id DESC`).all(r.id);
   if(req.user.role==='technician' && r.customer_id!==req.user.id && r.technician_id!==req.user.id) rows = rows.filter(o=>o.technician_id===req.user.id);
@@ -554,17 +554,17 @@ app.get('/api/requests/:id/offers', auth, (req,res)=>{
 
 app.post('/api/offers/:id/decision', auth, requireRole('customer'), (req,res)=>{
   const offer = db.prepare('SELECT o.*, r.customer_id, r.status request_status FROM offers o JOIN requests r ON r.id=o.request_id WHERE o.id=?').get(req.params.id);
-  if(!offer) return res.status(404).json({error:'العرض غير موجود'});
-  if(offer.customer_id!==req.user.id) return res.status(403).json({error:'هذا العرض لا يخصك'});
+  if(!offer) return res.status(404).json({error:'العرض غير موجود', code:'OFFER_NOT_FOUND'});
+  if(offer.customer_id!==req.user.id) return res.status(403).json({error:'هذا العرض لا يخصك', code:'OFFER_NOT_YOURS'});
   const decision = clean(req.body.decision);
-  if(!['accepted','rejected'].includes(decision)) return res.status(400).json({error:'قرار غير صحيح'});
+  if(!['accepted','rejected'].includes(decision)) return res.status(400).json({error:'قرار غير صحيح', code:'DECISION_INVALID'});
   if(decision==='rejected'){
     db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.id);
     const pending = db.prepare("SELECT COUNT(*) c FROM offers WHERE request_id=? AND status='pending'").get(offer.request_id).c;
     db.prepare("UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND technician_id IS NULL").run(pending?'وصلت عروض':'بانتظار العروض', offer.request_id);
   } else {
     const active = db.prepare("SELECT id FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1").get(offer.technician_id);
-    if(active) return res.status(409).json({error:'الفني أصبح لديه طلب نشط حالياً، اختر عرضاً آخر'});
+    if(active) return res.status(409).json({error:'الفني أصبح لديه طلب نشط حالياً، اختر عرضاً آخر', code:'OFFER_TECHNICIAN_BUSY'});
     db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=?").run(offer.request_id);
     db.prepare("UPDATE offers SET status='accepted', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.id);
     db.prepare("UPDATE requests SET technician_id=?, offer_price=?, arrival_time=?, status='تم اختيار عرض', updated_at=CURRENT_TIMESTAMP WHERE id=?").run(offer.technician_id, offer.price, offer.duration, offer.request_id);
@@ -577,12 +577,12 @@ app.post('/api/offers/:id/decision', auth, requireRole('customer'), (req,res)=>{
 });
 app.post('/api/requests/:id/status', auth, (req,res)=>{
   const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-  if(!r) return res.status(404).json({error:'الطلب غير موجود'});
+  if(!r) return res.status(404).json({error:'الطلب غير موجود', code:'REQUEST_NOT_FOUND'});
   const status = clean(req.body.status);
   const allowed=['قيد التنفيذ','بانتظار تأكيد الدفع','مكتمل','ملغي'];
-  if(!allowed.includes(status)) return res.status(400).json({error:'حالة غير صحيحة'});
-  if(req.user.role!=='admin' && req.user.id!==r.customer_id && req.user.id!==r.technician_id) return res.status(403).json({error:'لا تملك صلاحية'});
-  if(status==='مكتمل' && req.user.role!=='admin' && req.user.id!==r.customer_id) return res.status(403).json({error:'إكمال الطلب يكون من العميل فقط'});
+  if(!allowed.includes(status)) return res.status(400).json({error:'حالة غير صحيحة', code:'REQUEST_INVALID_STATUS'});
+  if(req.user.role!=='admin' && req.user.id!==r.customer_id && req.user.id!==r.technician_id) return res.status(403).json({error:'لا تملك صلاحية', code:'AUTH_FORBIDDEN'});
+  if(status==='مكتمل' && req.user.role!=='admin' && req.user.id!==r.customer_id) return res.status(403).json({error:'إكمال الطلب يكون من العميل فقط', code:'REQUEST_COMPLETE_CUSTOMER_ONLY'});
   if(status==='مكتمل' && r.technician_id && !r.commission_charged){
     const tech = db.prepare('SELECT * FROM users WHERE id=?').get(r.technician_id);
     let charge = 0;
@@ -591,7 +591,7 @@ app.post('/api/requests/:id/status', auth, (req,res)=>{
       db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note) VALUES(?,?,?,?,?)').run(tech.id,'طلب مجاني',0,tech.balance,'تم احتساب الطلب ضمن أول طلبين مجانيين');
     } else {
       charge = 2;
-      if(tech.balance < charge) return res.status(400).json({error:'رصيد الفني غير كافٍ لإكمال الطلب. يجب شحن الرصيد أولاً.'});
+      if(tech.balance < charge) return res.status(400).json({error:'رصيد الفني غير كافٍ لإكمال الطلب. يجب شحن الرصيد أولاً.', code:'TECHNICIAN_BALANCE_INSUFFICIENT'});
       const after = Number((tech.balance - charge).toFixed(2));
       db.prepare('UPDATE users SET balance=?, completed_jobs=completed_jobs+1 WHERE id=?').run(after, tech.id);
       db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note) VALUES(?,?,?,?,?)').run(tech.id,'خصم عمولة طلب',-charge,after,`خصم عمولة الطلب رقم ${r.id}`);
@@ -645,15 +645,15 @@ function rejectBlockedChat(req,res,r,body){
   const reason=chatViolationReason(body);
   if(!reason) return false;
   db.prepare('INSERT INTO chat_violations(request_id,user_id,body,reason) VALUES(?,?,?,?)').run(r.id, req.user.id, String(body||'').slice(0,500), reason);
-  return res.status(400).json({error:'⚠️ الرسائل العادية مسموحة. الممنوع فقط مشاركة رقم هاتف أو واتساب أو تيليجرام أو إيميل أو روابط تواصل خارجية.'});
+  return res.status(400).json({error:'⚠️ الرسائل العادية مسموحة. الممنوع فقط مشاركة رقم هاتف أو واتساب أو تيليجرام أو إيميل أو روابط تواصل خارجية.', code:'CHAT_BLOCKED_CONTACT_INFO'});
 }
 
 app.post('/api/requests/:id/messages', auth, (req,res)=>{
   const r=db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-  if(!r) return res.status(404).json({error:'الطلب غير موجود'});
+  if(!r) return res.status(404).json({error:'الطلب غير موجود', code:'REQUEST_NOT_FOUND'});
   const hasOffer = req.user.role==='technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-  if(req.user.role!=='admin' && req.user.id!==r.customer_id && req.user.id!==r.technician_id && !hasOffer) return res.status(403).json({error:'لا تملك صلاحية'});
-  const body=clean(req.body.body); if(body.length<1) return res.status(400).json({error:'الرسالة فارغة'});
+  if(req.user.role!=='admin' && req.user.id!==r.customer_id && req.user.id!==r.technician_id && !hasOffer) return res.status(403).json({error:'لا تملك صلاحية', code:'AUTH_FORBIDDEN'});
+  const body=clean(req.body.body); if(body.length<1) return res.status(400).json({error:'الرسالة فارغة', code:'MESSAGE_EMPTY'});
   if(rejectBlockedChat(req,res,r,body)) return;
   db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id,req.user.id,body);
   markChatRead(r.id, req.user.id);
@@ -665,10 +665,10 @@ app.post('/api/requests/:id/messages', auth, (req,res)=>{
 
 app.post('/api/requests/:id/audio', auth, uploadAudio.single('audio'), (req,res)=>{
   const r=db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-  if(!r) return res.status(404).json({error:'الطلب غير موجود'});
+  if(!r) return res.status(404).json({error:'الطلب غير موجود', code:'REQUEST_NOT_FOUND'});
   const hasOffer = req.user.role==='technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-  if(req.user.role!=='admin' && req.user.id!==r.customer_id && req.user.id!==r.technician_id && !hasOffer) return res.status(403).json({error:'لا تملك صلاحية'});
-  if(!req.file) return res.status(400).json({error:'لم يتم استقبال التسجيل الصوتي'});
+  if(req.user.role!=='admin' && req.user.id!==r.customer_id && req.user.id!==r.technician_id && !hasOffer) return res.status(403).json({error:'لا تملك صلاحية', code:'AUTH_FORBIDDEN'});
+  if(!req.file) return res.status(400).json({error:'لم يتم استقبال التسجيل الصوتي', code:'AUDIO_FILE_MISSING'});
   const url='/uploads/audios/'+req.file.filename;
   const body='[audio]'+url;
   db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id,req.user.id,body);
@@ -681,25 +681,25 @@ app.post('/api/requests/:id/audio', auth, uploadAudio.single('audio'), (req,res)
 
 app.get('/api/requests/:id/messages', auth, (req,res)=>{
   const r=db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
-  if(!r) return res.status(404).json({error:'الطلب غير موجود'});
+  if(!r) return res.status(404).json({error:'الطلب غير موجود', code:'REQUEST_NOT_FOUND'});
   const hasOffer = req.user.role==='technician' ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id) : null;
-  if(req.user.role!=='admin' && req.user.id!==r.customer_id && req.user.id!==r.technician_id && !hasOffer) return res.status(403).json({error:'لا تملك صلاحية'});
+  if(req.user.role!=='admin' && req.user.id!==r.customer_id && req.user.id!==r.technician_id && !hasOffer) return res.status(403).json({error:'لا تملك صلاحية', code:'AUTH_FORBIDDEN'});
   markChatRead(r.id, req.user.id);
   io.emit('chat-badges-updated', { requestId:r.id });
   res.json({messages: getMessages(req.params.id)});
 });
 app.post('/api/requests/:id/rate', auth, requireRole('customer'), (req,res)=>{
   const r=db.prepare('SELECT * FROM requests WHERE id=? AND customer_id=? AND status=?').get(req.params.id, req.user.id, 'مكتمل');
-  if(!r || !r.technician_id) return res.status(400).json({error:'لا يمكن تقييم هذا الطلب'});
-  const stars=Number(req.body.stars); if(stars<1||stars>5) return res.status(400).json({error:'اختر تقييم من 1 إلى 5'});
+  if(!r || !r.technician_id) return res.status(400).json({error:'لا يمكن تقييم هذا الطلب', code:'RATING_NOT_ALLOWED'});
+  const stars=Number(req.body.stars); if(stars<1||stars>5) return res.status(400).json({error:'اختر تقييم من 1 إلى 5', code:'RATING_STARS_INVALID'});
   try{ db.prepare('INSERT INTO ratings(request_id,technician_id,customer_id,stars,comment) VALUES(?,?,?,?,?)').run(r.id,r.technician_id,req.user.id,stars,clean(req.body.comment)); calcRating(r.technician_id); safeEmit(r.id, 'rated', {requestId:r.id, stars}); res.json({ok:true}); }
-  catch{ res.status(409).json({error:'تم تقييم هذا الطلب مسبقاً'}); }
+  catch{ res.status(409).json({error:'تم تقييم هذا الطلب مسبقاً', code:'RATING_ALREADY_EXISTS'}); }
 });
 
 app.post('/api/topups', auth, requireRole('technician'), upload.single('receipt'), (req,res)=>{
   const pkg = db.prepare('SELECT * FROM packages WHERE id=? AND is_active=1').get(req.body.package_id);
-  if(!pkg) return res.status(404).json({error:'الباقة غير موجودة'});
-  if(!req.file) return res.status(400).json({error:'يجب رفع صورة إثبات الدفع'});
+  if(!pkg) return res.status(404).json({error:'الباقة غير موجودة', code:'PACKAGE_NOT_FOUND'});
+  if(!req.file) return res.status(400).json({error:'يجب رفع صورة إثبات الدفع', code:'TOPUP_RECEIPT_REQUIRED'});
   const receipt_url='/uploads/payments/'+req.file.filename;
   const info=db.prepare('INSERT INTO topups(technician_id,package_id,amount,bonus,receipt_url) VALUES(?,?,?,?,?)').run(req.user.id,pkg.id,pkg.amount,pkg.bonus,receipt_url);
   res.json({topup: db.prepare('SELECT * FROM topups WHERE id=?').get(info.lastInsertRowid)});
@@ -710,9 +710,9 @@ app.get('/api/topups', auth, (req,res)=>{
 });
 app.post('/api/admin/topups/:id/review', auth, requireRole('admin'), (req,res)=>{
   const t=db.prepare('SELECT * FROM topups WHERE id=?').get(req.params.id);
-  if(!t || t.status!=='pending') return res.status(400).json({error:'طلب الشحن غير صالح'});
+  if(!t || t.status!=='pending') return res.status(400).json({error:'طلب الشحن غير صالح', code:'TOPUP_INVALID'});
   const status=clean(req.body.status);
-  if(!['approved','rejected'].includes(status)) return res.status(400).json({error:'قرار غير صحيح'});
+  if(!['approved','rejected'].includes(status)) return res.status(400).json({error:'قرار غير صحيح', code:'DECISION_INVALID'});
   if(status==='approved'){
     const tech=db.prepare('SELECT * FROM users WHERE id=?').get(t.technician_id);
     const add=Number(t.amount)+Number(t.bonus||0); const after=Number((tech.balance+add).toFixed(2));
@@ -732,8 +732,8 @@ app.post('/api/me/profile', auth, (req,res)=>{
   const phone = clean(req.body.phone);
   const city = clean(req.body.city);
   const areas = clean(req.body.areas || req.body.area);
-  if(name.length < 2) return res.status(400).json({error:'الاسم قصير'});
-  if(phone.length < 7) return res.status(400).json({error:'رقم الهاتف غير صحيح'});
+  if(name.length < 2) return res.status(400).json({error:'الاسم قصير', code:'PROFILE_NAME_TOO_SHORT'});
+  if(phone.length < 7) return res.status(400).json({error:'رقم الهاتف غير صحيح', code:'PROFILE_PHONE_INVALID'});
   db.prepare('UPDATE users SET name=?, phone=?, city=?, areas=? WHERE id=?').run(name, phone, city, areas, req.user.id);
   res.json({user:userPublic(db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id))});
 });
@@ -741,8 +741,8 @@ app.post('/api/me/password', auth, (req,res)=>{
   const current = String(req.body.current_password || '');
   const next = String(req.body.new_password || '');
   const user = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
-  if(!bcrypt.compareSync(current, user.password_hash)) return res.status(400).json({error:'كلمة السر الحالية غير صحيحة'});
-  if(next.length < 8) return res.status(400).json({error:'كلمة السر الجديدة يجب أن تكون 8 أحرف على الأقل'});
+  if(!bcrypt.compareSync(current, user.password_hash)) return res.status(400).json({error:'كلمة السر الحالية غير صحيحة', code:'PASSWORD_CURRENT_INCORRECT'});
+  if(next.length < 8) return res.status(400).json({error:'كلمة السر الجديدة يجب أن تكون 8 أحرف على الأقل', code:'PASSWORD_TOO_SHORT'});
   db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(bcrypt.hashSync(next, 12), req.user.id);
   res.json({ok:true});
 });
@@ -757,13 +757,13 @@ app.post('/api/admin/users/:id/toggle', auth, requireRole('admin'), (req,res)=>{
 app.post('/api/admin/services', auth, requireRole('admin'), (req,res)=>{
   const name = clean(req.body.name);
   const icon = clean(req.body.icon) || '🔧';
-  if(name.length < 2) return res.status(400).json({error:'اسم المهنة قصير'});
+  if(name.length < 2) return res.status(400).json({error:'اسم المهنة قصير', code:'SERVICE_NAME_TOO_SHORT'});
   try{
     const info = db.prepare('INSERT INTO service_categories(name,icon) VALUES(?,?)').run(name, icon);
     res.json({service: db.prepare('SELECT * FROM service_categories WHERE id=?').get(info.lastInsertRowid)});
   }catch(e){
-    if(String(e.message).includes('UNIQUE')) return res.status(409).json({error:'هذه المهنة موجودة مسبقاً'});
-    res.status(500).json({error:'تعذر إضافة المهنة'});
+    if(String(e.message).includes('UNIQUE')) return res.status(409).json({error:'هذه المهنة موجودة مسبقاً', code:'SERVICE_ALREADY_EXISTS'});
+    res.status(500).json({error:'تعذر إضافة المهنة', code:'SERVICE_CREATE_FAILED'});
   }
 });
 
@@ -799,7 +799,7 @@ app.get('/api/chats', auth, (req,res)=>{
 
 app.post('/api/support', auth, (req,res)=>{
   const {type,title,body}=req.body||{};
-  if(!title || !body || String(body).length<10) return res.status(400).json({error:'اكتب عنوان وتفاصيل واضحة للدعم'});
+  if(!title || !body || String(body).length<10) return res.status(400).json({error:'اكتب عنوان وتفاصيل واضحة للدعم', code:'SUPPORT_INVALID_FIELDS'});
   const info=db.prepare('INSERT INTO support_tickets(user_id,type,title,body) VALUES(?,?,?,?)').run(req.user.id, clean(type||'عام'), clean(title), clean(body));
   res.json({ticket:db.prepare('SELECT * FROM support_tickets WHERE id=?').get(info.lastInsertRowid)});
 });
@@ -810,7 +810,9 @@ app.get('/api/support', auth, requireRole('admin'), (req,res)=>{
 app.use((err, req, res, next)=>{
   if(err){
     const msg = err.message || 'حدث خطأ في الخادم';
-    if(String(msg).includes('File too large')) return res.status(400).json({error:'حجم الصورة كبير، الحد الأقصى 3MB'});
+    if(String(msg).includes('File too large')) return res.status(400).json({error:'حجم الصورة كبير، الحد الأقصى 3MB', code:'FILE_TOO_LARGE'});
+    if(msg==='نوع الملف غير مسموح') return res.status(400).json({error:msg, code:'FILE_TYPE_NOT_ALLOWED'});
+    if(msg==='نوع التسجيل الصوتي غير مسموح') return res.status(400).json({error:msg, code:'AUDIO_TYPE_NOT_ALLOWED'});
     return res.status(400).json({error:msg});
   }
   next();
