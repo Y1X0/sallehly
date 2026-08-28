@@ -210,3 +210,39 @@ test.describe('[Chat] حقل seen على مستوى الرسالة الواحد�
     expect(targetAfter.seen).toBe(1);
   });
 });
+
+// [SEC-FIX-CHATSCOPE-02] راجع DECISIONS.md — كان join-request (services/socket.js)
+// يسمح لأي فني له عرض 'pending' (لم يُقبَل بعد) بالانضمام لغرفة الطلب واستقبال
+// كل رسالة لحظياً، رغم أن REST (chat.routes.js) صار مقصوراً على الفني المؤكَّد
+// فقط بإصلاح منفصل — نفس الثغرة، طريق مختلف لم يُغطَّه ذلك الإصلاح.
+test.describe('[SEC-FIX-CHATSCOPE-02] فني بعرض pending لا ينضم لغرفة الدردشة اللحظية', () => {
+  test('فني قدّم عرضاً لكن لم يُقبَل بعد: join-request لا يُدخله الغرفة، لا يصله messages-updated', async ({ request, baseURL }) => {
+    const customer = await registerAndVerify(request, 'customer', { name: 'عميل اختبار سوكت pending', city: CITY });
+    const technician = await registerAndVerify(request, 'technician', {
+      name: 'فني بعرض pending', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      form: { service: SERVICE, description: 'طلب لاختبار منع انضمام فني pending لغرفة السوكت', city: CITY, area: 'القويسمة' },
+    });
+    const requestId = (await createRes.json()).request.id;
+    // الفني يقدّم عرضاً — لا يُقبَل ولا يُرفَض، يبقى pending عمداً
+    await request.post(`/api/requests/${requestId}/offer`, { headers: authHeader(technician.token), form: { offer_price: '10', duration: '20 دقيقة' } });
+
+    const techSocket = connectSocket(baseURL, technician.token);
+    await waitForConnect(techSocket);
+
+    const messagesUpdatedPromise = waitForEvent(techSocket, 'messages-updated', 1500);
+    techSocket.emit('join-request', requestId);
+    await new Promise((r) => setTimeout(r, 200)); // وقت كافٍ لمعالجة محاولة الانضمام بطرف السيرفر
+
+    // العميل يرسل رسالة بعد محاولة انضمام الفني — لو انضم الفني فعلياً للغرفة، سيصله هذا الحدث
+    await request.post(`/api/requests/${requestId}/messages`, { headers: authHeader(customer.token), form: { body: 'رسالة لا يجب أن يراها فني بعرض pending' } });
+
+    const received = await messagesUpdatedPromise;
+    expect(received, 'فني بعرض pending استقبل messages-updated رغم أنه ليس الفني المؤكَّد').toBeNull();
+
+    techSocket.close();
+  });
+});

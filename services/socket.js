@@ -7,6 +7,7 @@ const jwt = require('jsonwebtoken');
 const { Server } = require('socket.io');
 const { db } = require('../config/db');
 const { JWT_SECRET, IO_CORS_ORIGINS } = require('../config/env');
+const { canAccessRequestChat } = require('../utils/helpers');
 
 function createSocket(app) {
   const server = http.createServer(app);
@@ -67,12 +68,11 @@ function createSocket(app) {
       // Only allow joining rooms for requests the user is part of
       const r = db.prepare('SELECT * FROM requests WHERE id=?').get(requestId);
       if (!r) return;
-      // [FIX-CHAT-01] نفس فحص حالة العرض المُضاف بـchat.routes.js — بدونه هنا
-      // تحديداً، فني رُفض عرضه (status='rejected') يبقى قادراً على الانضمام
-      // للغرفة اللحظية واستقبال كل رسالة جديدة، حتى لو مُنع من REST.
-      const isAllowed = socket.user.role === 'admin' || r.customer_id === socket.user.id || r.technician_id === socket.user.id ||
-        (socket.user.role === 'technician' && db.prepare("SELECT id FROM offers WHERE request_id=? AND technician_id=? AND status IN ('pending','accepted') LIMIT 1").get(requestId, socket.user.id));
-      if (isAllowed) socket.join(String(requestId));
+      // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع
+      // routes/chat.routes.js (utils/helpers.js) بدل نسخة مكتوبة هنا يدوياً.
+      // هذا الفحص تحديداً انحرف مرتين ([SEC-FIX-CHATSCOPE-01]، [SEC-FIX-CHATSCOPE-02])
+      // قبل التوحيد — دالة واحدة تمنع تكرار الانحراف بدل الاعتماد على تذكّر تحديث نسختين.
+      if (canAccessRequestChat(socket.user, r)) socket.join(String(requestId));
     });
     socket.on('leave-request', (requestId) => { if (requestId) socket.leave(String(requestId)); });
   });
