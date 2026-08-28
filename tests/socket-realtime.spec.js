@@ -138,7 +138,11 @@ test.describe('[Socket] ترتيب الرسائل عبر حمولة الحدث �
       form: { service: SERVICE, description: 'طلب لاختبار ترتيب الرسائل اللحظي', city: CITY, area: 'القويسمة' },
     });
     const requestId = (await createRes.json()).request.id;
-    await request.post(`/api/requests/${requestId}/offer`, { headers: authHeader(technician.token), form: { offer_price: '10', duration: '20 دقيقة' } });
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, { headers: authHeader(technician.token), form: { offer_price: '10', duration: '20 دقيقة' } });
+    const offerId = (await offerRes.json()).offers[0].id;
+    // [SEC-FIX-CHATSCOPE-01] الدردشة الآن مقصورة على الفني المؤكَّد — راجع
+    // DECISIONS.md. يجب قبول العرض قبل أن يقدر الفني يرسل رسائل.
+    await request.post(`/api/offers/${offerId}/decision`, { headers: authHeader(customer.token), form: { decision: 'accepted' } });
 
     const customerSocket = connectSocket(baseURL, customer.token);
     await waitForConnect(customerSocket);
@@ -182,7 +186,11 @@ test.describe('[Chat] حقل seen على مستوى الرسالة الواحد�
       form: { service: SERVICE, description: 'طلب لاختبار حقل seen على مستوى الرسالة', city: CITY, area: 'القويسمة' },
     });
     const requestId = (await createRes.json()).request.id;
-    await request.post(`/api/requests/${requestId}/offer`, { headers: authHeader(technician.token), form: { offer_price: '10', duration: '20 دقيقة' } });
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, { headers: authHeader(technician.token), form: { offer_price: '10', duration: '20 دقيقة' } });
+    const offerId = (await offerRes.json()).offers[0].id;
+    // [SEC-FIX-CHATSCOPE-01] الدردشة الآن مقصورة على الفني المؤكَّد — راجع
+    // DECISIONS.md. يجب قبول العرض قبل أن يقدر الفني يقرأ/يرسل رسائل.
+    await request.post(`/api/offers/${offerId}/decision`, { headers: authHeader(customer.token), form: { decision: 'accepted' } });
 
     await request.post(`/api/requests/${requestId}/messages`, { headers: authHeader(customer.token), form: { body: 'رسالة لفحص seen' } });
 

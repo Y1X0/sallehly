@@ -155,11 +155,12 @@ test.describe('[SEC-FIX-10] رفض REST فوري لحساب مُوقَف (ولي
   });
 });
 
-// GET /api/requests/:id/offers لا يُخفي كامل الاستجابة عن فني غير مرتبط بالطلب
-// (يراها كي يعرف عدد المنافسين)، لكن يجب ألا يكشف سعر/ملاحظة عروض فنيين آخرين —
-// فقط عرضه الخاص إن وُجد. هذا السلوك موجود بالكود (سطر الـ filter) لكن بلا اختبار مباشر.
-test.describe('[IDOR] فلترة عروض الفنيين غير المرتبطين بالطلب', () => {
-  test('فني ثالث لا علاقة له بالطلب يرى عروضه الخاصة فقط، لا أسعار/ملاحظات الفنيين الآخرين', async ({ request }) => {
+// [SEC-FIX-OFFERSCOPE-01] GET /api/requests/:id/offers الآن يمنع تماماً أي فني
+// لم يقدّم عرضاً على هذا الطلب بالذات ولا هو الفني المؤكَّد (راجع DECISIONS.md —
+// كانت تسمح لأي فني على الإطلاق، ما يتيح حصاد lat/lng لكل طلب عبر IDs تسلسلية).
+// أما فني قدّم عرضاً فعلاً فيرى عرضه الخاص فقط، لا سعر/ملاحظة عروض فنيين آخرين.
+test.describe('[IDOR] نطاق عروض الفنيين', () => {
+  test('فني ثالث لا علاقة له بالطلب يُمنع كلياً؛ بعد تقديم عرض يرى عرضه فقط لا أسعار/ملاحظات الآخرين', async ({ request }) => {
     const customer = await registerAndVerify(request, 'customer', { name: 'عميل لاختبار IDOR', city: CITY });
     const techA = await registerAndVerify(request, 'technician', {
       name: 'فني أ', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
@@ -180,11 +181,9 @@ test.describe('[IDOR] فلترة عروض الفنيين غير المرتبطي
     await request.post(`/api/requests/${requestId}/offer`, { headers: authHeader(techA.token), form: { offer_price: '15', duration: '30 دقيقة', note: 'ملاحظة سرية أ' } });
     await request.post(`/api/requests/${requestId}/offer`, { headers: authHeader(techB.token), form: { offer_price: '25', duration: '45 دقيقة', note: 'ملاحظة سرية ب' } });
 
+    // لم يقدّم عرضاً بعد وليس الفني المؤكَّد — يُمنع كلياً من هذا الـendpoint
     const viewC = await request.get(`/api/requests/${requestId}/offers`, { headers: authHeader(techC.token) });
-    expect(viewC.status()).toBe(200);
-    const bodyC = await viewC.json();
-    // لا يرى أي عرض (لم يقدّم شيئاً بعد) ولا يُسرَّب أي سعر/ملاحظة لفني منافس
-    expect(bodyC.offers).toHaveLength(0);
+    expect(viewC.status()).toBe(403);
 
     await request.post(`/api/requests/${requestId}/offer`, { headers: authHeader(techC.token), form: { offer_price: '20', duration: '20 دقيقة', note: 'ملاحظة ج' } });
     const viewCAfter = await request.get(`/api/requests/${requestId}/offers`, { headers: authHeader(techC.token) });

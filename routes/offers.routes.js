@@ -101,7 +101,15 @@ module.exports = function (deps) {
   router.get('/requests/:id/offers', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
-    const allowed = req.user.role === 'admin' || r.customer_id === req.user.id || r.technician_id === req.user.id || req.user.role === 'technician';
+    // [SEC-FIX-OFFERSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني (بلا أي علاقة
+    // بهذا الطلب تحديداً) بالوصول، فأي حساب فني يقدر يمشي على IDs تسلسلية
+    // (1,2,3...) ويحصد lat/lng ووصف كل طلب على المنصة. الآن مقصور على الفني
+    // المؤكَّد أو من قدّم عرضاً فعلياً على هذا الطلب بالذات — نفس منطق hasOffer
+    // المستخدَم أصلاً بمواقع أخرى بهذا الملف (مثال: تكرار العرض أعلاه).
+    const hasOffer = req.user.role === 'technician'
+      ? db.prepare('SELECT id FROM offers WHERE request_id=? AND technician_id=? LIMIT 1').get(r.id, req.user.id)
+      : null;
+    const allowed = req.user.role === 'admin' || r.customer_id === req.user.id || r.technician_id === req.user.id || !!hasOffer;
     if (!allowed) return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
     // Customer IDOR guard: customers only see their own requests' offers
     if (req.user.role === 'customer' && r.customer_id !== req.user.id) return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
