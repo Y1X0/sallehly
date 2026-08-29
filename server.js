@@ -28,7 +28,10 @@ const { sendOtpEmail } = require('./services/email');
 const { sendPush } = require('./services/push');
 const { createSocket } = require('./services/socket');
 
-const app = createApp();
+// [SEC-FIX-UPLOADS-01] راجع app.js وroutes/protected-uploads.routes.js — deps
+// مصغَّر (db + auth فقط) خاص بمسار /uploads المحمي، وليس نفس deps الكامل
+// المستخدَم لاحقاً بأسطر /api أدناه.
+const app = createApp({ db, middleware: { auth } });
 
 // [PERF-HARDEN-01] لا شيء يحدث هنا ما لم يُفعَّل PERF_LOG_ENABLED صراحةً
 // بمتغيرات البيئة — انظر تعليق middleware/perf-monitor.js.

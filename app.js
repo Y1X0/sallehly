@@ -8,7 +8,7 @@ const cookieParser = require('cookie-parser');
 const env = require('./config/env');
 const security = require('./middleware/security');
 
-function createApp() {
+function createApp(deps) {
   const app = express();
 
   // Render/Proxy fix: trust the first reverse proxy so express-rate-limit
@@ -29,6 +29,15 @@ function createApp() {
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
   app.use(express.static(path.join(env.BASE, 'public')));
+  // [SEC-FIX-UPLOADS-01] راجع DECISIONS.md وroutes/protected-uploads.routes.js —
+  // يعترض avatars/ وpayments/ فقط بمصادقة حقيقية قبل express.static العام
+  // أدناه (الذي يبقى يخدم requests/ وaudios/ كما هو تماماً حتى تكتمل بقية هذا
+  // الإصلاح، ثم يُحذف نهائياً). deps اختياري عمداً — بدونه (استيراد app.js
+  // وحده لاختبار خفيف بلا قاعدة بيانات حقيقية، راجع تعليق أعلى هذا الملف)
+  // السلوك يبقى بالضبط كما كان قبل هذا التعديل: express.static العام فقط.
+  if (deps) {
+    app.use('/uploads', require('./routes/protected-uploads.routes')(deps));
+  }
   // [FIX-CHATIMG-02] قدّم الملفات المرفوعة دائماً وبدون شرط — سواء كانت
   // env.UPLOAD_DIR تشير لقرص دائم (DATA_DIR مضبوط) أو لمجلد داخل كود
   // التطبيق نفسه (DATA_DIR غير مضبوط، وقتها UPLOAD_DIR = public/uploads
