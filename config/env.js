@@ -36,6 +36,11 @@ const BACKUP_GITHUB_TOKEN = process.env.BACKUP_GITHUB_TOKEN || '';
 const BACKUP_GITHUB_OWNER = process.env.BACKUP_GITHUB_OWNER || '';
 const BACKUP_GITHUB_REPO = process.env.BACKUP_GITHUB_REPO || '';
 
+// [MON-FIX-01] راجع DECISIONS.md وservices/error-alert.js — بريد استقبال
+// تنبيهات الأخطاء غير المتوقعة. اختياري تماماً: لو غاب، يُستخدَم ADMIN_EMAIL
+// نفسه بدل إضافة إعداد إجباري جديد (نفس فلسفة الإعدادات الاختيارية أعلاه).
+const ALERT_EMAIL = process.env.ALERT_EMAIL || process.env.ADMIN_EMAIL || '';
+
 const DATA_DIR = process.env.DATA_DIR || path.join(BASE, 'data');
 const UPLOAD_DIR = process.env.DATA_DIR
   ? path.join(DATA_DIR, 'uploads')
@@ -77,5 +82,5 @@ const IO_CORS_ORIGINS = IS_PROD
 module.exports = {
   BASE, PORT, IS_PROD, JWT_SECRET, RESEND_API_KEY, RESEND_FROM,
   DATA_DIR, UPLOAD_DIR, COOKIE_OPTS, ALLOWED_ORIGINS, IO_CORS_ORIGINS,
-  BACKUP_GITHUB_TOKEN, BACKUP_GITHUB_OWNER, BACKUP_GITHUB_REPO
+  BACKUP_GITHUB_TOKEN, BACKUP_GITHUB_OWNER, BACKUP_GITHUB_REPO, ALERT_EMAIL
 };
