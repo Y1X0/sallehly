@@ -375,6 +375,13 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_support_messages_ticket ON supp
 // إضافيان بالكامل، idempotent، لا يُغيّران أي بيانات أو سلوك حالي.
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_notifications_user_created ON notifications(user_id, created_at)').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read)').run(); } catch (e) {}
+// [PERF-HARDEN-04] topups.technician_id/package_id كانا بلا أي فهرس منذ
+// إنشاء الجدول، رغم استخدامهما بشرط WHERE بمواقع متكررة: فحص عدد طلبات
+// الشحن المعلّقة عند كل محاولة شحن جديدة (POST /topups)، وGET /topups لفرع
+// الفني (كل فتح لشاشة المحفظة). نفس نمط idx_offers_request/idx_offers_technician
+// أعلاه بالضبط — فهرسان منفصلان بدل فهرس مركّب واحد لا يخدم إلا اتجاهاً واحداً.
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_topups_technician ON topups(technician_id)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_topups_package ON topups(package_id)').run(); } catch (e) {}
 // تمت إزالة سطر إعادة تفعيل الفنيين الموقوفين تلقائياً عند كل تشغيل للسيرفر.
 // كان هذا السطر يلغي قرار إيقاف أي فني من الإدارة (بسبب شكوى أو مخالفة) في كل مرة يعاد تشغيل السيرفر أو يتم نشر تحديث جديد.
 // إيقاف/تفعيل الفنيين أصبح بالكامل بيد الإدارة فقط عبر /api/admin/users/:id/toggle.

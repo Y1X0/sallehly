@@ -97,7 +97,14 @@ module.exports = function (deps) {
   });
 
   // ── STEP 2: التحقق من OTP وإنشاء الحساب ─────────────────────────────────
-  router.post('/auth/verify-otp', (req, res) => {
+  // [PERF-HARDEN-04] الوحيد بين مسارات هذا الملف بلا أي حد طلبات على مستوى
+  // IP — بعكس /auth/login و/auth/register و/auth/forgot-password و
+  // /auth/reset-password (جميعها محمية أدناه). الحماية الحالية (5 محاولات
+  // لكل سجل معلَّق قبل حذفه) تبقى كما هي دون تغيير؛ loginLimiter هنا حد
+  // إضافي على مستوى IP بنفس شكل تهديد محاولات تخمين متكررة — نفس المحدِّد
+  // المُستخدَم أصلاً لتسجيل الدخول بهذا الملف بالذات، وليس registerLimiter
+  // (مصمَّم لمعدّل إنشاء حسابات بالساعة، لا لتخمين كود).
+  router.post('/auth/verify-otp', loginLimiter, (req, res) => {
     const email = clean(req.body.email).toLowerCase();
     const otp = clean(req.body.otp);
 

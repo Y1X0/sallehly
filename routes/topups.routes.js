@@ -125,6 +125,11 @@ module.exports = function (deps) {
     res.json({ topup: db.prepare('SELECT * FROM topups WHERE id=?').get(t.id) });
   });
 
+  // [PERF-HARDEN-04] بلا سقف سابقاً — دفتر حساب مستخدم واحد ينمو بلا حدود
+  // (كل طلب مكتمل + كل شحن رصيد + كل تعديل يدوي من الأدمن)، ويُطلَب بكل فتح
+  // لشاشة المحفظة. 1000 سقف وقائي بنفس نمط GET /requests لفرع الفني (نفس
+  // فئة "قائمة شخصية تنمو مع عمر الحساب")، بعكس 2000 المستخدَم لقوائم الأدمن
+  // الشاملة عبر كل المستخدمين. ORDER BY id DESC يضمن بقاء الأحدث ضمن النطاق.
   router.get('/ledger', auth, (req, res) => {
     let id = req.user.id;
     if (req.user.role === 'admin' && req.query.user_id) {
@@ -132,7 +137,7 @@ module.exports = function (deps) {
       if (isNaN(parsed) || parsed <= 0) return res.status(400).json({ error: 'معرّف المستخدم غير صحيح', code: 'LEDGER_INVALID_USER_ID' });
       id = parsed;
     }
-    res.json({ ledger: db.prepare('SELECT * FROM ledger WHERE user_id=? ORDER BY id DESC').all(id) });
+    res.json({ ledger: db.prepare('SELECT * FROM ledger WHERE user_id=? ORDER BY id DESC LIMIT 1000').all(id) });
   });
 
   return router;
