@@ -333,7 +333,11 @@ test.describe.serial('الدردشة على الطلبات', () => {
     expect(imageUrl).toMatch(/^\/uploads\/requests\//);
 
     // الفحص الحقيقي لهذا الإصلاح: الرابط نفسه يرجع الصورة فعلاً، وليس 404.
-    const fetchRes = await request.get(imageUrl);
+    // [SEC-FIX-UPLOADS-01] صور الشات أصبحت وراء مصادقة حقيقية — راجع
+    // DECISIONS.md وtests/protected-uploads.spec.js لتغطية حدود الصلاحية
+    // نفسها (403 لطرف خارجي، 401 بلا توكن). هذا الاختبار هنا يبقى يغطي
+    // "المسار السعيد" الأصلي فقط: صاحب علاقة فعلية بالطلب يقدر يفتح الرابط.
+    const fetchRes = await request.get(imageUrl, { headers: authHeader(customer.token) });
     expect(fetchRes.status()).toBe(200);
     expect(fetchRes.headers()['content-type']).toContain('image');
   });

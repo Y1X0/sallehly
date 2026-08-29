@@ -1,14 +1,15 @@
 // routes/protected-uploads.routes.js — يخدم /uploads/avatars و/uploads/payments
-// وراء مصادقة حقيقية، بدل express.static العام (app.js). لا يمس /uploads/requests
-// ولا /uploads/audios بعد — لا يوجد راوت هون لهذين المسارين، فتبقى الطلبات
-// إليهما تصل express.static التالي بالسلسلة كما هي اليوم (راجع app.js).
+// و(صور الشات تحديداً ضمن) /uploads/requests وراء مصادقة حقيقية، بدل
+// express.static العام (app.js). صور المشكلة (problem_image_url) بنفس مجلد
+// requests/ لسا غير مُغطّاة (خطوة لاحقة من نفس الإصلاح، قاعدة صلاحيتها مختلفة —
+// راجع DECISIONS.md)؛ وaudios/ لسا غير مُغطّاة إطلاقاً. أي طلب لا يطابق راوتاً
+// هون (بما فيها صور المشكلة وaudios/) يكمل لـexpress.static التالي بالسلسلة
+// كما هو اليوم تماماً.
 //
 // [SEC-FIX-UPLOADS-01] راجع DECISIONS.md — كانت كل ملفات public/uploads تُقدَّم
 // بلا أي تحقق صلاحية إطلاقاً، فقط اسم ملف يصعب تخمينه (crypto.randomBytes،
 // راجع utils/helpers.js:safeUploadName). أي رابط مسرَّب (سجل متصفح، لقطة شاشة)
-// يكشف الملف بشكل دائم. هذان أول مجلدين (الأخطر: إيصالات دفع + صور شخصية)
-// تُثبَّت معاملتهما، وكلاهما غير مُستخدَم كصورة بأي شاشة بالتطبيق حالياً — تأمينهما
-// بلا أي أثر على العميل.
+// يكشف الملف بشكل دائم.
 
 const express = require('express');
 const path = require('path');
@@ -22,6 +23,7 @@ function isSafeFilename(name) {
 module.exports = function (deps) {
   const { db } = deps;
   const { auth } = deps.middleware;
+  const { canAccessRequestChat } = deps.utils;
   const router = express.Router();
 
   // [SEC-FIX-UPLOADS-01] الصور الشخصية ليس لها حد وصول مقيّد بهذا التطبيق أصلاً —
@@ -55,6 +57,32 @@ module.exports = function (deps) {
     }
     res.sendFile(path.resolve(UPLOAD_DIR, 'payments', filename), (err) => {
       if (err && !res.headersSent) res.status(404).json({ error: 'الملف غير موجود', code: 'UPLOAD_NOT_FOUND' });
+    });
+  });
+
+  // [SEC-FIX-UPLOADS-01] يعترض صور الشات فقط ضمن requests/ (يطابق filename
+  // مع body رسالة '[image]...' موجودة فعلياً) — نفس قاعدة صلاحية الشات
+  // بالضبط: canAccessRequestChat (utils/helpers.js)، دالة موحَّدة مستخدَمة
+  // أصلاً بـREST (routes/chat.routes.js) وSocket.IO (services/socket.js)،
+  // لا فحص جديد. لو الملف مش صورة شات معروفة (على الأغلب problem_image_url —
+  // خطوة لاحقة من نفس الإصلاح لسا ما نُفِّذت)، next() فوراً بلا أي مصادقة
+  // مطلوبة هون — express.static بعده يخدمه بالضبط كما كان قبل هذا التعديل،
+  // بلا أي تغيير سلوكي على problem_image_url بهذه الخطوة تحديداً.
+  router.get('/requests/:filename', (req, res, next) => {
+    const { filename } = req.params;
+    if (!isSafeFilename(filename)) return next();
+    const imageUrl = '/uploads/requests/' + filename;
+    const message = db.prepare("SELECT request_id FROM messages WHERE body=?").get('[image]' + imageUrl);
+    if (!message) return next();
+
+    auth(req, res, () => {
+      const request = db.prepare('SELECT * FROM requests WHERE id=?').get(message.request_id);
+      if (!request || !canAccessRequestChat(req.user, request)) {
+        return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
+      }
+      res.sendFile(path.resolve(UPLOAD_DIR, 'requests', filename), (err) => {
+        if (err && !res.headersSent) res.status(404).json({ error: 'الملف غير موجود', code: 'UPLOAD_NOT_FOUND' });
+      });
     });
   });
 
