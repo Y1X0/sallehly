@@ -154,9 +154,9 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/avatars و/uploads/payments 
   });
 });
 
-test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/requests — صور الشات وراء مصادقة، problem_image_url لسا لأ', () => {
+test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/requests — صور الشات وصور المشكلة (problem_image_url) وراء مصادقة', () => {
   let customer, technicianA, technicianB, adminToken;
-  let acceptedRequest, chatImageUrl, problemImageUrl;
+  let acceptedRequest, chatImageUrl, acceptedProblemImageUrl;
 
   async function registerAndVerify(request, { role, extra = {}, multipart = null }) {
     const email = uniqueEmail(role);
@@ -180,8 +180,6 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/requests — صور الشا
     technicianB = await registerAndVerifyTechnician(request, 'reqB');
     adminToken = await loginAdmin(request);
 
-    // طلب فيه صورة مشكلة (problem_image_url) — قاعدة صلاحيته لسا لأ مُطبَّقة
-    // بهذه الخطوة (راجع DECISIONS.md)، فيجب أن يبقى بلا حاجة لمصادقة الآن.
     const createRes = await request.post('/api/requests', {
       headers: authHeader(customer.token),
       multipart: {
@@ -192,7 +190,7 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/requests — صور الشا
     });
     acceptedRequest = (await createRes.json()).request;
     expect(acceptedRequest.problem_image_url).toBeTruthy();
-    problemImageUrl = acceptedRequest.problem_image_url;
+    acceptedProblemImageUrl = acceptedRequest.problem_image_url;
 
     // تأكيد الفني A كطرف رسمي بالمحادثة (نفس نمط tests/chat.spec.js)
     await request.post(`/api/requests/${acceptedRequest.id}/offer`, {
@@ -240,12 +238,111 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/requests — صور الشا
     expect(res.status()).toBe(200);
   });
 
-  test('problem_image_url (صورة المشكلة، نفس مجلد requests/) — لسا بلا مصادقة (خطوة متبقية من نفس الإصلاح)', async ({ request }) => {
-    // نفس المجلد فعلياً (requests/) لكن ليس صورة شات — يجب أن يستمر بالعمل
-    // بلا أي توكن بالضبط كما كان قبل هذه الخطوة، حتى تُحسَم قاعدة صلاحيته
-    // بخطوة لاحقة منفصلة (راجع DECISIONS.md).
-    const res = await request.get(problemImageUrl);
+  test('problem_image_url — يرفض بلا توكن', async ({ request }) => {
+    const res = await request.get(acceptedProblemImageUrl);
+    expect(res.status()).toBe(401);
+  });
+
+  test('problem_image_url — العميل صاحب الطلب يقدر يشوفها', async ({ request }) => {
+    const res = await request.get(acceptedProblemImageUrl, { headers: authHeader(customer.token) });
     expect(res.status()).toBe(200);
     expect(res.headers()['content-type']).toContain('image');
+  });
+
+  test('problem_image_url — الفني المؤكَّد (بعد قبول عرضه) يقدر يشوفها', async ({ request }) => {
+    const res = await request.get(acceptedProblemImageUrl, { headers: authHeader(technicianA.token) });
+    expect(res.status()).toBe(200);
+  });
+
+  test('problem_image_url — بعد قبول العرض، فني آخر (حتى لو يطابق الخدمة/المدينة) لم يعد يقدر يتصفّح هذا الطلب أصلاً، فيُمنع (403)', async ({ request }) => {
+    // بعد القبول تتغيّر حالة الطلب عن 'بانتظار العروض'/'وصلت عروض'، فيخرج
+    // تلقائياً من نطاق "التصفح" — نفس ما يحصل بـGET /requests فرع الفني.
+    const res = await request.get(acceptedProblemImageUrl, { headers: authHeader(technicianB.token) });
+    expect(res.status()).toBe(403);
+  });
+
+  test('problem_image_url — الأدمن يقدر يشوف أي صورة مشكلة', async ({ request }) => {
+    const res = await request.get(acceptedProblemImageUrl, { headers: authHeader(adminToken) });
+    expect(res.status()).toBe(200);
+  });
+});
+
+test.describe.serial('[SEC-FIX-UPLOADS-01] problem_image_url — فني يتصفّح فقط (لسا ما قدّم عرضاً) لازم يشوف الصورة ليقدّر سعره', () => {
+  let customer, matchingTech, wrongServiceTech, wrongCityTech;
+  let browsableProblemImageUrl;
+
+  async function registerAndVerify(request, { role, extra = {}, multipart = null }) {
+    const email = uniqueEmail(role);
+    const phone = uniquePhone();
+    const registerRes = multipart
+      ? await request.post('/api/auth/register', { multipart: { role, email, phone, password: VALID_PASSWORD, ...extra, ...multipart } })
+      : await request.post('/api/auth/register', { form: { role, email, phone, password: VALID_PASSWORD, ...extra } });
+    if (!registerRes.ok()) throw new Error(`فشل تسجيل (${role}): ${registerRes.status()} ${await registerRes.text()}`);
+    const otp = getPendingOtp(email);
+    const res = await request.post('/api/auth/verify-otp', { form: { email, otp } });
+    if (!res.ok()) throw new Error(`فشل verify-otp (${role}): ${res.status()} ${await res.text()}`);
+    const body = await res.json();
+    return { email, phone, token: body.token, user: body.user };
+  }
+
+  async function registerTechnicianWith(request, tag, { services, city, areas }) {
+    const email = uniqueEmail(tag);
+    const phone = uniquePhone();
+    const registerRes = await request.post('/api/auth/register', {
+      multipart: {
+        role: 'technician', email, phone, password: VALID_PASSWORD,
+        name: 'فني اختبار تصفّح', city, national_number: uniqueNationalNumber(),
+        services, areas,
+        avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+      },
+    });
+    if (!registerRes.ok()) throw new Error(`فشل تسجيل الفني: ${registerRes.status()} ${await registerRes.text()}`);
+    const otp = getPendingOtp(email);
+    const res = await request.post('/api/auth/verify-otp', { form: { email, otp } });
+    const body = await res.json();
+    return { email, phone, token: body.token, user: body.user };
+  }
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار تصفّح', city: CITY } });
+    matchingTech = await registerTechnicianWith(request, 'browseMatch', { services: 'كهربائي', city: CITY, areas: 'القويسمة' });
+    wrongServiceTech = await registerTechnicianWith(request, 'browseSvc', { services: 'سباك', city: CITY, areas: 'القويسمة' });
+    // مدينة ومنطقة كلاهما مختلفان كلياً عن الطلب (city=عمان, area=القويسمة) —
+    // بدون هذا، لو تركنا areas تطابق القويسمة كباقي الفنيين، كان الشرط
+    // البديل (areas تحتوي r.area) سيمنح وصولاً رغم اختلاف المدينة، فيُبطل
+    // الغرض الفعلي من هذا الاختبار.
+    wrongCityTech = await registerTechnicianWith(request, 'browseCity', { services: 'كهربائي', city: 'الزرقاء', areas: 'الرصيفة' });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      multipart: {
+        service: 'كهربائي', city: CITY, area: 'القويسمة',
+        description: 'وصف تجريبي كافٍ للطول لاختبار صلاحية تصفّح صورة المشكلة',
+        problem_image: { name: 'problem2.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+      },
+    });
+    const r = (await createRes.json()).request;
+    expect(r.status).toBe('بانتظار العروض'); // لسا بحالة تصفّح/تقديم عروض
+    browsableProblemImageUrl = r.problem_image_url;
+
+    await request.dispose();
+  });
+
+  test('فني يطابق الخدمة والمدينة، لسا ما قدّم عرضاً — يقدر يشوف صورة المشكلة (ليقدّر سعره)', async ({ request }) => {
+    const res = await request.get(browsableProblemImageUrl, { headers: authHeader(matchingTech.token) });
+    expect(res.status()).toBe(200);
+    expect(res.headers()['content-type']).toContain('image');
+  });
+
+  test('فني بخدمة مختلفة كلياً — يُمنع (403)، نفس شرط ظهور الطلب أصلاً بقائمته', async ({ request }) => {
+    const res = await request.get(browsableProblemImageUrl, { headers: authHeader(wrongServiceTech.token) });
+    expect(res.status()).toBe(403);
+  });
+
+  test('فني بمدينة/منطقة مختلفة كلياً — يُمنع (403)', async ({ request }) => {
+    const res = await request.get(browsableProblemImageUrl, { headers: authHeader(wrongCityTech.token) });
+    expect(res.status()).toBe(403);
   });
 });

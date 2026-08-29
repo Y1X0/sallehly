@@ -1,10 +1,8 @@
 // routes/protected-uploads.routes.js — يخدم /uploads/avatars و/uploads/payments
-// و(صور الشات تحديداً ضمن) /uploads/requests وراء مصادقة حقيقية، بدل
-// express.static العام (app.js). صور المشكلة (problem_image_url) بنفس مجلد
-// requests/ لسا غير مُغطّاة (خطوة لاحقة من نفس الإصلاح، قاعدة صلاحيتها مختلفة —
-// راجع DECISIONS.md)؛ وaudios/ لسا غير مُغطّاة إطلاقاً. أي طلب لا يطابق راوتاً
-// هون (بما فيها صور المشكلة وaudios/) يكمل لـexpress.static التالي بالسلسلة
-// كما هو اليوم تماماً.
+// و/uploads/requests (صور الشات + صور المشكلة) وراء مصادقة حقيقية، بدل
+// express.static العام (app.js). audios/ لسا غير مُغطّاة إطلاقاً (تحتاج تحقيقاً
+// فنياً منفصلاً — راجع DECISIONS.md). أي طلب لا يطابق راوتاً هون يكمل
+// لـexpress.static التالي بالسلسلة كما هو اليوم تماماً.
 //
 // [SEC-FIX-UPLOADS-01] راجع DECISIONS.md — كانت كل ملفات public/uploads تُقدَّم
 // بلا أي تحقق صلاحية إطلاقاً، فقط اسم ملف يصعب تخمينه (crypto.randomBytes،
@@ -60,29 +58,67 @@ module.exports = function (deps) {
     });
   });
 
-  // [SEC-FIX-UPLOADS-01] يعترض صور الشات فقط ضمن requests/ (يطابق filename
-  // مع body رسالة '[image]...' موجودة فعلياً) — نفس قاعدة صلاحية الشات
-  // بالضبط: canAccessRequestChat (utils/helpers.js)، دالة موحَّدة مستخدَمة
-  // أصلاً بـREST (routes/chat.routes.js) وSocket.IO (services/socket.js)،
-  // لا فحص جديد. لو الملف مش صورة شات معروفة (على الأغلب problem_image_url —
-  // خطوة لاحقة من نفس الإصلاح لسا ما نُفِّذت)، next() فوراً بلا أي مصادقة
-  // مطلوبة هون — express.static بعده يخدمه بالضبط كما كان قبل هذا التعديل،
-  // بلا أي تغيير سلوكي على problem_image_url بهذه الخطوة تحديداً.
+  function sendRequestsFile(res, filename) {
+    res.sendFile(path.resolve(UPLOAD_DIR, 'requests', filename), (err) => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'الملف غير موجود', code: 'UPLOAD_NOT_FOUND' });
+    });
+  }
+
+  // [SEC-FIX-UPLOADS-01] راجع DECISIONS.md — problem_image_url ليس له نفس
+  // قاعدة صلاحية صور الشات: فني يتصفّح فقط (لسا ما قدّم عرضاً) يحتاج يشوف
+  // صورة المشكلة أصلاً ليقدر يقدّر سعر عرضه — بالضبط نفس شرط WHERE بفرع الفني
+  // بـGET /requests (routes/requests.routes.js) الذي يقرّر أصلاً مين يشوف هذا
+  // الطلب بقائمته. الفحص هون على صف واحد فقط (لا قائمة كاملة)، فلا ينطبق
+  // عليه سبب PERF-01 (تفادي تحميل الجدول كاملاً بجافاسكربت) — يُقارَن بجافاسكربت
+  // مباشرة، بنفس عمليات المقارنة الحرفية المستخدَمة هناك (city/areas/services)،
+  // بدل صياغة SQL جديدة قد تنحرف بصمت عن الأصل بتفصيل دقيق (نفس فئة الخطر
+  // الموثَّقة بـ[SEC-FIX-CHATSCOPE-*]).
+  function canBrowseRequest(request, techId) {
+    if (!['بانتظار العروض', 'وصلت عروض'].includes(request.status)) return false;
+    const tech = db.prepare('SELECT services, city, areas FROM users WHERE id=?').get(techId);
+    if (!tech) return false;
+    const sv = (tech.services || '').split(',').filter(Boolean);
+    if (!sv.includes(request.service)) return false;
+    const areas = tech.areas || '';
+    if (request.city === tech.city) return true;
+    if (areas !== '' && areas.includes(request.city)) return true;
+    if (request.area && areas !== '' && areas.includes(request.area)) return true;
+    return false;
+  }
+
+  // يعترض صور الشات وصور المشكلة (problem_image_url) معاً ضمن requests/،
+  // كلٌّ بقاعدة صلاحيته الخاصة. أي اسم ملف لا يطابق أياً منهما next() فوراً
+  // بلا أي مصادقة مطلوبة هون — express.static بعده يخدمه كما كان قبل هذا
+  // التعديل (لا يوجد نوع ثالث بهذا المجلد اليوم، لكن هذا يبقي السلوك آمناً
+  // افتراضياً لو ظهر نوع جديد لاحقاً).
   router.get('/requests/:filename', (req, res, next) => {
     const { filename } = req.params;
     if (!isSafeFilename(filename)) return next();
     const imageUrl = '/uploads/requests/' + filename;
+
+    // صورة شات؟ نفس قاعدة الشات بالضبط: canAccessRequestChat (utils/helpers.js)،
+    // دالة موحَّدة مستخدَمة أصلاً بـREST (routes/chat.routes.js) وSocket.IO
+    // (services/socket.js)، لا فحص جديد.
     const message = db.prepare("SELECT request_id FROM messages WHERE body=?").get('[image]' + imageUrl);
-    if (!message) return next();
+    if (message) {
+      return auth(req, res, () => {
+        const request = db.prepare('SELECT * FROM requests WHERE id=?').get(message.request_id);
+        if (!request || !canAccessRequestChat(req.user, request)) {
+          return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
+        }
+        sendRequestsFile(res, filename);
+      });
+    }
+
+    // صورة مشكلة (problem_image_url)؟
+    const request = db.prepare('SELECT * FROM requests WHERE problem_image_url=?').get(imageUrl);
+    if (!request) return next();
 
     auth(req, res, () => {
-      const request = db.prepare('SELECT * FROM requests WHERE id=?').get(message.request_id);
-      if (!request || !canAccessRequestChat(req.user, request)) {
-        return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
-      }
-      res.sendFile(path.resolve(UPLOAD_DIR, 'requests', filename), (err) => {
-        if (err && !res.headersSent) res.status(404).json({ error: 'الملف غير موجود', code: 'UPLOAD_NOT_FOUND' });
-      });
+      const allowed = canAccessRequestChat(req.user, request) ||
+        (req.user.role === 'technician' && canBrowseRequest(request, req.user.id));
+      if (!allowed) return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
+      sendRequestsFile(res, filename);
     });
   });
 
