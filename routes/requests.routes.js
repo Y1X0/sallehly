@@ -119,7 +119,12 @@ module.exports = function (deps) {
         rows = db.prepare(`${baseSql} LIMIT ? OFFSET ?`).all(limit, offset);
       }
     }
-    else if (req.user.role === 'customer') rows = db.prepare('SELECT r.*, t.name technician_name FROM requests r LEFT JOIN users t ON t.id=r.technician_id WHERE customer_id=? ORDER BY r.id DESC').all(req.user.id);
+    // [PERF-HARDEN-04] بلا سقف سابقاً — بعكس فرعَي الأدمن (أعلاه) والفني
+    // (أسفل، LIMIT 1000) بنفس الدالة تحديداً، واللذين أُصلحا سابقاً لنفس
+    // السبب. سجل طلبات العميل ينمو مع عمر الحساب وبلا حد، ويُطلَب بكل فتح
+    // لشاشة "طلباتي". نفس سقف 1000 المستخدَم بفرع الفني (قائمة شخصية تنمو
+    // مع الاستخدام)، وليس 2000 (مخصَّص لقوائم الأدمن الشاملة).
+    else if (req.user.role === 'customer') rows = db.prepare('SELECT r.*, t.name technician_name FROM requests r LEFT JOIN users t ON t.id=r.technician_id WHERE customer_id=? ORDER BY r.id DESC LIMIT 1000').all(req.user.id);
     else rows = [];
     if (req.user.role === 'technician') {
       const me = db.prepare('SELECT services,city,areas FROM users WHERE id=?').get(req.user.id);
