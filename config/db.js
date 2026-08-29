@@ -7,6 +7,7 @@ const fs = require('fs');
 const Database = require('better-sqlite3');
 const { DATA_DIR, UPLOAD_DIR, IS_PROD } = require('./env');
 const { migrate } = require('./migrate');
+const { uploadBackupOffsite, pruneOldOffsiteBackups } = require('../services/offsite-backup');
 
 const db = new Database(path.join(DATA_DIR, 'sallehly.sqlite'));
 db.pragma('journal_mode = WAL');
@@ -66,6 +67,15 @@ async function createDbBackup() {
     const dest = path.join(BACKUP_DIR, `sallehly-${stamp}.sqlite`);
     await db.backup(dest);
     await pruneOldBackups();
+    // [DR-FIX-01] راجع DECISIONS.md وservices/offsite-backup.js — النسخة
+    // المحلية أعلاه تبقى المصدر الرسمي المُرجَع لهذه الدالة (نفس السلوك تماماً
+    // لو فشل الرفع الخارجي أو لم يكن مُعدّاً أصلاً)؛ الرفع الخارجي إضافي بحت،
+    // مُنفَّذ هنا بلا انتظار (لا await) حتى لا يُبطئ استجابة POST /admin/backup
+    // بانتظار رفع شبكي خارجي، وبلا أي احتمال لإسقاط createDbBackup نفسها
+    // (uploadBackupOffsite لا ترمي أبداً — راجع تعليقها).
+    uploadBackupOffsite(dest)
+      .then(uploaded => { if (uploaded) return pruneOldOffsiteBackups(); })
+      .catch(e => console.error('[DR-FIX-01] خطأ غير متوقع بالرفع الخارجي:', e.message));
     return dest;
   } catch (e) { console.error('backup failed:', e.message); return null; }
 }

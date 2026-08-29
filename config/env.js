@@ -26,6 +26,16 @@ const JWT_SECRET = (() => {
 const RESEND_API_KEY = process.env.RESEND_API_KEY || '';
 const RESEND_FROM = process.env.RESEND_FROM || 'onboarding@resend.dev';
 
+// [DR-FIX-01] راجع DECISIONS.md — النسخ الاحتياطي المحلي (أعلاه بـconfig/db.js)
+// يُكتَب على نفس القرص الذي يحمي القاعدة الحية أصلاً؛ لو القرص نفسه تعطّل أو
+// فُقد، تُفقَد القاعدة وكل نسخها الاحتياطية بنفس اللحظة. هذه المتغيرات اختيارية
+// تماماً (نفس نمط RESEND_API_KEY أعلاه) — بدونها، رفع النسخة لمكان خارجي
+// (services/offsite-backup.js) يُتخطّى بصمت مع رسالة تحذير واحدة، بلا أي تأثير
+// على النسخ الاحتياطي المحلي نفسه ولا على إقلاع السيرفر.
+const BACKUP_GITHUB_TOKEN = process.env.BACKUP_GITHUB_TOKEN || '';
+const BACKUP_GITHUB_OWNER = process.env.BACKUP_GITHUB_OWNER || '';
+const BACKUP_GITHUB_REPO = process.env.BACKUP_GITHUB_REPO || '';
+
 const DATA_DIR = process.env.DATA_DIR || path.join(BASE, 'data');
 const UPLOAD_DIR = process.env.DATA_DIR
   ? path.join(DATA_DIR, 'uploads')
@@ -66,5 +76,6 @@ const IO_CORS_ORIGINS = IS_PROD
 
 module.exports = {
   BASE, PORT, IS_PROD, JWT_SECRET, RESEND_API_KEY, RESEND_FROM,
-  DATA_DIR, UPLOAD_DIR, COOKIE_OPTS, ALLOWED_ORIGINS, IO_CORS_ORIGINS
+  DATA_DIR, UPLOAD_DIR, COOKIE_OPTS, ALLOWED_ORIGINS, IO_CORS_ORIGINS,
+  BACKUP_GITHUB_TOKEN, BACKUP_GITHUB_OWNER, BACKUP_GITHUB_REPO
 };
