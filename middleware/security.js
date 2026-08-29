@@ -4,6 +4,7 @@
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { IS_PROD, ALLOWED_ORIGINS } = require('../config/env');
+const { alertError } = require('../services/error-alert');
 
 // [PERF-HARDEN-01] كان max=20 ثابتاً بلا استثناء بيئة الاختبار — الوحيد بين
 // كل الحدود الخمسة بهذا الملف بلا نمط IS_PROD الموجود بباقيها. بما أن هذا
@@ -126,6 +127,14 @@ function apiErrorHandler(err, req, res, next) {
       const code = String(msg).includes('نوع الملف') ? 'FILE_TYPE_NOT_ALLOWED' : 'AUDIO_TYPE_NOT_ALLOWED';
       return res.status(400).json({ error: msg, code });
     }
+    // [MON-FIX-01] الحالات أعلاه أخطاء تحقق متوقَّعة (حجم/نوع ملف) ولا تستحق
+    // تنبيهاً. ما يصل هون فعلياً غير متوقَّع — لم يكن يُسجَّل بالسجلّات إطلاقاً
+    // قبل هذا التعديل (كان يتحوّل مباشرة لاستجابة 400 بصمت تام، بلا أي أثر
+    // بالسجلّات يوضّح أن خطأ حقيقياً حدث أصلاً). الآن يُسجَّل ويُنبَّه — بلا
+    // انتظار (fire-and-forget)، بنفس فلسفة uploadBackupOffsite.
+    console.error('[API-ERROR]', err.stack || msg);
+    alertError('API error', err).catch(() => {});
+
     // In production, don't leak internal error details
     if (IS_PROD) return res.status(400).json({ error: 'حدث خطأ في الطلب' });
     return res.status(400).json({ error: msg });

@@ -27,6 +27,7 @@ const security = require('./middleware/security');
 const { sendOtpEmail } = require('./services/email');
 const { sendPush } = require('./services/push');
 const { createSocket } = require('./services/socket');
+const { alertError } = require('./services/error-alert');
 
 // [SEC-FIX-UPLOADS-01] راجع app.js وroutes/protected-uploads.routes.js — deps
 // مصغَّر (db + auth + canAccessRequestChat فقط) خاص بمسار /uploads المحمي،
@@ -136,8 +137,16 @@ process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 // الخام (منصة النشر تُعيد تشغيل العملية تلقائياً بعد خروج نظيف).
 process.on('unhandledRejection', (reason) => {
   console.error('[UNHANDLED-REJECTION]', reason instanceof Error ? reason.stack : reason);
+  // [MON-FIX-01] العملية تستمر بعد unhandledRejection (فشل معزول، لا داعٍ
+  // لانتظار التنبيه) — fire-and-forget، بنفس فلسفة uploadBackupOffsite.
+  alertError('unhandledRejection', reason instanceof Error ? reason : new Error(String(reason))).catch(() => {});
 });
 process.on('uncaughtException', (err) => {
   console.error('[UNCAUGHT-EXCEPTION]', err.stack || err.message);
-  gracefulShutdown('uncaughtException');
+  // [MON-FIX-01] هنا وحدها ننتظر التنبيه فعلياً قبل gracefulShutdown: هذا
+  // المسار ينتهي بخروج العملية خلال أجزاء من الثانية أحياناً — fire-and-forget
+  // هون قد يعني عدم اكتمال طلب الشبكة لـResend قبل خروج العملية إطلاقاً.
+  alertError('uncaughtException', err)
+    .catch(() => {})
+    .finally(() => gracefulShutdown('uncaughtException'));
 });
