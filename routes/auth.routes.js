@@ -421,11 +421,18 @@ module.exports = function (deps) {
         params: { id: pendingTopup.id },
       });
     }
-    if (Number(u.balance || 0) > 0) {
+    // [SEC-FIX-DELETETOCTOU-01] راجع DECISIONS.md — u.balance أعلاه قُرئ قبل
+    // await bcrypt.compare()، وهو نقطة التعليق الوحيدة بهذا المعالج (كل ما
+    // بعدها متزامن بالكامل بلا أي await آخر حتى anonymizeUser). أي رصيد
+    // يُضاف لهذا الحساب (مراجعة أدمن لطلب شحن، تعديل رصيد يدوي) بالضبط أثناء
+    // تلك النافذة كان يمر بلا أن يعكسه هذا الفحص، لأنه يعتمد على القيمة
+    // القديمة المحفوظة بمتغيّر u بدل قراءة حيّة. قراءة مباشرة الآن بدل u.balance.
+    const freshBalance = Number(db.prepare('SELECT balance FROM users WHERE id=?').get(id)?.balance || 0);
+    if (freshBalance > 0) {
       return res.status(409).json({
-        error: `لا يمكن حذف حسابك حالياً — رصيدك الحالي ${u.balance} د.أ. تواصل مع الدعم لتصفيته أولاً.`,
+        error: `لا يمكن حذف حسابك حالياً — رصيدك الحالي ${freshBalance} د.أ. تواصل مع الدعم لتصفيته أولاً.`,
         code: 'DELETE_ACCOUNT_BALANCE_REMAINING',
-        params: { balance: u.balance },
+        params: { balance: freshBalance },
       });
     }
     // [FIX-DELETE-CRASH-01] كانت DELETE FROM users هنا ترمي SqliteError

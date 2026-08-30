@@ -390,3 +390,50 @@ test.describe('[SEC-FIX-PENDINGTOPUP-01] لا يمكن حذف حساب فني ل
     expect(loginRes.status()).toBe(200);
   });
 });
+
+// [SEC-FIX-DELETETOCTOU-01] راجع DECISIONS.md — DELETE /me يقرأ u.balance قبل
+// await bcrypt.compare() (نقطة التعليق الوحيدة بالمعالج)، ثم يستخدم تلك
+// القيمة القديمة بفحص الرصيد بعد الـawait مباشرة. أي رصيد يُضاف أثناء تلك
+// النافذة (مراجعة أدمن لرصيد يدوي، تنجز بسرعة عبر اتصال منفصل تماماً بينما
+// bcrypt.compare بتكلفة 12 لا يزال معلَّقاً على thread pool) كان يمر بلا أن
+// يعكسه الفحص. اختبار تزامن حقيقي (طلبان HTTP فعليان متزامنان)، لا محاكاة.
+test.describe('[SEC-FIX-DELETETOCTOU-01] رصيد يُضاف أثناء نافذة bcrypt.compare بـDELETE /me لا يمر بصمت', () => {
+  test('تعديل رصيد يدوي من الأدمن يصل بالضبط أثناء تعليق bcrypt.compare: الحذف يُرفض، لا رصيد ضائع', async ({ request }) => {
+    const tech = await registerAndVerify(request, 'technician', {
+      name: 'فني اختبار سباق حذف الحساب', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
+    });
+
+    const adminToken = loginAdmin();
+
+    // نبدأ DELETE /me أولاً بلا انتظار — bcrypt.compare(cost=12) يعلّق حلقة
+    // الحدث بضع مئات المللي ثانية عبر thread pool حقيقي، وهذا الوعد لا يُحل
+    // إلا بعد ذلك. مهلة قصيرة جداً (10ms) تضمن أن الـawait بدأ فعلاً قبل
+    // إطلاق الطلب الثاني، بدل الاعتماد على ترتيب الإرسال وحده.
+    const deletePromise = request.delete('/api/me', {
+      headers: authHeader(tech.token),
+      form: { password: VALID_PASSWORD },
+    });
+    await new Promise((r) => setTimeout(r, 10));
+
+    const balanceRes = await request.post(`/api/admin/users/${tech.user.id}/balance`, {
+      headers: authHeader(adminToken),
+      form: { amount: '50', reason: 'اختبار سباق حذف الحساب' },
+    });
+    expect(balanceRes.ok()).toBeTruthy();
+
+    const deleteRes = await deletePromise;
+
+    // الرصيد المُضاف أثناء نافذة bcrypt.compare يجب أن يُكتشَف — الحذف يُرفض،
+    // لا ينجح بصمت برصيد يعلق على حساب مُصفّى بلا رجعة.
+    expect(deleteRes.status()).toBe(409);
+    const body = await deleteRes.json();
+    expect(body.code).toBe('DELETE_ACCOUNT_BALANCE_REMAINING');
+    expect(body.params.balance).toBe(50);
+
+    // الحساب لا يزال فعّالاً بالكامل، والرصيد المُضاف لم يضع
+    const loginRes = await request.post('/api/auth/login', { form: { email: tech.email, password: VALID_PASSWORD } });
+    expect(loginRes.status()).toBe(200);
+    const meRes = await request.get('/api/me', { headers: authHeader((await loginRes.json()).token) });
+    expect((await meRes.json()).user.balance).toBe(50);
+  });
+});
