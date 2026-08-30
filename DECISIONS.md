@@ -1877,3 +1877,48 @@ RAISE(ABORT, ...)` مؤقت (غير `TEMP` عمداً — يجب أن يكون �
 يحذف العرض فعلياً حتى مع فشل التحديث التالي له. ثم استعادة الإصلاح.
 
 المجموعة الكاملة: **323/323** (كانت 322، +1) — صفر تراجع.
+
+# [PERF-HARDEN-05] لا فهارس على أعمدة الفلترة المستخدَمة فعلياً بـ`GET /admin/stats`
+
+## الخطورة
+منخفض — أداء فقط، لا صحة بيانات. كل استعلام يعمل بشكل صحيح اليوم (مسح جدول
+كامل)، يتدهور تدريجياً مع نمو `requests`/`users`، لا عطلاً مفاجئاً.
+
+## الاكتشاف
+`GET /admin/stats` (`routes/admin.routes.js`) ينفّذ نحو 10 استعلامات منفصلة
+بكل طلب — أبرزها `WHERE status='ملغي'`/`'مكتمل'`، `GROUP BY service` على
+`requests`، ثلاث نسخ (يومي/أسبوعي/شهري) من `WHERE created_at >=
+datetime(...)` على كلٍّ من `requests` و`users`، و`WHERE is_active=0`،
+و`WHERE role='technician' AND verification_status='pending'`. لا فهرس واحد
+كان موجوداً على `requests.status`، `requests.created_at`،
+`requests.service`، `users.created_at`، `users.is_active`، أو
+`users.verification_status` — بعكس `requests.technician_id`/`customer_id`
+و`users.role` المفهرسة أصلاً.
+
+## الحل
+ستة فهارس جديدة idempotent (`CREATE INDEX IF NOT EXISTS`، نفس نمط كل فهرس
+آخر بالملف) — نفس الأعمدة الستة المذكورة أعلاه بالضبط، فهرس مفرد لكل واحد.
+
+## الإثبات
+`tests/admin.spec.js` — describe جديد `[PERF-HARDEN-05]`، نفس أسلوب
+`idx_users_role` (`PERF-HARDEN-02`) بالضبط: ستة اختبارات تثبت وجود كل فهرس
+فعلياً بقاعدة الاختبار بعد `migrate()` (`PRAGMA index_list`/`index_info`)،
+وستة إضافية تُشغِّل نص الاستعلام الحقيقي المستخدَم فعلياً بـ`GET
+/admin/stats` عبر `EXPLAIN QUERY PLAN` وتتحقق أن الخطة تستخدم الفهرس
+(`SEARCH ... USING INDEX` بدل `SCAN` كامل) — بما فيها استعلام `GROUP BY
+service` (يستخدم `idx_requests_service` فعلياً لتفادي فرز مؤقت منفصل).
+**تحقَّق يدوياً أن كل الـ12 اختباراً يفشلون فعلاً بدون الإصلاح** (`git
+stash` مؤقت لـ`config/migrate.js`): الستة الأولى بغياب الفهرس من
+`PRAGMA index_list`، والستة الثانية بخطة فعلية `SCAN` كامل (أو استخدام فهرس
+آخر غير مناسب، مثال: استعلام `verification_status` استخدم `idx_users_role`
+فقط لشرط `role=?` وتجاهل `verification_status` تماماً بالخطة). ثم استعادة
+الإصلاح وتأكيد النجاح.
+
+المجموعة الكاملة: **335/335** (كانت 323، +12) — صفر تراجع.
+
+## نطاق متروك عمداً
+لا فهارس مركّبة (مثال: `(role, verification_status)`) رغم أن بعض
+الاستعلامات تفلتر على عمودين معاً — نفس فلسفة `idx_offers_request`/
+`idx_offers_technician` وغيرهما بالملف: فهارس مفردة بسيطة تخدم كل استعلام
+موثَّق اليوم فعلياً (أُثبت مباشرة أن SQLite يستخدم الفهرس المفرد المناسب
+بكل حالة)، لا تحسين استباقي لاستعلامات مستقبلية افتراضية.

@@ -573,6 +573,21 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON noti
 // أعلاه بالضبط — فهرسان منفصلان بدل فهرس مركّب واحد لا يخدم إلا اتجاهاً واحداً.
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_topups_technician ON topups(technician_id)').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_topups_package ON topups(package_id)').run(); } catch (e) {}
+// [PERF-HARDEN-05] راجع DECISIONS.md — GET /admin/stats ينفّذ نحو 10
+// استعلامات منفصلة بكل طلب (routes/admin.routes.js)، منها WHERE
+// status='ملغي'/'مكتمل' وGROUP BY service على requests، وWHERE
+// created_at >= datetime(...) على كلٍّ من requests وusers (نُسخة يومية/
+// أسبوعية/شهرية منفصلة لكل منهما)، وWHERE is_active=0 وWHERE
+// verification_status='pending' على users — كلها بلا أي فهرس، فتفحص كامل
+// الجدولين بكل استدعاء للوحة الأدمن الرئيسية. أداء فقط، لا صحة بيانات —
+// كل استعلام يعمل بشكل صحيح اليوم، يتدهور تدريجياً مع نمو الجدولين.
+// إضافية بالكامل، idempotent، لا تُغيّر أي بيانات أو سلوك حالي.
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_created ON requests(created_at)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_service ON requests(service)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_users_verification ON users(verification_status)').run(); } catch (e) {}
 // تمت إزالة سطر إعادة تفعيل الفنيين الموقوفين تلقائياً عند كل تشغيل للسيرفر.
 // كان هذا السطر يلغي قرار إيقاف أي فني من الإدارة (بسبب شكوى أو مخالفة) في كل مرة يعاد تشغيل السيرفر أو يتم نشر تحديث جديد.
 // إيقاف/تفعيل الفنيين أصبح بالكامل بيد الإدارة فقط عبر /api/admin/users/:id/toggle.

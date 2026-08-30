@@ -117,6 +117,59 @@ test.describe('[PERF-HARDEN-01] فهارس إضافية على offers/ratings', 
   });
 });
 
+// [PERF-HARDEN-05] راجع DECISIONS.md — GET /admin/stats ينفّذ نحو 10
+// استعلامات منفصلة على requests/users بلا أي فهرس على أعمدة الفلترة
+// المستخدَمة فعلياً بها. يثبت هذا أن الفهارس الستة موجودة فعلياً بقاعدة
+// البيانات بعد migrate() (لا فقط سطر CREATE INDEX بالكود)، وأن خطة الاستعلام
+// الفعلية لكل استعلام حقيقي بـGET /admin/stats صارت SEARCH بالفهرس بدل SCAN
+// كامل للجدول — نفس أسلوب التحقق المستخدَم أصلاً لـidx_users_role
+// (PERF-HARDEN-02) عبر EXPLAIN QUERY PLAN، لا مجرد افتراض أن وجود الفهرس كافٍ.
+test.describe('[PERF-HARDEN-05] فهارس GET /admin/stats', () => {
+  const cases = [
+    { table: 'requests', index: 'idx_requests_status', column: 'status' },
+    { table: 'requests', index: 'idx_requests_created', column: 'created_at' },
+    { table: 'requests', index: 'idx_requests_service', column: 'service' },
+    { table: 'users', index: 'idx_users_created', column: 'created_at' },
+    { table: 'users', index: 'idx_users_active', column: 'is_active' },
+    { table: 'users', index: 'idx_users_verification', column: 'verification_status' },
+  ];
+
+  for (const { table, index, column } of cases) {
+    test(`${index} موجود على ${table}(${column})`, () => {
+      const db = openTestDb();
+      try {
+        const indexes = db.prepare(`PRAGMA index_list(${table})`).all().map((i) => i.name);
+        expect(indexes).toContain(index);
+        const cols = db.prepare(`PRAGMA index_info(${index})`).all();
+        expect(cols.map((c) => c.name)).toEqual([column]);
+      } finally {
+        db.close();
+      }
+    });
+  }
+
+  const queries = [
+    { sql: "SELECT COUNT(*) c FROM requests WHERE status='ملغي'", index: 'idx_requests_status' },
+    { sql: "SELECT service, COUNT(*) cnt FROM requests GROUP BY service ORDER BY cnt DESC LIMIT 5", index: 'idx_requests_service' },
+    { sql: "SELECT COUNT(*) c FROM requests WHERE created_at >= datetime('now','-1 days')", index: 'idx_requests_created' },
+    { sql: "SELECT COUNT(*) c FROM users WHERE created_at >= datetime('now','-1 days')", index: 'idx_users_created' },
+    { sql: "SELECT COUNT(*) c FROM users WHERE is_active=0", index: 'idx_users_active' },
+    { sql: "SELECT COUNT(*) c FROM users WHERE role='technician' AND verification_status='pending'", index: 'idx_users_verification' },
+  ];
+
+  for (const { sql, index } of queries) {
+    test(`خطة الاستعلام الفعلي "${sql}" تستخدم ${index} (SEARCH لا SCAN كامل)`, () => {
+      const db = openTestDb();
+      try {
+        const plan = db.prepare(`EXPLAIN QUERY PLAN ${sql}`).all().map((r) => r.detail).join(' | ');
+        expect(plan, `خطة الاستعلام: ${plan}`).toContain(index);
+      } finally {
+        db.close();
+      }
+    });
+  }
+});
+
 // [PERF-HARDEN-01] يثبت أن السقف الوقائي الجديد على GET /admin/users (بلا
 // أي معامل page/limit) فعّال حقاً على مستوى قاعدة البيانات، وليس فقط سطراً
 // بالكود لا يُختبَر أبداً. يزرع 2001 صفاً مباشرة (أسرع من التسجيل الحقيقي
