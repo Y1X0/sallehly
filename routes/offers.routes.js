@@ -210,7 +210,12 @@ module.exports = function (deps) {
 
   // ── سحب العرض: الفني يسحب عرضه قبل قبول العميل ─────────────────
   router.delete('/offers/:id', auth, requireRole('technician'), (req, res) => {
-    const offer = db.prepare('SELECT o.*, r.status request_status, r.technician_id request_tech FROM offers o JOIN requests r ON r.id=o.request_id WHERE o.id=?').get(req.params.id);
+    // [FIX-DEADFIELD-01] راجع DECISIONS.md — كان الاستعلام يجلب أيضاً
+    // r.technician_id (بلقب request_tech) بلا أي استخدام له بهذا المعالج
+    // إطلاقاً. الفحص الذي يبدو أنه كان مقصوداً له ("لا تسحب بعد تعيين فني")
+    // مغطّى بالكامل أصلاً بفحص request_status أدناه — أي تعيين فني ينقل
+    // الطلب خارج الحالتين المفتوحتين، فيرفضهما ذلك الفحص بنفسه.
+    const offer = db.prepare('SELECT o.*, r.status request_status FROM offers o JOIN requests r ON r.id=o.request_id WHERE o.id=?').get(req.params.id);
     if (!offer) return res.status(404).json({ error: 'العرض غير موجود', code: 'OFFER_NOT_FOUND' });
     if (offer.technician_id !== req.user.id) return res.status(403).json({ error: 'هذا العرض لا يخصك', code: 'OFFER_NOT_YOURS' });
     if (offer.status !== 'pending') return res.status(400).json({ error: 'لا يمكن سحب عرض تم قبوله أو رفضه', code: 'OFFER_CANNOT_WITHDRAW_DECIDED' });
