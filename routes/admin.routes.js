@@ -107,6 +107,12 @@ module.exports = function (deps) {
     if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'لا يمكنك إيقاف حسابك الخاص' });
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
     if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+    // [SEC-FIX-ADMINTARGET-01] راجع DECISIONS.md — نفس فحص `role === 'admin'`
+    // المستخدَم أصلاً بـPOST /admin/users/:id/role (تحويل الدور)، الذي يمنع
+    // استهداف حساب إدارة آخر تماماً. requireRole('admin') وحدها هنا تسمح لأي
+    // أدمن عادي بإيقاف أو حذف حساب أدمن آخر — بما فيه محتمل super admin —
+    // مخاطرة داخلية بحتة (حساب أدمن مُخترَق أو خبيث).
+    if (u.role === 'admin') return res.status(400).json({ error: 'لا يمكن إيقاف حساب إدارة آخر', code: 'ADMIN_CANNOT_TARGET_ADMIN' });
     const newStatus = u.is_active ? 0 : 1;
     // [SEC-FIX-SUSPENDACTIVE-01] راجع DECISIONS.md — نفس فحص الطلب النشط
     // الموجود أصلاً بـDELETE /admin/users/:id (سطر ~318) لكنه كان غائباً هنا:
@@ -347,6 +353,8 @@ module.exports = function (deps) {
     if (id === req.user.id) return res.status(400).json({ error: 'لا يمكنك حذف حسابك الخاص' });
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
     if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+    // [SEC-FIX-ADMINTARGET-01] راجع DECISIONS.md وتعليق /toggle أعلاه — نفس الفحص.
+    if (u.role === 'admin') return res.status(400).json({ error: 'لا يمكن حذف حساب إدارة آخر', code: 'ADMIN_CANNOT_TARGET_ADMIN' });
     const activeRequest = db.prepare(
       "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
     ).get(id, id);
@@ -357,6 +365,12 @@ module.exports = function (deps) {
     // للقبول من العميل بعد حذف هذا الحساب.
     const pendingOffer = db.prepare("SELECT id FROM offers WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
     if (pendingOffer) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — لديه عرض معلَّق رقم ${pendingOffer.id} بانتظار قرار عميل. اسحبه أو انتظر حسمه أولاً.` });
+    // [SEC-FIX-PENDINGTOPUP-01] راجع DECISIONS.md — طلب شحن pending لم يكن
+    // يُفحَص هنا على الإطلاق: لو حُذف حساب فني له طلب شحن معلَّق، ووافق الأدمن
+    // عليه لاحقاً بلا علم أنه يستهدف حساباً محذوفاً، الرصيد يُضاف لحساب
+    // is_active=0 مُصفّى بلا أي طريقة استرجاع غير تدخّل مباشر بقاعدة البيانات.
+    const pendingTopup = db.prepare("SELECT id FROM topups WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
+    if (pendingTopup) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — لديه طلب شحن رصيد معلَّق رقم ${pendingTopup.id} بانتظار مراجعة الأدمن. راجعه (موافقة أو رفض) أولاً.`, code: 'DELETE_ACCOUNT_PENDING_TOPUP' });
     if (Number(u.balance || 0) > 0) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — رصيده الحالي ${u.balance} د.أ. صفّر الرصيد أولاً.` });
     // [FIX-DELETE-CRASH-01] راجع utils/db-helpers.js (anonymizeUser) — كانت
     // DELETE FROM users هنا ترمي SqliteError (FOREIGN KEY constraint failed)
@@ -369,6 +383,11 @@ module.exports = function (deps) {
       console.error('user deletion failed:', e.message);
       return res.status(500).json({ error: 'تعذر حذف المستخدم، حاول لاحقاً' });
     }
+    // [SEC-FIX-SOCKETDISCONNECT-01] راجع DECISIONS.md — بعكس /toggle (SEC-FIX-10)
+    // و/role (SEC-FIX-09) بنفس الملف، هذا المسار كان يترك أي اتصال Socket.IO
+    // حيّ وقت الحذف يعمل بلا انقطاع (REST محظور فوراً عبر is_active/token_version،
+    // لكن القناة الحية لا) حتى انقطاع طبيعي أو إعادة اتصال لاحقة.
+    try { io.in(`user-${id}`).disconnectSockets(true); } catch (e) {}
     logAudit({
       adminId: req.user.id, actorName: req.user.name,
       action: 'حذف مستخدم نهائياً', targetType: 'user', targetId: id,

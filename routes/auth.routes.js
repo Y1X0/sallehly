@@ -410,6 +410,17 @@ module.exports = function (deps) {
         params: { id: pendingOffer.id },
       });
     }
+    // [SEC-FIX-PENDINGTOPUP-01] راجع DECISIONS.md وتعليق /admin/users/:id
+    // المقابل — نفس الفحص، نفس السبب: طلب شحن pending يبقى قابلاً لموافقة
+    // الأدمن لاحقاً حتى بعد حذف الحساب، فيضيف رصيداً لحساب محذوف بلا رجعة.
+    const pendingTopup = db.prepare("SELECT id FROM topups WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
+    if (pendingTopup) {
+      return res.status(409).json({
+        error: `لا يمكن حذف حسابك حالياً — لديك طلب شحن رصيد معلَّق رقم ${pendingTopup.id} بانتظار مراجعة الأدمن. انتظر حسمه أولاً.`,
+        code: 'DELETE_ACCOUNT_PENDING_TOPUP',
+        params: { id: pendingTopup.id },
+      });
+    }
     if (Number(u.balance || 0) > 0) {
       return res.status(409).json({
         error: `لا يمكن حذف حسابك حالياً — رصيدك الحالي ${u.balance} د.أ. تواصل مع الدعم لتصفيته أولاً.`,
