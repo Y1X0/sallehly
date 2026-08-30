@@ -211,3 +211,83 @@ test.describe.serial('بحث الفنيين وبروفايلهم العام', ()
     expect(res.status()).toBe(404);
   });
 });
+
+test.describe('[SEC-FIX-EMPTYSERVICES-01] services إلزامية للفني — لا تسجيل ولا تحديث بروفايل بلا خدمة واحدة على الأقل', () => {
+  // [SEC-FIX-EMPTYSERVICES-01] راجع DECISIONS.md — services لم تكن إلزامية
+  // إطلاقاً عند التسجيل (بعكس avatar/national_number)؛ فني يسجّل بلا خدمة
+  // مسجَّلة لا يمكنه أبداً تلقي طلب متطابق، بلا أي تنبيه له بالسبب.
+  test('POST /api/auth/register — فني بلا services إطلاقاً يُرفَض بـ400', async ({ request }) => {
+    const email = uniqueEmail('tech-noservices');
+    const phone = uniquePhone();
+    const res = await request.post('/api/auth/register', {
+      multipart: {
+        role: 'technician', email, phone, password: VALID_PASSWORD,
+        name: 'فني بلا خدمات', city: CITY, national_number: uniqueNationalNumber(), areas: 'خلدا',
+        avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+      },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('REGISTER_TECH_SERVICES_REQUIRED');
+  });
+
+  test('POST /api/auth/register — فني بـservices=فارغة (نص فارغ) يُرفَض بنفس الكود', async ({ request }) => {
+    const email = uniqueEmail('tech-emptyservices');
+    const phone = uniquePhone();
+    const res = await request.post('/api/auth/register', {
+      multipart: {
+        role: 'technician', email, phone, password: VALID_PASSWORD,
+        name: 'فني بخدمات فارغة', city: CITY, national_number: uniqueNationalNumber(), areas: 'خلدا', services: '',
+        avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+      },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('REGISTER_TECH_SERVICES_REQUIRED');
+  });
+
+  // [SEC-FIX-EMPTYSERVICES-01] راجع DECISIONS.md — `req.body.services ? ... : null`
+  // كانت تعامل نصاً فارغاً "" (مُرسَل صراحة) كأن الحقل لم يُرسَل إطلاقاً، فتتجاهل
+  // نية الفني بمسح خدماته بصمت (لا رفض ولا تطبيق). الآن تُرفَض بوضوح.
+  test('POST /me/profile — فني يرسل services كنص فارغ صراحة يُرفَض بـ400 بدل التجاهل الصامت', async ({ request }) => {
+    const tech = await registerAndVerify(
+      request, 'technician',
+      { name: 'فني لاختبار مسح الخدمات', city: CITY, national_number: uniqueNationalNumber(), services: 'سباك', areas: 'خلدا' },
+      { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } }
+    );
+
+    // [SEC-FIX-EMPTYSERVICES-01] جسم JSON (لا multipart) عمداً — multer
+    // يتجاوز req.body بصمت لطلب JSON (لا Content-Type multipart)، فيصل
+    // services كنص فارغ حقيقي "" كما أُرسل تماماً؛ بعض عملاء multipart (بما
+    // فيها Playwright نفسه) قد يُسقطون حقلاً بقيمة نصية فارغة تماماً بدل
+    // إرساله فعلاً، ما يُفسِد اختبار هذه الحالة تحديداً بلا علاقة بالسيرفر.
+    const res = await request.post('/api/me/profile', {
+      headers: authHeader(tech.token),
+      data: { name: tech.user.name, phone: tech.phone, city: CITY, areas: 'خلدا', services: '' },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('PROFILE_SERVICES_REQUIRED');
+
+    // خدمات الفني الأصلية بقيت كما هي — لم تُمسَح بصمت رغم الرفض
+    const meRes = await request.get('/api/me', { headers: authHeader(tech.token) });
+    expect((await meRes.json()).user.services).toContain('سباك');
+  });
+
+  test('POST /me/profile — فني يرسل services بلا هذا الحقل إطلاقاً: تبقى كما هي (لا تراجع)', async ({ request }) => {
+    const tech = await registerAndVerify(
+      request, 'technician',
+      { name: 'فني بلا تعديل خدمات', city: CITY, national_number: uniqueNationalNumber(), services: 'نجار', areas: 'خلدا' },
+      { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } }
+    );
+
+    const res = await request.post('/api/me/profile', {
+      headers: authHeader(tech.token),
+      multipart: { name: tech.user.name, phone: tech.phone, city: CITY, areas: 'خلدا' },
+    });
+    expect(res.status()).toBe(200);
+
+    const meRes = await request.get('/api/me', { headers: authHeader(tech.token) });
+    expect((await meRes.json()).user.services).toContain('نجار');
+  });
+});

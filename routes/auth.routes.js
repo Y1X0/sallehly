@@ -57,6 +57,11 @@ module.exports = function (deps) {
     if (name.length < 2) return res.status(400).json({ error: 'الرجاء إدخال الاسم الكامل', code: 'REGISTER_NAME_TOO_SHORT' });
     if (name.length > 60) return res.status(400).json({ error: 'الاسم طويل جداً، الحد الأقصى 60 حرف', code: 'NAME_TOO_LONG_60' });
     if (role === 'technician' && !avatar_filename) return res.status(400).json({ error: 'الصورة الشخصية مطلوبة للفني فقط', code: 'REGISTER_TECH_AVATAR_REQUIRED' });
+    // [SEC-FIX-EMPTYSERVICES-01] راجع DECISIONS.md — services لم تكن إلزامية
+    // إطلاقاً للفني، بعكس avatar/national_number أعلاه/أسفل. فني يسجّل بلا أي
+    // خدمة مسجَّلة يدخل بحساب لا يمكنه أبداً تلقي أي طلب متطابق (كل مطابقة
+    // بالمنصة تعتمد على تقاطع services)، بلا أي تنبيه له وقت التسجيل بالسبب.
+    if (role === 'technician' && !services) return res.status(400).json({ error: 'يجب اختيار خدمة واحدة على الأقل', code: 'REGISTER_TECH_SERVICES_REQUIRED' });
     if (!validator.isEmail(email)) return res.status(400).json({ error: 'البريد غير صحيح', code: 'EMAIL_INVALID' });
     if (email.length > 100) return res.status(400).json({ error: 'البريد الإلكتروني طويل جداً', code: 'REGISTER_EMAIL_TOO_LONG' });
     if (!/^07\d{8}$/.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code: 'PHONE_INVALID_FORMAT' });
@@ -295,12 +300,23 @@ module.exports = function (deps) {
     const phone = clean(req.body.phone);
     const city = clean(req.body.city);
     const areas = clean(req.body.areas || req.body.area);
-    const services = req.body.services ? (Array.isArray(req.body.services) ? req.body.services.join(',') : clean(req.body.services)) : null;
+    // [SEC-FIX-EMPTYSERVICES-01] راجع DECISIONS.md — `req.body.services ? ... : null`
+    // كانت تعامل نصاً فارغاً "" (الحقل مُرسَل صراحة، بمعنى "امسح كل خدماتي")
+    // بالضبط كأن الحقل لم يُرسَل إطلاقاً (كلاهما null) — نية الفني بمسح خدماته
+    // تُتجاهَل بصمت (UPDATE يتخطى العمود تماماً أسفل بسبب `services !== null`)،
+    // لا تُرفَض ولا تُطبَّق، فني قد يظن أنه صفّر خدماته بينما القديمة لا تزال فعّالة.
+    const services = (req.body.services !== undefined && req.body.services !== null)
+      ? (Array.isArray(req.body.services) ? req.body.services.join(',') : clean(req.body.services))
+      : null;
     if (name.length < 2) return res.status(400).json({ error: 'الاسم قصير', code: 'PROFILE_NAME_TOO_SHORT' });
     if (name.length > 60) return res.status(400).json({ error: 'الاسم طويل جداً، الحد الأقصى 60 حرف', code: 'NAME_TOO_LONG_60' });
     if (city.length > 50) return res.status(400).json({ error: 'اسم المدينة طويل جداً', code: 'CITY_TOO_LONG' });
     if (areas.length > 500) return res.status(400).json({ error: 'المناطق طويلة جداً، الحد الأقصى 500 حرف', code: 'PROFILE_AREAS_TOO_LONG' });
     if (services && services.length > 500) return res.status(400).json({ error: 'الخدمات طويلة جداً، الحد الأقصى 500 حرف', code: 'PROFILE_SERVICES_TOO_LONG' });
+    // [SEC-FIX-EMPTYSERVICES-01] فني يرسل services صراحة كنص/مصفوفة فارغة —
+    // الآن تُرفَض بوضوح بدل التجاهل الصامت أعلاه أو ترك الحساب بلا أي خدمة
+    // (نفس متطلَّب التسجيل أعلاه: REGISTER_TECH_SERVICES_REQUIRED).
+    if (req.user.role === 'technician' && services !== null && !services) return res.status(400).json({ error: 'يجب أن تحتفظ بخدمة واحدة على الأقل', code: 'PROFILE_SERVICES_REQUIRED' });
     if (!/^07\d{8}$/.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code: 'PHONE_INVALID_FORMAT' });
     // معالجة الصورة الجديدة
     // [FIX-AVATAR-01] كان مقصوراً على الفنيين فقط — العميل لم يكن يقدر يضيف
