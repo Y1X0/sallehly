@@ -119,6 +119,19 @@ test.describe.serial('طلبات شحن الرصيد ومراجعة الأدمن
     expect(res.status()).toBe(400);
   });
 
+  // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — طلب بـContent-Type: application/json
+  // (لا multipart، فmulter يتجاوز المعالجة بصمت) وpackage_id كمصفوفة كان
+  // يُسقط better-sqlite3 بـRangeError غير نظيف بدل PACKAGE_NOT_FOUND المقصود.
+  test('POST /api/topups — package_id كمصفوفة (بجسم JSON) لا يُسقط الاستعلام، يُرفض بـ404 نظيف', async ({ request }) => {
+    const res = await request.post('/api/topups', {
+      headers: authHeader(technician.token),
+      data: { package_id: [1, 2] },
+    });
+    expect(res.status()).toBe(404);
+    const body = await res.json();
+    expect(body.code).toBe('PACKAGE_NOT_FOUND');
+  });
+
   test('POST /api/topups — ينشئ طلب شحن صحيحاً بحالة pending', async ({ request }) => {
     const res = await request.post('/api/topups', {
       headers: authHeader(technician.token),

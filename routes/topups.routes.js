@@ -10,7 +10,19 @@ module.exports = function (deps) {
   const router = express.Router();
 
   router.post('/topups', auth, requireRole('technician'), upload.single('receipt'), (req, res) => {
-    const pkg = db.prepare('SELECT * FROM packages WHERE id=? AND is_active=1').get(req.body.package_id);
+    // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — package_id كان يصل خاماً
+    // بلا أي تحويل نوع. multer يتجاوز معالجة req.body بصمت لو الطلب ليس
+    // multipart فعلياً، فطلب بـContent-Type: application/json
+    // وbody={"package_id":[1,2]} يصل هنا بمصفوفة حقيقية — better-sqlite3
+    // يرمي RangeError متزامناً لمعامل من نوع مصفوفة/كائن، فيصل هذا الراوت
+    // (بلا try/catch) كخطأ 400 غير نظيف بدل PACKAGE_NOT_FOUND المقصود.
+    // فحص typeof صريح هنا لازم قبل parseInt — parseInt(['1','2']) يحوّل
+    // المصفوفة أولاً لنص ("1,2") ثم يقرأ الرقم البادئ منها (1)، فلا يرجع NaN
+    // كما قد يُفترَض؛ يقبل بصمت أول رقم بمصفوفة قد لا علاقة لها بالباقة
+    // المقصودة أصلاً.
+    const rawPackageId = req.body.package_id;
+    const packageId = (typeof rawPackageId === 'string' || typeof rawPackageId === 'number') ? parseInt(rawPackageId, 10) : NaN;
+    const pkg = (packageId && !isNaN(packageId)) ? db.prepare('SELECT * FROM packages WHERE id=? AND is_active=1').get(packageId) : null;
     if (!pkg) return res.status(404).json({ error: 'الباقة غير موجودة', code: 'PACKAGE_NOT_FOUND' });
     // منع إرسال أكثر من طلب شحن معلق في نفس الوقت
     const pendingCount = db.prepare("SELECT COUNT(*) c FROM topups WHERE technician_id=? AND status='pending'").get(req.user.id).c;

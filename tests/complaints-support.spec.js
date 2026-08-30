@@ -108,6 +108,20 @@ test.describe.serial('الشكاوى', () => {
     expect(res.status()).toBe(400);
   });
 
+  // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — request_id كمصفوفة (وليس رقماً)
+  // بجسم JSON كان يمرَّر خاماً لـ.get() ويُسقط better-sqlite3 بـRangeError غير
+  // نظيف. هذا المسار (بلا multer إطلاقاً، JSON عادي) مختلف عن اختبارات النموذج
+  // (form:) أعلاه — لازم data: صريحة هنا لضمان Content-Type: application/json.
+  test('POST /complaints — request_id كمصفوفة لا يُسقط الاستعلام، يُعامَل كأنه غير موجود', async ({ request }) => {
+    const res = await request.post('/api/complaints', {
+      headers: authHeader(customer.token),
+      data: { request_id: [1, 2], body: 'شكوى بـrequest_id مشوَّه عمداً لاختبار الصلابة' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.complaint.subject).toBe('شكوى عامة');
+  });
+
   test('GET /complaints — الأدمن فقط، ويرى اسم العميل والفني', async ({ request }) => {
     const forbidden = await request.get('/api/complaints', { headers: authHeader(customer.token) });
     expect(forbidden.status()).toBe(403);
