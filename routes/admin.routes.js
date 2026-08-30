@@ -100,6 +100,19 @@ module.exports = function (deps) {
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
     if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
     const newStatus = u.is_active ? 0 : 1;
+    // [SEC-FIX-SUSPENDACTIVE-01] راجع DECISIONS.md — نفس فحص الطلب النشط
+    // الموجود أصلاً بـDELETE /admin/users/:id (سطر ~318) لكنه كان غائباً هنا:
+    // بدونه، إيقاف حساب فني له طلب "تم اختيار عرض"/"قيد التنفيذ"/"بانتظار
+    // تأكيد الدفع" يقفله عن REST فوراً (middleware/auth.js) بلا أي طريقة
+    // لإكمال أو حتى رؤية ذلك الطلب لاحقاً — يبقى طلب العميل عالقاً "قيد
+    // التنفيذ" للأبد إلا بتدخّل يدوي من أدمن آخر. نفس الفحص (customer_id
+    // OR technician_id) يحمي العميل أيضاً لو كان هو من يُوقَف.
+    if (newStatus === 0) {
+      const activeRequest = db.prepare(
+        "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+      ).get(u.id, u.id);
+      if (activeRequest) return res.status(409).json({ error: `لا يمكن إيقاف هذا الحساب — عنده طلب نشط رقم ${activeRequest.id}. أنهِ أو ألغِ الطلب أولاً.` });
+    }
     const reason = clean(req.body.reason || '');
     if (reason.length > 300) return res.status(400).json({ error: 'سبب الإيقاف طويل جداً، الحد الأقصى 300 حرف' });
     if (newStatus === 0) {

@@ -296,6 +296,54 @@ test.describe.serial('لوحة الأدمن', () => {
     expect(res.status()).toBe(400);
   });
 
+  // [SEC-FIX-SUSPENDACTIVE-01] راجع DECISIONS.md — قبل هذا الإصلاح، هذا
+  // المسار كان يوقف فنياً (أو عميلاً) له طلب "تم اختيار عرض" بلا أي فحص،
+  // فيُقفَل عن REST فوراً (middleware/auth.js) بلا أي طريقة لإكمال الطلب،
+  // ويبقى الطرف الآخر عالقاً للأبد. DELETE /admin/users/:id يحمل نفس الفحص
+  // أصلاً — هذا الاختبار يثبت أن /toggle صار يطابقه.
+  test('POST /admin/users/:id/toggle — لا يمكن إيقاف فني أو عميل له طلب نشط (تم اختيار عرض)', async ({ request }) => {
+    const busyTech = await registerAndVerify(request, 'technician', {
+      name: 'فني بطلب نشط لاختبار الإيقاف', city: CITY, national_number: uniqueNationalNumber(), services: 'كهربائي', areas: 'القويسمة',
+    });
+    const busyCustomer = await registerAndVerify(request, 'customer', { name: 'عميل بطلب نشط لاختبار الإيقاف', city: CITY });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(busyCustomer.token),
+      form: { service: 'كهربائي', city: CITY, area: 'القويسمة', description: 'طلب لاختبار منع إيقاف حساب نشط' },
+    });
+    expect(createRes.ok()).toBeTruthy();
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(busyTech.token),
+      form: { offer_price: '20', duration: '30 دقيقة' },
+    });
+    expect(offerRes.ok()).toBeTruthy();
+    const offerId = (await offerRes.json()).offers.find((o) => o.technician_id === busyTech.user.id).id;
+
+    const acceptRes = await request.post(`/api/offers/${offerId}/decision`, {
+      headers: authHeader(busyCustomer.token),
+      form: { decision: 'accepted' },
+    });
+    expect(acceptRes.ok()).toBeTruthy();
+
+    // الفني نفسه له الآن طلب "تم اختيار عرض" — إيقافه يجب أن يُرفض
+    const toggleTechRes = await request.post(`/api/admin/users/${busyTech.user.id}/toggle`, { headers: authHeader(adminToken) });
+    expect(toggleTechRes.status()).toBe(409);
+
+    // ونفس الفحص يحمي العميل (customer_id OR technician_id بالاستعلام الواحد)
+    const toggleCustomerRes = await request.post(`/api/admin/users/${busyCustomer.user.id}/toggle`, { headers: authHeader(adminToken) });
+    expect(toggleCustomerRes.status()).toBe(409);
+
+    const checkDb = openTestDb();
+    try {
+      expect(checkDb.prepare('SELECT is_active FROM users WHERE id=?').get(busyTech.user.id).is_active).toBe(1);
+      expect(checkDb.prepare('SELECT is_active FROM users WHERE id=?').get(busyCustomer.user.id).is_active).toBe(1);
+    } finally {
+      checkDb.close();
+    }
+  });
+
   test('POST /admin/users/:id/profile — تعديل الاسم والمدينة', async ({ request }) => {
     const res = await request.post(`/api/admin/users/${technician.user.id}/profile`, {
       headers: authHeader(adminToken),
