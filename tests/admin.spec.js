@@ -518,6 +518,42 @@ test.describe.serial('لوحة الأدمن', () => {
     expect((await afterRes.json()).user.balance).toBe(0);
   });
 
+  // [SEC-FIX-TOGGLEGHOST-01] راجع DECISIONS.md — anonymizeUser (DELETE
+  // /admin/users/:id) يضبط deleted_at وis_active=0 لكن لا يمنع /toggle من
+  // قلب is_active إلى 1 من جديد لاحقاً؛ بلا فحص deleted_at، فني محذوف "يعود
+  // للحياة" بحساب شبح (name='مستخدم محذوف'، بلا صورة ولا خدمات) يظهر من جديد
+  // بأي قائمة تفلتر فقط على is_active=1 — أخطرها GET /technicians (بحث
+  // الفنيين العام، بلا فلتر خدمة يستثنيه).
+  test('POST /admin/users/:id/toggle — يُمنع إعادة تفعيل فني محذوف نهائياً (بعد DELETE /admin/users/:id)', async ({ request }) => {
+    const deletedTech = await registerAndVerify(request, 'technician', {
+      name: 'فني سيُحذف قبل محاولة إعادة تفعيله', city: CITY, national_number: uniqueNationalNumber(), services: 'كهربائي', areas: 'القويسمة',
+    });
+    const deleteRes = await request.delete(`/api/admin/users/${deletedTech.user.id}`, { headers: authHeader(adminToken) });
+    expect(deleteRes.status()).toBe(200);
+
+    const toggleRes = await request.post(`/api/admin/users/${deletedTech.user.id}/toggle`, { headers: authHeader(adminToken) });
+    expect(toggleRes.status()).toBe(400);
+    const body = await toggleRes.json();
+    expect(body.code).toBe('ADMIN_CANNOT_REACTIVATE_DELETED_ACCOUNT');
+
+    const checkDb = openTestDb();
+    try {
+      const row = checkDb.prepare('SELECT is_active, deleted_at FROM users WHERE id=?').get(deletedTech.user.id);
+      expect(row.is_active).toBe(0);
+      expect(row.deleted_at).toBeTruthy();
+    } finally {
+      checkDb.close();
+    }
+
+    // لا يظهر الحساب "الشبح" بقائمة الفنيين العامة بعد محاولة إعادة التفعيل الفاشلة.
+    const searchRes = await request.get('/api/technicians', {
+      headers: authHeader(customer.token),
+      params: { city: CITY },
+    });
+    const found = (await searchRes.json()).technicians.find((t) => t.id === deletedTech.user.id);
+    expect(found).toBeUndefined();
+  });
+
   test('إدارة الخدمات: إضافة، رفض التكرار، ثم حذف', async ({ request }) => {
     const uniqueServiceName = `خدمة اختبار ${Date.now()}`;
     const createRes = await request.post('/api/admin/services', {

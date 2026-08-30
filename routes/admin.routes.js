@@ -114,6 +114,24 @@ module.exports = function (deps) {
     // مخاطرة داخلية بحتة (حساب أدمن مُخترَق أو خبيث).
     if (u.role === 'admin') return res.status(400).json({ error: 'لا يمكن إيقاف حساب إدارة آخر', code: 'ADMIN_CANNOT_TARGET_ADMIN' });
     const newStatus = u.is_active ? 0 : 1;
+    // [SEC-FIX-TOGGLEGHOST-01] راجع DECISIONS.md — anonymizeUser (حذف حساب)
+    // يضبط deleted_at ويصفّي كل بيانات هوية صاحبه (name='مستخدم محذوف'،
+    // email/phone/password_hash عشوائية) لكنه لا يلمس role أو is_active=0
+    // بطريقة تمنع إعادة تفعيله لاحقاً — is_active=0 فقط، بلا أي حارس يمنع
+    // فرع "إعادة التفعيل" (newStatus===1) هنا تحديداً من قلبها 1 من جديد.
+    // بدون هذا الفحص، أدمن يضغط /toggle على معرّف محذوف قديم (سجل تدقيق،
+    // خطأ نقر) يُعيد الحساب "نشطاً" بصمت — لا يمنحه أحد وصولاً فعلياً (لا
+    // أحد يعرف كلمة السر العشوائية)، لكنه يجعل هذا الحساب "الشبح" يظهر من
+    // جديد بكل مكان يفلتر فقط بـis_active=1: GET /technicians (بحث الفنيين
+    // العام، بلا أي فلتر خدمة/مدينة) وGET /technicians/:id/profile (كان
+    // يرفض 404 صراحة لحساب محذوف — يعود يعرض بروفايلاً باسم "مستخدم محذوف"
+    // بلا صورة ولا خدمات لأي عميل حقيقي يتصفّح). نفس فحص deleted_at المستخدَم
+    // أصلاً بـ/admin/users/:id/balance (SEC-FIX-BALANCETOGHOST-01) — مقصور
+    // على فرع إعادة التفعيل فقط؛ إيقاف حساب محذوف أصلاً (newStatus===0) غير
+    // ممكن أساساً لأن is_active يبدأ من 0 بعد الحذف، فلا حاجة لفحصه هناك.
+    if (newStatus === 1 && u.deleted_at) {
+      return res.status(400).json({ error: 'لا يمكن إعادة تفعيل حساب محذوف نهائياً', code: 'ADMIN_CANNOT_REACTIVATE_DELETED_ACCOUNT' });
+    }
     // [SEC-FIX-SUSPENDACTIVE-01] راجع DECISIONS.md — نفس فحص الطلب النشط
     // الموجود أصلاً بـDELETE /admin/users/:id (سطر ~318) لكنه كان غائباً هنا:
     // بدونه، إيقاف حساب فني له طلب "تم اختيار عرض"/"قيد التنفيذ"/"بانتظار
@@ -616,7 +634,12 @@ module.exports = function (deps) {
     let where = '';
     const params = [];
     if (search) {
-      where = 'WHERE actor_name LIKE ? OR action LIKE ? OR target_type LIKE ? OR details LIKE ?';
+      // [SEC-FIX-LIKEESCAPE-01] راجع DECISIONS.md وutils/helpers.js:escapeLike —
+      // نفس العلّة بالضبط، بنسخة منفصلة مكتوبة يدوياً هنا بدل استدعاء
+      // escapeLike المشتركة: `\` قبل `%`/`_` بلا `ESCAPE '\'' صريحة بجملة SQL
+      // لا يمنحها أي معنى خاص بـSQLite، فالبحث عن سبب/تفاصيل تحوي % أو _
+      // حرفياً كان يعيد صفر نتائج دائماً بدل مطابقتها كما كُتبت.
+      where = "WHERE actor_name LIKE ? ESCAPE '\\' OR action LIKE ? ESCAPE '\\' OR target_type LIKE ? ESCAPE '\\' OR details LIKE ? ESCAPE '\\'";
       const w = '%' + search.replace(/[%_\\]/g, c => '\\' + c) + '%';
       params.push(w, w, w, w);
     }
