@@ -365,6 +365,12 @@ module.exports = function (deps) {
     // للقبول من العميل بعد حذف هذا الحساب.
     const pendingOffer = db.prepare("SELECT id FROM offers WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
     if (pendingOffer) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — لديه عرض معلَّق رقم ${pendingOffer.id} بانتظار قرار عميل. اسحبه أو انتظر حسمه أولاً.` });
+    // [SEC-FIX-PENDINGTOPUP-01] راجع DECISIONS.md — طلب شحن pending لم يكن
+    // يُفحَص هنا على الإطلاق: لو حُذف حساب فني له طلب شحن معلَّق، ووافق الأدمن
+    // عليه لاحقاً بلا علم أنه يستهدف حساباً محذوفاً، الرصيد يُضاف لحساب
+    // is_active=0 مُصفّى بلا أي طريقة استرجاع غير تدخّل مباشر بقاعدة البيانات.
+    const pendingTopup = db.prepare("SELECT id FROM topups WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
+    if (pendingTopup) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — لديه طلب شحن رصيد معلَّق رقم ${pendingTopup.id} بانتظار مراجعة الأدمن. راجعه (موافقة أو رفض) أولاً.`, code: 'DELETE_ACCOUNT_PENDING_TOPUP' });
     if (Number(u.balance || 0) > 0) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — رصيده الحالي ${u.balance} د.أ. صفّر الرصيد أولاً.` });
     // [FIX-DELETE-CRASH-01] راجع utils/db-helpers.js (anonymizeUser) — كانت
     // DELETE FROM users هنا ترمي SqliteError (FOREIGN KEY constraint failed)

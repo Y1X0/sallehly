@@ -328,3 +328,65 @@ test.describe('[FIX-PENDINGOFFER-01] لا يمكن حذف حساب ذاتي له
     expect(loginRes.status()).toBe(200);
   });
 });
+
+// [SEC-FIX-PENDINGTOPUP-01] راجع DECISIONS.md — نفس فئة FIX-PENDINGOFFER-01
+// (التزام معلَّق يفوت فحص activeRequest لأنه لا يرتبط بجدول requests إطلاقاً)
+// لكن لطلب شحن رصيد بدل عرض. مستقل تماماً عن الوصفين أعلاه.
+test.describe('[SEC-FIX-PENDINGTOPUP-01] لا يمكن حذف حساب فني له طلب شحن رصيد معلَّق لم تراجعه الإدارة بعد', () => {
+  test('DELETE /api/me لفني له طلب شحن pending فقط: يُرفض بـ409 DELETE_ACCOUNT_PENDING_TOPUP', async ({ request }) => {
+    const tech = await registerAndVerify(request, 'technician', {
+      name: 'فني بطلب شحن معلَّق لاختبار الحذف الذاتي', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
+    });
+
+    const metaRes = await request.get('/api/meta', { headers: authHeader(tech.token) });
+    const pkg = (await metaRes.json()).packages[0];
+
+    const topupRes = await request.post('/api/topups', {
+      headers: authHeader(tech.token),
+      multipart: {
+        package_id: String(pkg.id),
+        receipt: { name: 'receipt.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+      },
+    });
+    expect(topupRes.ok()).toBeTruthy();
+
+    const deleteRes = await request.delete('/api/me', {
+      headers: authHeader(tech.token),
+      form: { password: VALID_PASSWORD },
+    });
+    expect(deleteRes.status()).toBe(409);
+    const body = await deleteRes.json();
+    expect(body.code).toBe('DELETE_ACCOUNT_PENDING_TOPUP');
+
+    // الحساب لا يزال موجوداً وفعّالاً — لم يُحذَف رغم فشل الطلب
+    const loginRes = await request.post('/api/auth/login', { form: { email: tech.email, password: VALID_PASSWORD } });
+    expect(loginRes.status()).toBe(200);
+  });
+
+  test('DELETE /admin/users/:id لفني له طلب شحن pending فقط: يُرفض بـ409 DELETE_ACCOUNT_PENDING_TOPUP', async ({ request }) => {
+    const tech = await registerAndVerify(request, 'technician', {
+      name: 'فني بطلب شحن معلَّق لاختبار حذف الأدمن', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
+    });
+
+    const metaRes = await request.get('/api/meta', { headers: authHeader(tech.token) });
+    const pkg = (await metaRes.json()).packages[0];
+
+    const topupRes = await request.post('/api/topups', {
+      headers: authHeader(tech.token),
+      multipart: {
+        package_id: String(pkg.id),
+        receipt: { name: 'receipt.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+      },
+    });
+    expect(topupRes.ok()).toBeTruthy();
+
+    const adminToken = loginAdmin();
+    const deleteRes = await request.delete(`/api/admin/users/${tech.user.id}`, { headers: authHeader(adminToken) });
+    expect(deleteRes.status()).toBe(409);
+    const body = await deleteRes.json();
+    expect(body.code).toBe('DELETE_ACCOUNT_PENDING_TOPUP');
+
+    const loginRes = await request.post('/api/auth/login', { form: { email: tech.email, password: VALID_PASSWORD } });
+    expect(loginRes.status()).toBe(200);
+  });
+});
