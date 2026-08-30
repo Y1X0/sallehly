@@ -119,6 +119,23 @@ test.describe.serial('طلبات شحن الرصيد ومراجعة الأدمن
     expect(res.status()).toBe(400);
   });
 
+  // [SEC-FIX-UPLOADMAGIC-01] راجع DECISIONS.md — امتداد .png وmimetype
+  // image/png (كلاهما يُقرّرهما العميل بالطلب، سهلا التلاعب) لم يكونا كافيين
+  // وحدهما سابقاً؛ محتوى الملف الفعلي (نص خام هنا، لا بايتات PNG حقيقية) الآن
+  // يُتحقَّق منه فعلياً عبر verifyImageMagicBytes بعد اكتمال الرفع.
+  test('POST /api/topups — إيصال بامتداد/mimetype صورة لكن محتواه ليس صورة فعلياً يُرفض', async ({ request }) => {
+    const res = await request.post('/api/topups', {
+      headers: authHeader(technician.token),
+      multipart: {
+        package_id: String(pkg.id),
+        receipt: { name: 'fake-receipt.png', mimeType: 'image/png', buffer: Buffer.from('هذا نص عادي، ليس صورة PNG حقيقية إطلاقاً') },
+      },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('FILE_TYPE_NOT_ALLOWED');
+  });
+
   // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — طلب بـContent-Type: application/json
   // (لا multipart، فmulter يتجاوز المعالجة بصمت) وpackage_id كمصفوفة كان
   // يُسقط better-sqlite3 بـRangeError غير نظيف بدل PACKAGE_NOT_FOUND المقصود.
@@ -140,7 +157,7 @@ test.describe.serial('طلبات شحن الرصيد ومراجعة الأدمن
         receipt: {
           name: 'receipt.png',
           mimeType: 'image/png',
-          buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+          buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
         },
       },
     });
@@ -163,7 +180,7 @@ test.describe.serial('طلبات شحن الرصيد ومراجعة الأدمن
       headers: authHeader(technician.token),
       multipart: {
         package_id: String(pkg.id),
-        receipt: { name: 'r2.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        receipt: { name: 'r2.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     expect(second.status()).toBe(200);
@@ -172,7 +189,7 @@ test.describe.serial('طلبات شحن الرصيد ومراجعة الأدمن
       headers: authHeader(technician.token),
       multipart: {
         package_id: String(pkg.id),
-        receipt: { name: 'r3.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        receipt: { name: 'r3.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     expect(third.status()).toBe(429);
@@ -255,7 +272,7 @@ test.describe.serial('طلبات شحن الرصيد ومراجعة الأدمن
       headers: authHeader(customer),
       multipart: {
         package_id: String(pkg.id),
-        receipt: { name: 'r.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        receipt: { name: 'r.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     expect(res.status()).toBe(403);
@@ -282,7 +299,7 @@ test.describe('[FIX-COMMISSIONSNAPSHOT-01] عمولة الباقة تُلقَط 
       headers: authHeader(technician.token),
       multipart: {
         package_id: String(testPkg.id),
-        receipt: { name: 'receipt.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        receipt: { name: 'receipt.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     expect(topupRes.status()).toBe(200);

@@ -4,12 +4,12 @@ const express = require('express');
 module.exports = function (deps) {
   const { db } = deps;
   const { io } = deps.realtime;
-  const { auth, requireRole, upload } = deps.middleware;
+  const { auth, requireRole, upload, verifyImageMagicBytes } = deps.middleware;
   const { clean, logAudit, notify } = deps.utils;
   const { sendPush } = deps.services;
   const router = express.Router();
 
-  router.post('/topups', auth, requireRole('technician'), upload.single('receipt'), (req, res) => {
+  router.post('/topups', auth, requireRole('technician'), upload.single('receipt'), verifyImageMagicBytes, (req, res) => {
     // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — package_id كان يصل خاماً
     // بلا أي تحويل نوع. multer يتجاوز معالجة req.body بصمت لو الطلب ليس
     // multipart فعلياً، فطلب بـContent-Type: application/json

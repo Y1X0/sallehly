@@ -222,11 +222,18 @@ module.exports = function (deps) {
     if (offer.request_status !== 'بانتظار العروض' && offer.request_status !== 'وصلت عروض') {
       return res.status(400).json({ error: 'لا يمكن سحب العرض بعد اختيار الفني', code: 'OFFER_CANNOT_WITHDRAW_AFTER_SELECTION' });
     }
-    db.prepare('DELETE FROM offers WHERE id=?').run(offer.id);
-    // إعادة حالة الطلب إذا ما في عروض معلقة غيره
-    const remaining = db.prepare("SELECT COUNT(*) c FROM offers WHERE request_id=? AND status='pending'").get(offer.request_id).c;
-    db.prepare("UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
-      .run(remaining ? 'وصلت عروض' : 'بانتظار العروض', offer.request_id);
+    // [DATA-INTEGRITY-03] راجع DECISIONS.md — الحذف + إعادة حساب حالة الطلب
+    // الآن معاملة واحدة (نفس نمط applyRejection/applyAcceptance أعلاه بهذا
+    // الملف)، بدل استعلامين منفصلين قد يترك انهيار العملية بينهما العرض
+    // محذوفاً لكن حالة الطلب القديمة.
+    const withdrawOffer = db.transaction(() => {
+      db.prepare('DELETE FROM offers WHERE id=?').run(offer.id);
+      // إعادة حالة الطلب إذا ما في عروض معلقة غيره
+      const remaining = db.prepare("SELECT COUNT(*) c FROM offers WHERE request_id=? AND status='pending'").get(offer.request_id).c;
+      db.prepare("UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?")
+        .run(remaining ? 'وصلت عروض' : 'بانتظار العروض', offer.request_id);
+    });
+    withdrawOffer();
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(offer.request_id);
     // [SEC-FIX-03] Targeted emit for offer withdrawal
     safeEmit(offer.request_id, 'request-status-updated', { request });

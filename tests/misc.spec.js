@@ -169,7 +169,7 @@ test.describe.serial('بحث الفنيين وبروفايلهم العام', ()
       request,
       'technician',
       { name: 'فني للبحث عنه', city: CITY, national_number: uniqueNationalNumber(), services: 'سباك', areas: 'خلدا' },
-      { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } }
+      { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } }
     );
     await request.dispose();
   });
@@ -223,7 +223,7 @@ test.describe('[SEC-FIX-EMPTYSERVICES-01] services إلزامية للفني —
       multipart: {
         role: 'technician', email, phone, password: VALID_PASSWORD,
         name: 'فني بلا خدمات', city: CITY, national_number: uniqueNationalNumber(), areas: 'خلدا',
-        avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     expect(res.status()).toBe(400);
@@ -238,7 +238,7 @@ test.describe('[SEC-FIX-EMPTYSERVICES-01] services إلزامية للفني —
       multipart: {
         role: 'technician', email, phone, password: VALID_PASSWORD,
         name: 'فني بخدمات فارغة', city: CITY, national_number: uniqueNationalNumber(), areas: 'خلدا', services: '',
-        avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     expect(res.status()).toBe(400);
@@ -253,7 +253,7 @@ test.describe('[SEC-FIX-EMPTYSERVICES-01] services إلزامية للفني —
     const tech = await registerAndVerify(
       request, 'technician',
       { name: 'فني لاختبار مسح الخدمات', city: CITY, national_number: uniqueNationalNumber(), services: 'سباك', areas: 'خلدا' },
-      { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } }
+      { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } }
     );
 
     // [SEC-FIX-EMPTYSERVICES-01] جسم JSON (لا multipart) عمداً — multer
@@ -278,7 +278,7 @@ test.describe('[SEC-FIX-EMPTYSERVICES-01] services إلزامية للفني —
     const tech = await registerAndVerify(
       request, 'technician',
       { name: 'فني بلا تعديل خدمات', city: CITY, national_number: uniqueNationalNumber(), services: 'نجار', areas: 'خلدا' },
-      { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } }
+      { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } }
     );
 
     const res = await request.post('/api/me/profile', {

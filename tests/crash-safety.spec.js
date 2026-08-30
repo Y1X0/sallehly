@@ -44,6 +44,10 @@ function buildMinimalAuthApp(db) {
     middleware: {
       auth: (req, res, next) => { req.user = { id: 1, role: 'customer', name: 'test' }; next(); },
       upload: { single: () => (req, res, next) => next() },
+      // [SEC-FIX-UPLOADMAGIC-01] لا ملف يُرفَع فعلياً بهذا التطبيق المصغَّر
+      // (upload.single مزيَّفة أعلاه، لا تكتب أي req.file) — تمرير مباشر بلا
+      // أي تحقق، تماماً مثل باقي middleware المزيَّفة هنا.
+      verifyImageMagicBytes: (req, res, next) => next(),
     },
     services: {
       sign: () => 'fake-token',

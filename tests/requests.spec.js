@@ -282,19 +282,19 @@ test.describe.serial('[PERF-01] GET /requests للفني — الاستعلام 
     matchingTech = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني مطابق PERF-01', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة,صويلح' },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     // خدمة مختلفة كلياً — يجب ألا يرى الطلب إطلاقاً رغم تطابق المدينة/المنطقة
     wrongServiceTech = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني خدمة مختلفة PERF-01', city: CITY, national_number: uniqueNationalNumber(), services: 'سباك', areas: 'القويسمة' },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     // بلا areas إطلاقاً، لكن city نفس مدينة الطلب — يجب أن يراه عبر fallback المدينة
     cityFallbackTech = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني fallback المدينة PERF-01', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: '' },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     const createRes = await request.post('/api/requests', {

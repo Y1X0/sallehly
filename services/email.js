@@ -24,10 +24,21 @@ function escapeHtml(str) {
 // العميل بانتظار رد لن يصل إطلاقاً، بلا حتى 500 واضح يقدر يعيد المحاولة
 // بعده. مصدّرة بشكل مستقل لأنها القابلة للاختبار فعلياً هنا (محاكاة Resend
 // حيّ معلَّق بلا استجابة تتطلّب خادم وهمي حقيقي، خارج نطاق هذا الإصلاح).
-function withTimeout(promise, ms, timeoutMessage) {
+// [SEC-FIX-EMAILCANCEL-01] راجع DECISIONS.md — راجع نطاق متروك عمداً بـ
+// SEC-FIX-EMAILTIMEOUT-01 أعلاه: Promise.race وحدها تحدّ فقط زمن انتظار
+// المستدعي (sendOtpEmail يرجع فوراً بعد 15 ثانية)، لكن طلب fetch الأصلي
+// المهجور يبقى يعمل بالخلفية حتى يفشل أو ينتهي من تلقاء نفسه — لا إلغاء
+// فعلي. onTimeout اختياري (لا يغيّر أي استدعاء حالي بلا الوسيط الرابع —
+// كل الاستخدامات/الاختبارات الحالية بثلاثة وسطاء تبقى كما هي بالضبط):
+// يُستدعى بالضبط لحظة انتهاء المهلة، قبل الرفض — sendOtpEmail يمرّر هنا
+// controller.abort() الحقيقي (راجع أسفل) لإلغاء طلب fetch الأصلي فعلياً.
+function withTimeout(promise, ms, timeoutMessage, onTimeout) {
   let timer;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(timeoutMessage || `timed out after ${ms}ms`)), ms);
+    timer = setTimeout(() => {
+      if (typeof onTimeout === 'function') { try { onTimeout(); } catch (e) {} }
+      reject(new Error(timeoutMessage || `timed out after ${ms}ms`));
+    }, ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
@@ -49,6 +60,15 @@ async function sendOtpEmail(toEmail, otp, name) {
     console.error('[FATAL] RESEND_API_KEY غير مضبوط بالإنتاج — تعذّر إرسال إيميل التحقق فعلياً.');
     return false;
   }
+  // [SEC-FIX-EMAILCANCEL-01] راجع DECISIONS.md — resend.emails.send() (الإصدار
+  // الحالي، 6.14.0) يمرّر أي خاصية زائدة بكائن options الثاني مباشرة لـ
+  // fetch() الداخلية بلا أي تصفية (تحقَّق مباشرة من مصدر الحزمة قبل الاعتماد
+  // عليه: `{method:'POST', body, ...options, headers}`) — رغم أن تعريف
+  // النوع (TypeScript) الرسمي لا يذكر `signal` صراحة، فهو يعمل فعلياً وقت
+  // التشغيل. تحقَّق مباشرة أيضاً (سكربت مستقل، مفتاح API وهمي) أن تمرير
+  // signal حقيقي وإلغاءه فعلاً يُلغي طلب fetch الأصلي (يُرجع خطأً سريعاً
+  // بدل الانتظار)، لا مجرد تجاهل صامت.
+  const controller = new AbortController();
   try {
     // [SEC-FIX-EMAILTIMEOUT-01] راجع DECISIONS.md وتعليق withTimeout أعلاه.
     await withTimeout(resend.emails.send({
@@ -71,7 +91,7 @@ async function sendOtpEmail(toEmail, otp, name) {
           <p style="color:#888;font-size:12px;text-align:center;">إذا لم تطلب هذا الكود، تجاهل هذا الإيميل.</p>
         </div>
       `
-    }), 15000, 'resend send timeout');
+    }, { signal: controller.signal }), 15000, 'resend send timeout', () => controller.abort());
     return true;
   } catch (e) {
     console.error('Resend error:', e.message);

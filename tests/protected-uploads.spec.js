@@ -92,7 +92,7 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/avatars و/uploads/payments 
       headers: authHeader(techA.token),
       multipart: {
         package_id: String(pkgId),
-        receipt: { name: 'receipt.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        receipt: { name: 'receipt.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     expect(topupRes.ok()).toBe(true);
@@ -185,7 +185,7 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/requests — صور الشا
       multipart: {
         service: 'كهربائي', city: CITY, area: 'القويسمة',
         description: 'وصف تجريبي كافٍ للطول لاختبار رفع الملفات المحمية',
-        problem_image: { name: 'problem.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        problem_image: { name: 'problem.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     acceptedRequest = (await createRes.json()).request;
@@ -293,7 +293,7 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] problem_image_url — فني يتصف
         role: 'technician', email, phone, password: VALID_PASSWORD,
         name: 'فني اختبار تصفّح', city, national_number: uniqueNationalNumber(),
         services, areas,
-        avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     if (!registerRes.ok()) throw new Error(`فشل تسجيل الفني: ${registerRes.status()} ${await registerRes.text()}`);
@@ -320,7 +320,7 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] problem_image_url — فني يتصف
       multipart: {
         service: 'كهربائي', city: CITY, area: 'القويسمة',
         description: 'وصف تجريبي كافٍ للطول لاختبار صلاحية تصفّح صورة المشكلة',
-        problem_image: { name: 'problem2.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+        problem_image: { name: 'problem2.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
       },
     });
     const r = (await createRes.json()).request;

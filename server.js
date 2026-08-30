@@ -22,7 +22,7 @@ const { auth, requireRole, requireSuperAdmin, sign } = require('./middleware/aut
 const utilsHelpers = require('./utils/helpers');
 const { createDbHelpers } = require('./utils/db-helpers');
 const { createNotificationHelper } = require('./utils/notification');
-const { upload, uploadAudio } = require('./middleware/upload');
+const { upload, uploadAudio, verifyImageMagicBytes } = require('./middleware/upload');
 const security = require('./middleware/security');
 const { sendOtpEmail } = require('./services/email');
 const { sendPush } = require('./services/push');
@@ -69,7 +69,7 @@ const notificationHelper = createNotificationHelper(db);
 const deps = {
   db,
   realtime: { io, safeEmit },
-  middleware: { auth, requireRole, requireSuperAdmin, upload, uploadAudio },
+  middleware: { auth, requireRole, requireSuperAdmin, upload, uploadAudio, verifyImageMagicBytes },
   services: { sendOtpEmail, sendPush, createDbBackup, sign },
   utils: { ...utilsHelpers, ...dbHelpers, ...notificationHelper },
   limiters: {
@@ -78,7 +78,8 @@ const deps = {
     passwordResetLimiter: security.passwordResetLimiter,
     messageLimiter: security.messageLimiter,
     offerLimiter: security.offerLimiter,
-    requestLimiter: security.requestLimiter
+    requestLimiter: security.requestLimiter,
+    supportLimiter: security.supportLimiter
   },
   constants: { COOKIE_OPTS: env.COOKIE_OPTS, BASE: env.BASE },
   path, fs

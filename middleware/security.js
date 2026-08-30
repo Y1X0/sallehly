@@ -83,6 +83,21 @@ const requestLimiter = rateLimit({
   legacyHeaders: false
 });
 
+// [SEC-FIX-SUPPORTSPAM-01] راجع DECISIONS.md — POST /support، POST
+// /support/:id/messages، POST /complaints، وPOST /requests/:id/report-message
+// كانت الوحيدة بين نقاط الإنشاء الحقيقية بهذا المشروع بلا أي حد طلبات
+// إطلاقاً (بعكس requestLimiter/offerLimiter/messageLimiter أعلاه). مستخدم
+// مسجَّل دخوله (كل هذه المسارات تتطلب auth) يقدر نظرياً يُغرق لوحة الأدمن
+// برسائل/بلاغات متكررة. حد واحد مشترك لكل الأربعة (لا حاجة لتمييزها — نفس
+// فئة التهديد بالضبط: إزعاج تشغيلي بحساب حقيقي، لا وصول مجهول).
+const supportLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: IS_PROD ? 15 : 1000,
+  message: { error: 'طلبات كثيرة جداً خلال وقت قصير، حاول بعد قليل', code: 'RATE_LIMIT_SUPPORT' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 // [SEC-FIX-13] Helmet with explicit frameguard DENY + CSP hardened
 const helmetMiddleware = helmet({
   frameguard: { action: 'deny' },
@@ -167,5 +182,6 @@ module.exports = {
   passwordResetLimiter,
   messageLimiter,
   offerLimiter,
-  requestLimiter
+  requestLimiter,
+  supportLimiter
 };

@@ -2,8 +2,36 @@
 const express = require('express');
 
 // دوال فحص محاولات مشاركة أرقام هواتف/روابط تواصل خارج التطبيق — خاصة بالشات بس.
+
+// [SEC-FIX-INVISIBLECHARS-01] راجع DECISIONS.md. النطاقات بالاسم: U+00AD
+// SOFT HYPHEN، U+034F COMBINING GRAPHEME JOINER، U+061C ARABIC LETTER MARK،
+// U+180E MONGOLIAN VOWEL SEPARATOR، U+200B-U+200F (ZERO WIDTH SPACE/
+// NON-JOINER/JOINER، LRM/RLM)، U+202A-U+202E (bidi embedding/override)،
+// U+2060-U+2064 (WORD JOINER وما شابه)، U+2066-U+2069 (bidi isolate)،
+// U+2028/U+2029 (LINE/PARAGRAPH SEPARATOR)، U+FEFF (BOM/ZERO WIDTH
+// NO-BREAK SPACE)، U+FFF9-U+FFFB (INTERLINEAR ANNOTATION)، U+FE00-U+FE0F
+// (VARIATION SELECTORS — الفئة الموسَّعة الأولى المُضافة هنا)، وC0/C1
+// control characters النادرة (U+0000-U+0008، U+000B-U+000C، U+000E-U+001F، U+007F-U+009F —
+// الفئة الموسَّعة الثانية؛ \t\n\r مُستثناة عمداً، مُعالَجة أصلاً كمسافة
+// عادية بـ`normalizeChatText` أدناه). استُخدمت \uXXXX الصريحة بدل حروف
+// حرفية غير مرئية في الكود المصدري كي تبقى قابلة للمراجعة البصرية.
+//
+// مُعرَّفة بمستوى الملف (لا داخل chatViolationReason فقط) وتُطبَّق أيضاً
+// داخل normalizeChatText نفسها أدناه — لو استُخدمت هذه الدالة مستقبلاً
+// بموضع آخر غير chatViolationReason، تبقى الحماية سارية تلقائياً بدل
+// الاعتماد على أن يتذكّر كل مستدعٍ تطبيق الإزالة بنفسه أولاً.
+const INVISIBLE_CHARS_RE = new RegExp(
+  '[\\u0000-\\u0008\\u000B-\\u000C\\u000E-\\u001F\\u007F-\\u009F' +
+  '\\u00AD\\u034F\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E' +
+  '\\u2060-\\u2064\\u2066-\\u2069\\u2028\\u2029' +
+  '\\uFE00-\\uFE0F\\uFEFF\\uFFF9-\\uFFFB]', 'g'
+);
+function stripInvisibleChars(input) {
+  return String(input || '').replace(INVISIBLE_CHARS_RE, '');
+}
+
 function normalizeChatText(input) {
-  let s = String(input || '').toLowerCase();
+  let s = stripInvisibleChars(input).toLowerCase();
   const ar = '٠١٢٣٤٥٦٧٨٩', fa = '۰۱۲۳۴۵۶۷۸۹';
   s = s.replace(/[٠-٩]/g, ch => String(ar.indexOf(ch))).replace(/[۰-۹]/g, ch => String(fa.indexOf(ch))).replace(/[oO]/g, '0');
   s = s.replace(/[\u064B-\u065F\u0670ـ\s\-_.()\[\]{}|\\/,:;،]+/g, '');
@@ -39,23 +67,9 @@ function chatViolationReason(body) {
   // الأرقام المتصل" الذي يعتمد عليه الفحص أدناه (كل رقم يصير مقطعاً منفصلاً
   // بطول 1، لا يصل أبداً لعتبة 10 خانات)، بلا أي أثر مرئي للطرف المستقبِل —
   // الحرف نفسه لا يُعرَض إطلاقاً. نفس الحيلة تفكّك أيضاً كلمات المنصات
-  // ("واتساب"/"whatsapp") المفحوصة أدناه. الحل: إزالة كل حروف Unicode غير
-  // المرئية المعروفة (مسافات بعرض صفر، علامات اتجاه النص bidi — بما فيها
-  // ARABIC LETTER MARK U+061C ذات الصلة المباشرة بتطبيق عربي، فواصل بلا
-  // عرض) من بداية الفحص، قبل أي معالجة أخرى — نص المستخدم الفعلي المرئي لا
-  // يتأثر إطلاقاً، هذه الحروف بلا تمثيل مرئي بأي حال.
-  // النطاقات بالاسم: U+00AD SOFT HYPHEN، U+034F COMBINING GRAPHEME JOINER،
-  // U+061C ARABIC LETTER MARK، U+180E MONGOLIAN VOWEL SEPARATOR،
-  // U+200B-U+200F (ZERO WIDTH SPACE/NON-JOINER/JOINER، LRM/RLM)،
-  // U+202A-U+202E (bidi embedding/override)، U+2060-U+2064 (WORD JOINER
-  // وما شابه)، U+2066-U+2069 (bidi isolate)، U+FEFF (BOM/ZERO WIDTH
-  // NO-BREAK SPACE). استُخدمت \uXXXX الصريحة بدل حروف حرفية غير مرئية في
-  // الكود المصدري كي تبقى قابلة للمراجعة البصرية.
-  const INVISIBLE_CHARS_RE = new RegExp(
-    '[\\u00AD\\u034F\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E' +
-    '\\u2060-\\u2064\\u2066-\\u2069\\uFEFF]', 'g'
-  );
-  const original = rawBody.replace(INVISIBLE_CHARS_RE, '');
+  // ("واتساب"/"whatsapp") المفحوصة أدناه. `INVISIBLE_CHARS_RE` (مستوى
+  // الملف، أعلى `normalizeChatText`) تشرح كل النطاقات المُزالة بالاسم.
+  const original = stripInvisibleChars(rawBody);
   const lower = original.toLowerCase()
     .replace(/[٠-٩]/g, ch => String('٠١٢٣٤٥٦٧٨٩'.indexOf(ch)))
     .replace(/[۰-۹]/g, ch => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch)))
@@ -123,10 +137,10 @@ function chatViolationReason(body) {
 module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
-  const { auth, requireRole, upload, uploadAudio } = deps.middleware;
+  const { auth, requireRole, upload, uploadAudio, verifyImageMagicBytes } = deps.middleware;
   const { clean, getMessages, markChatRead, logAudit, canAccessRequestChat } = deps.utils;
   const { sendPush } = deps.services;
-  const { messageLimiter } = deps.limiters;
+  const { messageLimiter, supportLimiter } = deps.limiters;
   const router = express.Router();
 
   // [FIX-UGC-01] الطرف الآخر بمحادثة طلب معيّن، بنفس منطق تنبيه الرسائل تماماً.
@@ -243,7 +257,7 @@ module.exports = function (deps) {
   // ── إرسال صورة في الشات (يستخدم نفس حماية ونمط مسار الصوت) ──
   // [PERF-HARDEN-02] نفس تعليق /requests/:id/audio أعلاه بالضبط — كانت بلا
   // أي حد طلبات، الآن نفس حد الرسائل النصية.
-  router.post('/requests/:id/images', auth, messageLimiter, upload.single('image'), (req, res) => {
+  router.post('/requests/:id/images', auth, messageLimiter, upload.single('image'), verifyImageMagicBytes, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
@@ -288,7 +302,10 @@ module.exports = function (deps) {
   });
 
   // [FIX-UGC-01] الإبلاغ عن رسالة مسيئة (Google Play UGC policy)
-  router.post('/requests/:id/report-message', auth, (req, res) => {
+  // [SEC-FIX-SUPPORTSPAM-01] راجع DECISIONS.md — كان بلا أي حد طلبات، وبلا
+  // فحص تكرار (نفس المستخدم يقدر يُبلّغ نفس الرسالة عشرات المرات، كل بلاغ
+  // يُنشئ صفاً جديداً ويُطلق حدث Socket.IO منفصل لغرفة الأدمن).
+  router.post('/requests/:id/report-message', auth, supportLimiter, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
@@ -300,6 +317,14 @@ module.exports = function (deps) {
     const reason = clean(req.body.reason);
     if (!reason || reason.length < 2) return res.status(400).json({ error: 'الرجاء اختيار سبب البلاغ', code: 'REPORT_REASON_REQUIRED' });
     if (reason.length > 200) return res.status(400).json({ error: 'سبب البلاغ طويل جداً', code: 'REPORT_REASON_TOO_LONG' });
+    // [SEC-FIX-SUPPORTSPAM-01] فحص تكرار: نفس المستخدم لا يقدر يُبلّغ نفس
+    // الرسالة (أو نفس الطلب عموماً لو messageId فارغ) مرتين. messageId يمكن
+    // أن يكون NULL شرعياً (بلاغ عام على الطلب لا رسالة بعينها)، فـ`=?`
+    // العادي لا يطابق NULL بـSQL — `IS` صريحة بدل `=` تتعامل مع الحالتين معاً.
+    const existingReport = db.prepare(
+      'SELECT id FROM message_reports WHERE request_id=? AND reporter_id=? AND message_id IS ?'
+    ).get(r.id, req.user.id, messageId);
+    if (existingReport) return res.status(409).json({ error: 'أبلغت عن هذا بالفعل، الإدارة تراجع بلاغك', code: 'REPORT_ALREADY_SUBMITTED' });
     let messageBody = null;
     let reportedUserId = null;
     if (messageId) {

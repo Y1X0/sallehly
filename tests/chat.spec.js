@@ -58,12 +58,12 @@ test.describe.serial('الدردشة على الطلبات', () => {
     technician = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني اختبار شات', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     outsider = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني خارج الطلب', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     // إنشاء طلب وقبول عرض الفني عليه حتى يصير طرفاً رسمياً بالمحادثة
@@ -345,7 +345,7 @@ test.describe.serial('الدردشة على الطلبات', () => {
   test('POST /requests/:id/images — يرفض طرفاً خارجياً غير مرتبط بالطلب', async ({ request }) => {
     const res = await request.post(`/api/requests/${acceptedRequest.id}/images`, {
       headers: authHeader(outsider.token),
-      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     expect(res.status()).toBe(403);
   });
@@ -359,7 +359,7 @@ test.describe.serial('الدردشة على الطلبات', () => {
   test('POST /requests/:id/images و/audio — حد الطلبات (messageLimiter) مُفعَّل فعلياً', async ({ request }) => {
     const imgRes = await request.post(`/api/requests/${acceptedRequest.id}/images`, {
       headers: authHeader(customer.token),
-      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     expect(imgRes.status()).toBe(200);
     expect(imgRes.headers()['ratelimit-limit']).toBeTruthy();
@@ -429,12 +429,12 @@ test.describe('[SEC-FIX-CHATSCOPE-01] فني رُفض عرضه لا يعود ط�
     const techA = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني أ يُقبل', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     const techB = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني ب يُرفض', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     const createRes = await request.post('/api/requests', {
@@ -476,7 +476,7 @@ test.describe('[SEC-FIX-BLOCKSCOPE-01] DELETE /block وGET /block-status مقص�
     const outsider = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني غريب عن الطلب', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     const createRes = await request.post('/api/requests', {
@@ -511,7 +511,7 @@ test.describe('[SEC-FIX-INVISIBLECHARS-01] إدراج حروف Unicode غير م
     const technician = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني لاختبار الحروف غير المرئية', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     const createRes = await request.post('/api/requests', {
@@ -572,5 +572,86 @@ test.describe('[SEC-FIX-INVISIBLECHARS-01] إدراج حروف Unicode غير م
       form: { body: 'ممكن توصل الساعة أربعة ونص لو سمحت؟' },
     });
     expect(res.status()).toBe(200);
+  });
+
+  // [SEC-FIX-INVISIBLECHARS-01] راجع DECISIONS.md — توسعة النطاقات: variation
+  // selector (U+FE0F) وحرف تحكم C0 نادر (U+0001) لم يكونا مغطَّيين بالنسخة
+  // الأولى من القائمة.
+  test('POST /requests/:id/messages — اسم منصة مفصول بـVARIATION SELECTOR (U+FE0F) يُرفض بـ400', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: 'أضفني wh️atsapp أسهل' },
+    });
+    expect(res.status()).toBe(400);
+  });
+
+  test('POST /requests/:id/messages — رقم هاتف مفصول بحرف تحكم C0 نادر (U+0001) يُرفض بـ400', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: 'تواصل معي على 0791234567 مباشرة' },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('هاتف');
+  });
+});
+
+test.describe('[SEC-FIX-SUPPORTSPAM-01] بلاغ الرسالة (report-message) محدود المعدّل، ولا يقدر نفس المستخدم يكرره', () => {
+  let customer;
+  let technician;
+  let acceptedRequest;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار بلاغات الرسائل', city: CITY } });
+    technician = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني اختبار بلاغات الرسائل', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة' },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      multipart: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب لاختبار بلاغات الرسائل المتكررة' },
+    });
+    acceptedRequest = (await createRes.json()).request;
+
+    await request.post(`/api/requests/${acceptedRequest.id}/offer`, {
+      headers: authHeader(technician.token),
+      form: { offer_price: '10', duration: 'خلال ساعة' },
+    });
+    const offersRes = await request.get(`/api/requests/${acceptedRequest.id}/offers`, { headers: authHeader(customer.token) });
+    const offerId = (await offersRes.json()).offers[0].id;
+    await request.post(`/api/offers/${offerId}/decision`, { headers: authHeader(customer.token), form: { decision: 'accepted' } });
+
+    await request.dispose();
+  });
+
+  test('POST /requests/:id/report-message — supportLimiter مربوط فعلياً على هذا المسار', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/report-message`, {
+      headers: authHeader(customer.token),
+      form: { reason: 'محتوى غير لائق' },
+    });
+    expect(res.status()).toBe(200);
+    expect(res.headers()['ratelimit-limit']).toBeTruthy();
+  });
+
+  // [SEC-FIX-SUPPORTSPAM-01] راجع DECISIONS.md — نفس المستخدم كان يقدر يُبلّغ
+  // نفس الرسالة (أو نفس الطلب عموماً بلا messageId) عشرات المرات، كل بلاغ
+  // يُنشئ صفاً جديداً ويُطلق حدث Socket.IO منفصل لغرفة الأدمن.
+  test('POST /requests/:id/report-message — نفس المستخدم لا يقدر يُبلّغ نفس الطلب مرتين بلا messageId', async ({ request }) => {
+    const first = await request.post(`/api/requests/${acceptedRequest.id}/report-message`, {
+      headers: authHeader(technician.token),
+      form: { reason: 'سبب أول' },
+    });
+    expect(first.status()).toBe(200);
+
+    const second = await request.post(`/api/requests/${acceptedRequest.id}/report-message`, {
+      headers: authHeader(technician.token),
+      form: { reason: 'سبب ثانٍ لنفس الطلب' },
+    });
+    expect(second.status()).toBe(409);
+    const body = await second.json();
+    expect(body.code).toBe('REPORT_ALREADY_SUBMITTED');
   });
 });

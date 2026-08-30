@@ -19,8 +19,22 @@ const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 const COOLDOWN_MS = 15 * 60 * 1000;
 const lastSentAt = new Map();
 
+// [SEC-FIX-ERRORALERTMAP-01] راجع DECISIONS.md — لم يكن هناك أي حذف/تنظيف
+// إطلاقاً لأي مفتاح بهذه الخريطة. مفتاح كل إدخال يحمل نص رسالة الخطأ نفسها
+// (حتى 300 حرف) — أي خطأ تختلف رسالته قليلاً بين حدوث وآخر (مثلاً تتضمن ID
+// أو قيمة مُدخلة من المستخدم) كان يُنشئ مفتاحاً جديداً يبقى للأبد طوال عمر
+// العملية. تنظيف انتهازي (opportunistic) بكل استدعاء بدل مؤقّت (setInterval)
+// منفصل — لا حاجة لتبعية زمنية إضافية، وحجم الخريطة أصلاً صغير (عدد أنواع
+// الأخطاء المميّزة، لا عدد الطلبات)، فالتكلفة مهملة.
+function pruneExpired(now) {
+  for (const [key, ts] of lastSentAt) {
+    if (now - ts >= COOLDOWN_MS) lastSentAt.delete(key);
+  }
+}
+
 function shouldSend(key) {
   const now = Date.now();
+  pruneExpired(now);
   const last = lastSentAt.get(key);
   if (last && now - last < COOLDOWN_MS) return false;
   lastSentAt.set(key, now);
@@ -58,4 +72,7 @@ async function alertError(context, err) {
   }
 }
 
-module.exports = { alertError };
+// shouldSend وlastSentAt مصدَّرتان فقط لتمكين اختبار مباشر لكبح التكرار
+// وتنظيف المفاتيح منتهية الصلاحية بلا انتظار حقيقي لـ15 دقيقة أو حاجة
+// لـRESEND_API_KEY حقيقي (نفس فلسفة تصدير withTimeout من services/email.js).
+module.exports = { alertError, shouldSend, lastSentAt };
