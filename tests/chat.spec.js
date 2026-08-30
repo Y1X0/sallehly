@@ -469,3 +469,33 @@ test.describe('[SEC-FIX-CHATSCOPE-01] فني رُفض عرضه لا يعود ط�
     expect(readBAgain.status()).toBe(403);
   });
 });
+
+test.describe('[SEC-FIX-BLOCKSCOPE-01] DELETE /block وGET /block-status مقصوران على طرفي المحادثة فقط', () => {
+  test('فني لا علاقة له بالطلب يُمنع كلياً من GET /block-status وDELETE /block لطلب عميل آخر', async ({ request }) => {
+    const customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل لاختبار نطاق الحظر', city: CITY } });
+    const outsider = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني غريب عن الطلب', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      multipart: { service: SERVICE, city: CITY, area: AREA, description: 'طلب لاختبار نطاق حظر المحادثة' },
+    });
+    const req1 = (await createRes.json()).request;
+
+    // [SEC-FIX-BLOCKSCOPE-01] راجع DECISIONS.md — قبل هذا الإصلاح، كلا
+    // الطلبين كانا ينجحان (200) لفني لا علاقة له بالطلب إطلاقاً، ويكشف
+    // block-status الرد customer_id الحقيقي للعميل عبر otherUserId.
+    const statusRes = await request.get(`/api/requests/${req1.id}/block-status`, { headers: authHeader(outsider.token) });
+    expect(statusRes.status()).toBe(403);
+
+    const unblockRes = await request.delete(`/api/requests/${req1.id}/block`, { headers: authHeader(outsider.token) });
+    expect(unblockRes.status()).toBe(403);
+
+    // بالمقابل: العميل نفسه (طرف حقيقي بالطلب) يصل الاثنين بنجاح
+    const ownStatusRes = await request.get(`/api/requests/${req1.id}/block-status`, { headers: authHeader(customer.token) });
+    expect(ownStatusRes.status()).toBe(200);
+  });
+});

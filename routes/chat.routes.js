@@ -308,18 +308,30 @@ module.exports = function (deps) {
   });
 
   // [FIX-UGC-01] إلغاء حظر الطرف الآخر بهذا الطلب.
+  // [SEC-FIX-BLOCKSCOPE-01] راجع DECISIONS.md — كان هذا المسار (وGET
+  // /block-status أدناه) الوحيدين بهذا الملف بلا فحص canAccessRequestChat،
+  // بعكس كل مسار آخر يخص محادثة طلب بعينه (بما فيها POST /block المجاور
+  // مباشرة). getOtherPartyId ترجع customer_id افتراضياً لأي مستخدم لا علاقة
+  // له بالطلب (الفرع "لا شيء" بالشرط الثلاثي)، فيقدر أي مستخدم مسجَّل دخول
+  // يستهدف request_id عشوائياً ليس طرفاً فيه إطلاقاً.
   router.delete('/requests/:id/block', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
+    if (!canAccessRequestChat(req.user, r)) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
     if (otherPartyId) db.prepare('DELETE FROM user_blocks WHERE blocker_id=? AND blocked_id=?').run(req.user.id, otherPartyId);
     res.json({ ok: true, blocked: false });
   });
 
   // [FIX-UGC-01] هل أنا حاظر الطرف الآخر، أو هو حاظرني؟ (لعرض الحالة الصحيحة بالواجهة)
+  // [SEC-FIX-BLOCKSCOPE-01] راجع DECISIONS.md وتعليق DELETE /block أعلاه —
+  // نفس الثغرة بالضبط: بلا هذا الفحص، أي مستخدم مسجَّل دخول يقدر يكتشف
+  // customer_id الحقيقي لأي طلب عشوائي (عبر otherUserId بالرد) وهل هناك
+  // حظر قائم، رغم عدم كونه طرفاً بذلك الطلب إطلاقاً.
   router.get('/requests/:id/block-status', auth, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
+    if (!canAccessRequestChat(req.user, r)) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
     const otherPartyId = getOtherPartyId(r, req.user.id);
     if (!otherPartyId) return res.json({ blockedByMe: false, blockedMe: false, otherUserId: null });
     const blockedByMe = !!db.prepare('SELECT id FROM user_blocks WHERE blocker_id=? AND blocked_id=?').get(req.user.id, otherPartyId);
