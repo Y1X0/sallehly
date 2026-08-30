@@ -212,6 +212,51 @@ test.describe.serial('بحث الفنيين وبروفايلهم العام', ()
   });
 });
 
+// [SEC-FIX-LIKEESCAPE-01] راجع DECISIONS.md — escapeLike() (utils/helpers.js)
+// تُدرج `\` قبل `%`/`_` بالمُدخَل، لكن جملة SQL لم تكن تحمل `ESCAPE '\'' صريحة
+// — SQLite لا يُعطي `\` أي معنى خاص افتراضياً، فـ`%`/`_` تبقيان وايلدكارد كما
+// هما رغم الـ`\` المُدرَج، والنمط الناتج يتطلّب حرف `\` حرفياً غير موجود
+// بالبيانات الحقيقية. النتيجة: بحث بلا `ESCAPE` عن اسم فني يحوي `%`/`_`
+// حرفياً كان يعيد صفر نتائج دائماً (يتصرّف وكأن الاسم غير موجود) بدل مطابقته.
+test.describe('[SEC-FIX-LIKEESCAPE-01] بحث الفنيين يطابق اسماً يحوي % أو _ حرفياً', () => {
+  let customer;
+  let technician;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, 'customer', { name: 'عميل بحث بالوايلدكارد', city: CITY });
+    technician = await registerAndVerify(
+      request,
+      'technician',
+      { name: 'فني % مميز خصم50%', city: CITY, national_number: uniqueNationalNumber(), services: 'كهربائي', areas: 'خلدا' },
+      { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } }
+    );
+    await request.dispose();
+  });
+
+  test('GET /technicians?q=... يطابق substring يحوي % حرفياً باسم الفني', async ({ request }) => {
+    const res = await request.get('/api/technicians', {
+      headers: authHeader(customer.token),
+      params: { q: 'خصم50%' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    const found = body.technicians.find((t) => t.id === technician.user.id);
+    expect(found).toBeTruthy();
+  });
+
+  test('GET /technicians?q=... بحث نصي عادي بلا % لا يتأثر (لا تراجع)', async ({ request }) => {
+    const res = await request.get('/api/technicians', {
+      headers: authHeader(customer.token),
+      params: { q: 'مميز' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    const found = body.technicians.find((t) => t.id === technician.user.id);
+    expect(found).toBeTruthy();
+  });
+});
+
 test.describe('[SEC-FIX-EMPTYSERVICES-01] services إلزامية للفني — لا تسجيل ولا تحديث بروفايل بلا خدمة واحدة على الأقل', () => {
   // [SEC-FIX-EMPTYSERVICES-01] راجع DECISIONS.md — services لم تكن إلزامية
   // إطلاقاً عند التسجيل (بعكس avatar/national_number)؛ فني يسجّل بلا خدمة

@@ -28,9 +28,18 @@ module.exports = function (deps) {
     const params = [];
     const wanted = service || q;
     // [SEC-FIX-05] Escape LIKE wildcards before interpolation
-    if (wanted) { const w = escapeLike(wanted); sql += " AND (services LIKE ? OR name LIKE ?)"; params.push('%' + w + '%', '%' + w + '%'); }
-    if (city) { const c = escapeLike(city); sql += " AND (city=? OR areas LIKE ?)"; params.push(city, '%' + c + '%'); }
-    if (area) { const a = escapeLike(area); sql += " AND (areas LIKE ? OR city=?)"; params.push('%' + a + '%', city || area); }
+    // [SEC-FIX-LIKEESCAPE-01] راجع DECISIONS.md — escapeLike() وحدها بلا
+    // `ESCAPE '\'` صريحة بجملة SQL نفسها لا تفعل شيئاً: SQLite لا يعطي أي
+    // معنى خاص لـ`\` بمحارف LIKE افتراضياً (بعكس لغات/محركات أخرى)، فبقي
+    // `%`/`_` بعد الـ`\` المُدرَج يعملان كوايلدكارد كما هما — أُثبت مباشرة
+    // (سكربت better-sqlite3 مستقل) أن `ESCAPE '\'` ضرورية ليصبح `\%`/`\_`
+    // تطابقاً حرفياً فعلياً، لا مجرد تجميلي. بدونها، بحث بلا `ESCAPE` عن اسم/
+    // مدينة/منطقة تحوي `%` أو `_` حرفياً (نادر لكن ممكن) كان يعيد صفر نتائج
+    // دائماً (يتطلّب `\` حرفياً غير موجود بالبيانات الحقيقية) بدل مطابقة
+    // القيمة كما كتبها المستخدم فعلاً.
+    if (wanted) { const w = escapeLike(wanted); sql += " AND (services LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\')"; params.push('%' + w + '%', '%' + w + '%'); }
+    if (city) { const c = escapeLike(city); sql += " AND (city=? OR areas LIKE ? ESCAPE '\\')"; params.push(city, '%' + c + '%'); }
+    if (area) { const a = escapeLike(area); sql += " AND (areas LIKE ? ESCAPE '\\' OR city=?)"; params.push('%' + a + '%', city || area); }
     // [PERF-HARDEN-01] بلا سقف سابقاً — endpoint عام يستخدمه كل عميل يبحث عن
     // فني، بلا أي حد أقصى للنتائج المُرجَعة. 500 سقف وقائي بحت (لا يوجد
     // سيناريو واقعي حالي فيه أكثر من 500 نتيجة مطابقة لبحث واحد) يمنع نمو
