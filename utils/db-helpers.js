@@ -6,6 +6,11 @@
 // file's only use (anonymizeUser) is a throwaway low-cost hash never checked
 // against a real login; hashSync() signature is identical either way.
 const bcrypt = require('bcrypt');
+// [SEC-FIX-CHATACCESS-CHOKEPOINT-01] راجع DECISIONS.md — utils/helpers.js لا
+// تعتمد على db/io إطلاقاً (موثَّق بأعلاها)، فـrequire هنا آمن بلا أي دورة
+// اعتماد (helpers.js نفسها لا تستورد db-helpers.js).
+const { canAccessRequestChat } = require('./helpers');
+const { ForbiddenError } = require('./errors');
 
 function createDbHelpers(db) {
   // [FIX-DELETE-CRASH-01] راجع DECISIONS.md — القرار الموثَّق كان "حذف فعلي
@@ -57,7 +62,19 @@ function createDbHelpers(db) {
     db.prepare('UPDATE users SET rating_avg=?, rating_count=? WHERE id=?').run(Number(r.avg || 0).toFixed(2), r.c || 0, techId);
   }
 
-  function getMessages(requestId) {
+  // [SEC-FIX-CHATACCESS-CHOKEPOINT-01] راجع DECISIONS.md — هذه الدالة كانت
+  // (ولا تزال) نقطة الوصول الوحيدة الفعلية لقراءة محتوى محادثة طلب بعينه
+  // بكامله (raise/تحقُّق مباشر: لا استعلام آخر بكل المشروع يجلب صفوف messages
+  // كاملة بهذا الشكل). لكنها كانت تثق بالمُستدعي تماماً لفحص canAccessRequestChat
+  // *قبل* استدعائها — لا شيء كان يمنع موقع استدعاء مستقبلي من نسيان ذلك الفحص.
+  // الآن تفرض الفحص داخلياً بنفسها (تجلب الطلب، تتحقق، ترمي ForbiddenError لو
+  // رُفض) — طبقة دفاع مستقلة لا تعتمد على انضباط أي مُستدعٍ، حالي أو مستقبلي.
+  // مواقع الاستدعاء الأربعة الحالية بـroutes/chat.routes.js تبقي فحصها الصريح
+  // المسبق كما هو (يحمي أيضاً عمليات جانبية سابقة كإدراج رسالة/بث Socket.IO —
+  // هذا الفحص الداخلي إضافي، لا بديل عنه).
+  function getMessages(user, requestId) {
+    const request = db.prepare('SELECT * FROM requests WHERE id=?').get(requestId);
+    if (!canAccessRequestChat(user, request)) throw new ForbiddenError();
     const msgs = db.prepare('SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.sender_id WHERE request_id=? ORDER BY id').all(requestId);
     // أعلى رقم رسالة قرأها أي طرف آخر في هذا الطلب (لإظهار "تمت المشاهدة")
     const reads = db.prepare('SELECT user_id, last_read_message_id FROM chat_reads WHERE request_id=?').all(requestId);
@@ -66,6 +83,62 @@ function createDbHelpers(db) {
       m.seen = reads.some(r => r.user_id !== m.sender_id && Number(r.last_read_message_id) >= Number(m.id)) ? 1 : 0;
     });
     return msgs;
+  }
+
+  // [SEC-FIX-CHATACCESS-CHOKEPOINT-01] راجع DECISIONS.md — طبقة دفاع ثانية
+  // مستقلة عن جملة WHERE بـgetChatsList أدناه: تُعيد استخدام نفس
+  // canAccessRequestChat الحقيقية المستخدَمة بكل مكان آخر بالمشروع (لا نسخة
+  // SQL موازية منها قد تنحرف عنها مستقبلاً — بالضبط ما حدث فعلياً بـ
+  // SEC-FIX-CHATSCOPE-04)، بدل الاعتماد فقط على جملة WHERE. دالة صرفة مصدَّرة
+  // بشكل منفصل لتمكين اختبارها مباشرة بمعزل عن قاعدة بيانات حقيقية.
+  function filterChatRowsForUser(rows, user) {
+    return rows.filter(row => canAccessRequestChat(user, { customer_id: row.customer_id, technician_id: row.technician_id }));
+  }
+
+  // [SEC-FIX-CHATACCESS-CHOKEPOINT-01] راجع DECISIONS.md — كانت هذه الاستعلامات
+  // مكتوبة مباشرة بـrouter.get('/chats', ...) بـroutes/chat.routes.js، مكرَّرة
+  // منطقياً مرتين (عميل/فني) بلا أي طبقة تحقق مستقلة عن جملة WHERE نفسها —
+  // بالضبط الموقع الذي ظهرت به SEC-FIX-CHATSCOPE-04 سابقاً. نُقلت هنا لتصبح
+  // بجوار getMessages (نفس الملف = نفس نقطة الوصول الوحيدة لأي محتوى محادثة)،
+  // مع طبقة دفاع ثانية عبر filterChatRowsForUser أعلاه.
+  function getChatsList(user) {
+    let rows = [];
+    if (user.role === 'customer') {
+      rows = db.prepare(`SELECT r.id request_id,r.service,r.status,r.customer_id,r.technician_id,u.name other_name,
+        (SELECT body FROM messages WHERE request_id=r.id ORDER BY id DESC LIMIT 1) last_body,
+        (SELECT created_at FROM messages WHERE request_id=r.id ORDER BY id DESC LIMIT 1) last_at,
+        (SELECT COUNT(*) FROM messages m LEFT JOIN chat_reads cr ON cr.request_id=m.request_id AND cr.user_id=? WHERE m.request_id=r.id AND m.sender_id<>? AND m.id>COALESCE(cr.last_read_message_id,0)) unread_count
+        FROM requests r LEFT JOIN users u ON u.id=r.technician_id
+        WHERE r.customer_id=? AND (r.technician_id IS NOT NULL OR EXISTS(SELECT 1 FROM messages m WHERE m.request_id=r.id))
+        ORDER BY COALESCE(last_at,r.created_at) DESC LIMIT 1000`).all(user.id, user.id, user.id);
+    } else if (user.role === 'technician') {
+      rows = db.prepare(`SELECT r.id request_id,r.service,r.status,r.customer_id,r.technician_id,u.name other_name,
+        (SELECT body FROM messages WHERE request_id=r.id ORDER BY id DESC LIMIT 1) last_body,
+        (SELECT created_at FROM messages WHERE request_id=r.id ORDER BY id DESC LIMIT 1) last_at,
+        (SELECT COUNT(*) FROM messages m LEFT JOIN chat_reads cr ON cr.request_id=m.request_id AND cr.user_id=? WHERE m.request_id=r.id AND m.sender_id<>? AND m.id>COALESCE(cr.last_read_message_id,0)) unread_count
+        FROM requests r JOIN users u ON u.id=r.customer_id
+        WHERE r.technician_id=?
+        ORDER BY COALESCE(last_at,r.created_at) DESC LIMIT 1000`).all(user.id, user.id, user.id);
+    }
+    rows = filterChatRowsForUser(rows, user);
+    const total = rows.reduce((a, b) => a + Number(b.unread_count || 0), 0);
+    // customer_id/technician_id أُضيفا للـSELECT فقط لتمكين الفلتر أعلاه — لم
+    // يكونا جزءاً من شكل الاستجابة السابق لهذا الـendpoint، فيُحذفان قبل
+    // الإرجاع حتى لا يتغيّر شكل الاستجابة للعميل بلا داعٍ.
+    rows.forEach(row => { delete row.customer_id; delete row.technician_id; });
+    return { chats: rows, total_unread: total };
+  }
+
+  // [SEC-FIX-CHATACCESS-CHOKEPOINT-01] راجع DECISIONS.md — نُقلت من داخل
+  // router.post('/requests/:id/report-message', ...) لنفس سبب getChatsList
+  // أعلاه (نقطة وصول واحدة لأي قراءة محتوى من جدول messages). لا فحص صلاحية
+  // داخلي هنا عمداً: المُستدعي الوحيد الحالي (نفس الراوت) يتحقق من
+  // canAccessRequestChat على الطلب الأب *قبل* الوصول لهذا السطر أصلاً، وmessageId
+  // مقيَّد بـrequestId بجملة WHERE نفسها (لا تسرّب عبر طلب آخر بأي حال حتى بلا
+  // ذلك الفحص). موقع استدعاء مستقبلي يحتاج نفس الضمان الذي توفره getMessages
+  // (فحص مستقل عن انضباط المُستدعي) يجب أن يستخدم تلك الدالة بدل هذه.
+  function getMessageForReport(requestId, messageId) {
+    return db.prepare('SELECT * FROM messages WHERE id=? AND request_id=?').get(messageId, requestId);
   }
 
   function markChatRead(requestId, userId) {
@@ -84,7 +157,14 @@ function createDbHelpers(db) {
     } catch (e) { console.error('audit log failed:', e.message); }
   }
 
-  return { calcRating, getMessages, markChatRead, logAudit, anonymizeUser };
+  return {
+    calcRating, getMessages, markChatRead, logAudit, anonymizeUser,
+    getChatsList, getMessageForReport,
+    // [SEC-FIX-CHATACCESS-CHOKEPOINT-01] مصدَّرة أساساً لتمكين اختبارها مباشرة
+    // بمعزل عن قاعدة بيانات حقيقية (تنتهي أيضاً بـdeps.utils عبر spread
+    // server.js المعتاد — بلا ضرر، لا راوت يستخدمها مباشرة اليوم).
+    filterChatRowsForUser,
+  };
 }
 
 module.exports = { createDbHelpers };

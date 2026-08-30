@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "playwright test"
+    "test": "playwright test",
+    "check:chat-chokepoint": "node scripts/check-chat-content-chokepoint.js"
   },
   "dependencies": {
     "bcrypt": "^6.0.0",
