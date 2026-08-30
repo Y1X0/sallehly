@@ -638,6 +638,40 @@ test.describe.serial('لوحة الأدمن', () => {
     await request.delete(`/api/admin/packages/${pkg.id}`, { headers: authHeader(adminToken) });
   });
 
+  // [SEC-FIX-AMOUNTBOUND-01] راجع DECISIONS.md — commission_per_order كانت
+  // مستثناة عمداً بالإصلاح الأصلي أعلاه (لم تُطلَب صراحة وقتها). نفس السقف
+  // (MAX_FINANCIAL_AMOUNT) أُضيف لها الآن على مساري الإنشاء والتعديل معاً.
+  test('POST/PUT /admin/packages — عمولة منتهية لكن ضخمة جداً (commission_per_order) تُرفَض بـ400', async ({ request }) => {
+    const hugeCommissionCreateRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      data: { name: `باقة عمولة ضخمة ${Date.now()}`, amount: 15, bonus: 1, commission_per_order: 99999999999 },
+    });
+    expect(hugeCommissionCreateRes.status()).toBe(400);
+
+    const okCreate = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      form: { name: `باقة سليمة لاختبار سقف العمولة ${Date.now()}`, amount: '15', bonus: '1', commission_per_order: '2' },
+    });
+    const pkg = (await okCreate.json()).package;
+
+    const hugeCommissionUpdateRes = await request.put(`/api/admin/packages/${pkg.id}`, {
+      headers: authHeader(adminToken),
+      data: { name: pkg.name, amount: 15, bonus: 1, commission_per_order: 99999999999 },
+    });
+    expect(hugeCommissionUpdateRes.status()).toBe(400);
+
+    // الباقة تبقى بعمولتها الأصلية — لا رقم ضخم تسرّب لقاعدة البيانات
+    const checkDb = openTestDb();
+    try {
+      const dbRow = checkDb.prepare('SELECT commission_per_order FROM packages WHERE id=?').get(pkg.id);
+      expect(dbRow.commission_per_order).toBe(2);
+    } finally {
+      checkDb.close();
+    }
+
+    await request.delete(`/api/admin/packages/${pkg.id}`, { headers: authHeader(adminToken) });
+  });
+
   test('PUT /admin/packages/:id — تعطيل باقة يخفيها من /meta العامة فوراً', async ({ request }) => {
     const createRes = await request.post('/api/admin/packages', {
       headers: authHeader(adminToken),
