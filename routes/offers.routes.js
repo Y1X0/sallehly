@@ -5,7 +5,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole } = deps.middleware;
-  const { clean, notify } = deps.utils;
+  const { clean, notify, maskCoordsUnlessConfirmedTechnician } = deps.utils;
   const { sendPush } = deps.services;
   const { offerLimiter } = deps.limiters;
   const router = express.Router();
@@ -14,7 +14,12 @@ module.exports = function (deps) {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     if (!['بانتظار العروض', 'وصلت عروض'].includes(r.status)) return res.status(400).json({ error: 'هذا الطلب لم يعد يستقبل عروضاً', code: 'REQUEST_NOT_ACCEPTING_OFFERS' });
-    if (r.technician_id && Number(r.technician_id) !== Number(req.user.id)) return res.status(403).json({ error: 'هذا الطلب مباشر لفني آخر', code: 'REQUEST_DIRECT_TO_OTHER_TECHNICIAN' });
+    // [FIX-DEADFIELD-02] راجع DECISIONS.md — فرع "طلب موجَّه مباشرة لفني آخر"
+    // أُزيل: كان يعتمد على requests.technician_id المضبوط عند الإنشاء (ميزة
+    // خاملة أُزيلت أيضاً بـrequests.routes.js) — بما أن الحالة هنا محصورة أصلاً
+    // بـ'بانتظار العروض'/'وصلت عروض' (السطر أعلاه)، وtechnician_id لا يُضبَط
+    // إلا عند قبول عرض (يُخرج الطلب من هاتين الحالتين تلقائياً)، هذا الفرع لم
+    // يعد قابلاً للتحقق إطلاقاً (r.technician_id مضمون NULL بهذه النقطة دوماً).
     const active = db.prepare("SELECT id, service FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') AND id<>? ORDER BY id DESC LIMIT 1").get(req.user.id, r.id);
     if (active) return res.status(409).json({ error: `لا يمكنك إرسال عرض جديد قبل إنهاء طلبك الحالي رقم ${active.id} - ${active.service}`, code: 'OFFER_ACTIVE_REQUEST_EXISTS', params: { id: active.id, service: active.service } });
     const tech = db.prepare('SELECT id,balance,free_offers_used,active_commission,services FROM users WHERE id=? AND role=\'technician\'').get(req.user.id);
@@ -102,7 +107,12 @@ module.exports = function (deps) {
       requestId: r.id
     });
 
-    res.json({ request, offers });
+    // [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — technician_id لا يزال NULL
+    // بهذه اللحظة بالذات (العرض لسا pending، لم يُقبَل بعد) — الفني المُقدِّم
+    // هنا ليس مؤكَّداً بعد بأي حال، فيُقنَّع دائماً بغض النظر عن الفحص. نسخة
+    // مقنَّعة منفصلة للاستجابة فقط — request الأصلية تبقى كاملة للبث أعلاه
+    // (safeEmit/customer/admin، يستحقون الإحداثيات الكاملة).
+    res.json({ request: maskCoordsUnlessConfirmedTechnician(request, req.user.id), offers });
   });
 
   router.get('/requests/:id/offers', auth, (req, res) => {
@@ -123,7 +133,12 @@ module.exports = function (deps) {
     let rows = db.prepare(`SELECT o.*, u.name technician_name, u.city technician_city, u.areas technician_areas, u.avatar_url, u.rating_avg, u.rating_count, u.completed_jobs
       FROM offers o JOIN users u ON u.id=o.technician_id WHERE o.request_id=? ORDER BY CASE o.status WHEN 'accepted' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, o.id DESC`).all(r.id);
     if (req.user.role === 'technician' && r.customer_id !== req.user.id && r.technician_id !== req.user.id) rows = rows.filter(o => o.technician_id === req.user.id);
-    res.json({ offers: rows, request: r });
+    // [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — allowed أعلاه يسمح لأي فني
+    // له عرض (pending أو مرفوض، لا مقبولاً بالضرورة) بالوصول لهذا الـendpoint
+    // — لا يعني ذلك أنه يستحق الإحداثيات الدقيقة. لا أثر على العميل/الأدمن
+    // (technician_id لا يطابق معرّفهما أصلاً فالدالة لا تُستدعى لهما).
+    const request = req.user.role === 'technician' ? maskCoordsUnlessConfirmedTechnician(r, req.user.id) : r;
+    res.json({ offers: rows, request });
   });
 
   router.post('/offers/:id/decision', auth, requireRole('customer'), (req, res) => {
@@ -176,7 +191,12 @@ module.exports = function (deps) {
     if (request.technician_id) io.to(`user-${request.technician_id}`).emit('requests-updated', { request });
     // جميع الفنيين يرون قائمة الطلبات الجديدة؛ عند قبول عرض يجب أن يصلهم الحدث
     // كي يختفي الطلب فوراً من القائمة ويتحدّث العداد بدون تحديث يدوي.
-    io.to('technicians-room').emit('requests-updated', { request });
+    // [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — بث لكل الفنيين على المنصة
+    // (لا فني واحد مستهدَف) كان يحمل الإحداثيات الدقيقة كاملة لكل من بالغرفة،
+    // بغض النظر عن علاقته الفعلية (أو عدمها) بهذا الطلب. تمريره ثابت `null`
+    // كمعرّف الفني عمداً — هذا البث الجماعي لا يستهدف فنياً بعينه، فلا مطابقة
+    // technician_id ممكنة أصلاً هنا (بعكس الاستدعاءات الأخرى بهذا الملف).
+    io.to('technicians-room').emit('requests-updated', { request: maskCoordsUnlessConfirmedTechnician(request, null) });
     io.to('admin-room').emit('requests-updated', { request });
     if (decision === 'accepted') {
       io.to(`user-${offer.technician_id}`).emit('offer-accepted', {

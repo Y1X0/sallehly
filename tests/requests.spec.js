@@ -2,7 +2,7 @@
 // يغطي: إنشاء طلب من عميل، فحوصات التحقق الأساسية، ورؤية الفني المطابق لخدمته/مدينته للطلب.
 
 const { test, expect } = require('@playwright/test');
-const { getPendingOtp } = require('./helpers/db');
+const { getPendingOtp, openTestDb } = require('./helpers/db');
 
 function uniqueEmail(tag) {
   return `test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`;
@@ -402,30 +402,55 @@ test.describe('[SEC-FIX-COORDZERO-01] إحداثية 0 الشرعية لا تُ�
   });
 });
 
-test.describe('[SEC-FIX-NANTECHID-01] technician_id غير رقمي يُرفَض بوضوح، لا يتحوّل NULL بصمت', () => {
+// [FIX-DEADFIELD-02] راجع DECISIONS.md — إنشاء طلب موجَّه مباشرة لفني معيّن
+// (technician_id بجسم POST /requests) أُزيل بالكامل: لا شاشة بالتطبيق كانت
+// تستخدمه، فبقي ميزة خاملة تفتح سطح هجوم بلا فائدة (كان يمنع فنيين آخرين من
+// تقديم عروض على "طلب موجَّه"، وحده الذي يقرر أي مستخدم يرسل هذا الحقل خاماً
+// بالطلب). technician_id بالجدول يبقى NULL دائماً عند الإنشاء الآن — يُضبَط
+// فقط لاحقاً عند قبول عرض فعلي.
+test.describe('[FIX-DEADFIELD-02] technician_id بجسم POST /requests أُزيل — لا أثر له إطلاقاً الآن', () => {
   let customer;
+  let anotherTech;
 
   test.beforeAll(async ({ playwright }) => {
     const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
-    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار معرّف فني', city: CITY } });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار إزالة معرّف الفني', city: CITY } });
+    anotherTech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: {
+        name: 'فني اختبار إزالة معرّف الفني', city: CITY, national_number: uniqueNationalNumber(),
+        services: SERVICE, areas: 'القويسمة',
+      },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
     await request.dispose();
   });
 
-  // [SEC-FIX-NANTECHID-01] راجع DECISIONS.md — `req.body.technician_id ? Number(...) : null`
-  // كانت تحوّل نصاً غير رقمي (truthy) لـNaN، ثم `if (requestedTechId)` يتخطى
-  // فحص وجود الفني (NaN falsy)، وbetter-sqlite3 يخزّن NaN كـNULL بصمت — طلب
-  // موجَّه فعلياً لمعرّف فني خاطئ كان يُقبَل بهدوء كطلب عام، لا يُرفَض أبداً.
-  test('POST /api/requests — technician_id نص غير رقمي يُرفَض بـ400 بدل أن يتحوّل NULL بصمت', async ({ request }) => {
+  test('POST /api/requests — technician_id (رقمي صحيح يشير لفني حقيقي) بجسم الطلب يُتجاهَل بالكامل، لا أثر له', async ({ request }) => {
     const res = await request.post('/api/requests', {
       headers: { Authorization: `Bearer ${customer.token}` },
-      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ لاختبار معرّف فني خاطئ', technician_id: 'abc' },
+      data: {
+        service: SERVICE, city: CITY, area: 'القويسمة',
+        description: 'وصف تجريبي كافٍ لاختبار إزالة ميزة الفني الموجَّه',
+        technician_id: anotherTech.user.id,
+      },
     });
-    expect(res.status()).toBe(400);
+    expect(res.status()).toBe(200);
     const body = await res.json();
-    expect(body.code).toBe('REQUEST_INVALID_TECHNICIAN_ID');
+    expect(body.request.technician_id).toBeNull();
   });
 
-  test('POST /api/requests — بلا technician_id إطلاقاً: تبقى NULL كسابقاً (لا تراجع)', async ({ request }) => {
+  test('POST /api/requests — technician_id بأي قيمة غير صالحة (نص عشوائي) لا يُسبّب أي خطأ، يُتجاهَل بصمت مثل أي حقل غير معروف آخر', async ({ request }) => {
+    const res = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ بمعرّف فني غير صالح تماماً', technician_id: 'abc' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.request.technician_id).toBeNull();
+  });
+
+  test('POST /api/requests — بلا technician_id إطلاقاً: يبقى NULL كسابقاً (لا تراجع)', async ({ request }) => {
     const res = await request.post('/api/requests', {
       headers: { Authorization: `Bearer ${customer.token}` },
       data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ بلا معرّف فني إطلاقاً' },
@@ -433,5 +458,190 @@ test.describe('[SEC-FIX-NANTECHID-01] technician_id غير رقمي يُرفَض
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(body.request.technician_id).toBeNull();
+  });
+
+  // [FIX-DEADFIELD-02] راجع DECISIONS.md وoffers.routes.js — فرع
+  // "REQUEST_DIRECT_TO_OTHER_TECHNICIAN" أُزيل من POST /requests/:id/offer.
+  // بما أن الميزة نفسها أُزيلت (لا طريقة لإنشاء طلب موجَّه أصلاً)، لا يوجد
+  // مسار API يعيد إنتاج هذا الفرع اليوم — هذا الاختبار يثبت الأثر العملي
+  // المباشر: أي فني مؤهَّل (خدمة مطابقة) يقدر يقدّم عرضاً بلا أي قيد "توجيه"
+  // متبقٍّ على أي طلب عادي.
+  test('POST /requests/:id/offer — أي فني مؤهَّل يقدر يقدّم عرضاً بلا أي قيد "طلب موجَّه" متبقٍّ', async ({ request }) => {
+    const createRes = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      multipart: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ لاختبار عدم وجود قيد توجيه متبقٍّ' },
+    });
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: { Authorization: `Bearer ${anotherTech.token}` },
+      form: { offer_price: '20', duration: 'فوري' },
+    });
+    expect(offerRes.status()).toBe(200);
+  });
+});
+
+// [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — قرار منتج: فني قدّم عرضاً بس لسا
+// ما انقبل (أو يتصفح فقط بلا أي عرض) يشوف المدينة والمنطقة فقط، لا إحداثيات
+// lat/lng الدقيقة لبيت الزبون. الإحداثيات الكاملة تظهر فقط بعد قبول عرضه
+// فعلياً. يغطي هذا describe كل نقطة كانت تُعيد بيانات الطلب لفني: GET
+// /requests (تصفّح)، استجابة POST /requests/:id/offer، وGET /requests/:id/offers.
+test.describe.serial('[SEC-FIX-COORDMASK-01] الإحداثيات الدقيقة تُخفى عن الفني قبل قبول عرضه', () => {
+  let customer;
+  let bidder;
+  let requestId;
+  const LAT = 31.9539;
+  const LNG = 35.9106;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار إخفاء الإحداثيات', city: CITY } });
+    bidder = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني مزايد لاختبار إخفاء الإحداثيات', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة' },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ لاختبار إخفاء الإحداثيات الدقيقة', lat: LAT, lng: LNG },
+    });
+    requestId = (await createRes.json()).request.id;
+
+    await request.dispose();
+  });
+
+  test('GET /requests — الفني يتصفّح الطلب قبل تقديم أي عرض: lat/lng مخفيّان (null)، المدينة/المنطقة ظاهرتان', async ({ request }) => {
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${bidder.token}` } });
+    const row = (await res.json()).requests.find((r) => r.id === requestId);
+    expect(row).toBeTruthy();
+    expect(row.lat).toBeNull();
+    expect(row.lng).toBeNull();
+    expect(row.city).toBe(CITY);
+    expect(row.area).toBe('القويسمة');
+  });
+
+  test('POST /requests/:id/offer — استجابة تقديم العرض نفسها: lat/lng مخفيّان رغم أن العرض قُبِل بالخادم', async ({ request }) => {
+    const res = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: { Authorization: `Bearer ${bidder.token}` },
+      form: { offer_price: '20', duration: 'فوري' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.request.lat).toBeNull();
+    expect(body.request.lng).toBeNull();
+  });
+
+  test('GET /requests — بعد تقديم عرض pending (لم يُقبَل بعد): lat/lng تبقى مخفيّة', async ({ request }) => {
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${bidder.token}` } });
+    const row = (await res.json()).requests.find((r) => r.id === requestId);
+    expect(row.lat).toBeNull();
+    expect(row.lng).toBeNull();
+  });
+
+  test('GET /requests/:id/offers — فني بعرض pending (لم يُقبَل بعد): lat/lng مخفيّان بحقل request المُرجَع', async ({ request }) => {
+    const res = await request.get(`/api/requests/${requestId}/offers`, { headers: { Authorization: `Bearer ${bidder.token}` } });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.request.lat).toBeNull();
+    expect(body.request.lng).toBeNull();
+  });
+
+  test('بعد قبول العميل للعرض: الفني المؤكَّد يرى الإحداثيات الكاملة الحقيقية بكل النقاط الثلاث', async ({ request }) => {
+    const offersRes = await request.get(`/api/requests/${requestId}/offers`, { headers: { Authorization: `Bearer ${customer.token}` } });
+    const offerId = (await offersRes.json()).offers.find((o) => o.technician_id === bidder.user.id).id;
+
+    const decisionRes = await request.post(`/api/offers/${offerId}/decision`, {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      form: { decision: 'accepted' },
+    });
+    expect(decisionRes.status()).toBe(200);
+
+    const listRes = await request.get('/api/requests', { headers: { Authorization: `Bearer ${bidder.token}` } });
+    const row = (await listRes.json()).requests.find((r) => r.id === requestId);
+    expect(row.lat).toBe(LAT);
+    expect(row.lng).toBe(LNG);
+
+    const offersAfterRes = await request.get(`/api/requests/${requestId}/offers`, { headers: { Authorization: `Bearer ${bidder.token}` } });
+    const bodyAfter = await offersAfterRes.json();
+    expect(bodyAfter.request.lat).toBe(LAT);
+    expect(bodyAfter.request.lng).toBe(LNG);
+  });
+
+  // فرع العميل بـGET /requests (routes/requests.routes.js) استعلام منفصل
+  // تماماً عن فرع الفني الذي عدّله هذا الإصلاح — يبقى بلا أي تعديل، ويثبت
+  // هذا الاختبار أنه لم يتأثر: العميل يرى إحداثياته الحقيقية دائماً.
+  test('العميل صاحب الطلب يرى الإحداثيات الكاملة دائماً، بغض النظر عن حالة قبول أي عرض', async ({ request }) => {
+    const customerRes = await request.get('/api/requests', { headers: { Authorization: `Bearer ${customer.token}` } });
+    const customerRow = (await customerRes.json()).requests.find((r) => r.id === requestId);
+    expect(customerRow.lat).toBe(LAT);
+    expect(customerRow.lng).toBe(LNG);
+  });
+});
+
+// [DATA-INTEGRITY-04] راجع DECISIONS.md — DELETE /requests/:id كان يُنفّذ
+// رفض العروض المعلَّقة ثم تحديث حالة الطلب لـ'ملغي' كاستعلامين منفصلين بلا
+// db.transaction() واحدة، بنفس فئة DATA-INTEGRITY-03 (سحب العرض). نفس تقنية
+// إثبات الذرّية: SQLite trigger مؤقت يُفشل تحديداً UPDATE requests للطلب المستهدَف.
+test.describe.serial('[DATA-INTEGRITY-04] إلغاء الطلب عبر DELETE /requests/:id ذرّي', () => {
+  test('فشل مصطنع أثناء تحديث حالة الطلب: العرض المعلَّق لا يُرفض (rollback كامل)، لا كتابة جزئية', async ({ request }) => {
+    const customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار ذرّية DELETE /requests', city: CITY } });
+    const technician = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني اختبار ذرّية DELETE /requests', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة' },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      form: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب لاختبار ذرّية DELETE /requests/:id عند فشل منتصف المعاملة' },
+    });
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: { Authorization: `Bearer ${technician.token}` },
+      form: { offer_price: '12', duration: 'فوري' },
+    });
+    expect(offerRes.status()).toBe(200);
+    const offerId = (await offerRes.json()).offers.find((o) => o.request_id === requestId).id;
+
+    const db = openTestDb();
+    try {
+      db.exec(`
+        CREATE TRIGGER data_integrity_04_delete_force_fail
+        BEFORE UPDATE ON requests
+        WHEN NEW.id = ${requestId}
+        BEGIN SELECT RAISE(ABORT, 'DATA-INTEGRITY-04 delete simulated failure');
+        END;
+      `);
+    } finally {
+      db.close();
+    }
+
+    const deleteRes = await request.delete(`/api/requests/${requestId}`, {
+      headers: { Authorization: `Bearer ${customer.token}` },
+    });
+    expect(deleteRes.status()).not.toBe(200);
+
+    const afterFailDb = openTestDb();
+    try {
+      const offerRow = afterFailDb.prepare('SELECT status FROM offers WHERE id=?').get(offerId);
+      expect(offerRow.status, 'رُفض العرض رغم فشل تحديث الطلب — لا ذرّية').toBe('pending');
+      const reqRow = afterFailDb.prepare('SELECT status FROM requests WHERE id=?').get(requestId);
+      expect(reqRow.status).toBe('وصلت عروض');
+    } finally {
+      afterFailDb.close();
+    }
+
+    const dropTriggerDb = openTestDb();
+    try {
+      dropTriggerDb.exec('DROP TRIGGER IF EXISTS data_integrity_04_delete_force_fail');
+    } finally {
+      dropTriggerDb.close();
+    }
+
+    // بعد إزالة سبب الفشل المصطنع: الحذف الطبيعي مستحيل الآن أصلاً (الطلب له
+    // عرض pending فلا يزال "وصلت عروض" — حالة قابلة للحذف). يبقى الإثبات
+    // الأساسي أعلاه: لا كتابة جزئية عند الفشل.
   });
 });

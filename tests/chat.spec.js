@@ -311,6 +311,74 @@ test.describe.serial('الدردشة على الطلبات', () => {
     expect(body.chats.length).toBeLessThanOrEqual(1000);
   });
 
+  // [SEC-FIX-CHATSCOPE-04] راجع DECISIONS.md — كان شرط الفني بـGET /chats
+  // يطابق أي فني قدّم عرضاً على الطلب (EXISTS بلا فلتر status)، لا الفني
+  // المؤكَّد فقط (r.technician_id) — يُسرّب last_body (نص آخر رسالة فعلي)
+  // واسم العميل الحقيقي لفني عرضه مرفوض، رغم أن كل نقاط الشات الأخرى
+  // (canAccessRequestChat) تمنعه بالفعل.
+  test('GET /chats — فني عرضه رُفض (بعد قبول عرض فني آخر) لا يرى المحادثة إطلاقاً، ولا يتسرّب له آخر نص رسالة', async ({ request }) => {
+    // فنيّان جدَّان مخصَّصان لهذا الاختبار وحده — لا technician/outsider
+    // المشتركَين بالوصف (لديهما بالفعل طلب نشط من beforeAll، فأي عرض جديد
+    // منهما يُرفَض بـ409 "لا يمكنك إرسال عرض جديد قبل إنهاء طلبك الحالي").
+    const winnerTech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني رابح (مؤكَّد)', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
+    const rejectedTech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني عرضه سيُرفَض', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      multipart: { service: SERVICE, city: CITY, area: AREA, description: 'وصف تجريبي كافٍ للطول لاختبار تسريب GET /chats لفني مرفوض' },
+    });
+    const req2 = (await createRes.json()).request;
+
+    const rejectedOfferRes = await request.post(`/api/requests/${req2.id}/offer`, {
+      headers: authHeader(rejectedTech.token),
+      form: { offer_price: '20', duration: 'خلال يوم' },
+    });
+    expect(rejectedOfferRes.status()).toBe(200);
+    const winnerOfferRes = await request.post(`/api/requests/${req2.id}/offer`, {
+      headers: authHeader(winnerTech.token),
+      form: { offer_price: '15', duration: 'خلال ساعة' },
+    });
+    expect(winnerOfferRes.status()).toBe(200);
+
+    const offersRes = await request.get(`/api/requests/${req2.id}/offers`, { headers: authHeader(customer.token) });
+    const offers = (await offersRes.json()).offers;
+    const winnerOffer = offers.find((o) => o.technician_id === winnerTech.user.id);
+    expect(winnerOffer).toBeTruthy();
+    // قبول عرض الفني المؤكَّد يرفض تلقائياً عرض rejectedTech المعلَّق (pending) على نفس الطلب.
+    const decisionRes = await request.post(`/api/offers/${winnerOffer.id}/decision`, {
+      headers: authHeader(customer.token),
+      form: { decision: 'accepted' },
+    });
+    expect(decisionRes.status()).toBe(200);
+
+    const secretBody = 'رسالة سرّية بين العميل والفني المؤكَّد فقط — لا يجوز أن يراها الفني المرفوض';
+    await request.post(`/api/requests/${req2.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: secretBody },
+    });
+
+    const rejectedChats = await request.get('/api/chats', { headers: authHeader(rejectedTech.token) });
+    expect(rejectedChats.status()).toBe(200);
+    const rejectedBody = await rejectedChats.json();
+    const leaked = rejectedBody.chats.find((c) => c.request_id === req2.id);
+    expect(leaked).toBeFalsy();
+
+    // الفني المؤكَّد نفسه يبقى يرى المحادثة بشكل طبيعي — الفحص مقصور على العرض المرفوض فقط.
+    const winnerChats = await request.get('/api/chats', { headers: authHeader(winnerTech.token) });
+    const winnerBody = await winnerChats.json();
+    const visible = winnerBody.chats.find((c) => c.request_id === req2.id);
+    expect(visible).toBeTruthy();
+    expect(visible.last_body).toBe(secretBody);
+  });
+
   test('GET /chat-violations — الأدمن فقط يقدر يشوف سجل المخالفات', async ({ request }) => {
     const forbidden = await request.get('/api/chat-violations', { headers: authHeader(customer.token) });
     expect(forbidden.status()).toBe(403);
@@ -373,9 +441,13 @@ test.describe.serial('الدردشة على الطلبات', () => {
   });
 
   // [FIX-AUDIODUR-01] المدة المُرسَلة مع التسجيل تُخزَّن وتُرجَع ضمن body،
-  // والرابط المُرجَع يبقى قابلاً للجلب فعلياً رغم إضافة '|<duration>' له
-  // (نفس فحص "الرابط الحقيقي يعمل" المُطبَّق أعلاه على الصور).
-  test('POST /requests/:id/audio — المدة المُرسَلة تُخزَّن وتُرجَع، والرابط يبقى صالحاً', async ({ request }) => {
+  // والرابط المُرجَع يبقى قابلاً للجلب فعلياً (بتوكن مصادَق) رغم إضافة
+  // '|<duration>' له (نفس فحص "الرابط الحقيقي يعمل" المُطبَّق أعلاه على
+  // الصور). [SEC-FIX-AUDIOAUTH-01] راجع DECISIONS.md — الرابط أصبح محمياً
+  // بمصادقة حقيقية (routes/protected-uploads.routes.js)، فالجلب هون يمرّر
+  // توكن العميل نفسه؛ تغطية رفض الجلب بلا توكن/بتوكن طرف آخر موجودة بالكامل
+  // بـtests/protected-uploads.spec.js.
+  test('POST /requests/:id/audio — المدة المُرسَلة تُخزَّن وتُرجَع، والرابط يبقى صالحاً (بمصادقة)', async ({ request }) => {
     const uploadRes = await request.post(`/api/requests/${acceptedRequest.id}/audio`, {
       headers: authHeader(customer.token),
       multipart: {
@@ -392,7 +464,7 @@ test.describe.serial('الدردشة على الطلبات', () => {
     const audioUrl = audioMessage.body.replace('[audio]', '').split('|')[0];
     expect(audioUrl).toMatch(/^\/uploads\/audios\//);
 
-    const fetchRes = await request.get(audioUrl);
+    const fetchRes = await request.get(audioUrl, { headers: authHeader(customer.token) });
     expect(fetchRes.status()).toBe(200);
   });
 

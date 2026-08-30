@@ -1,8 +1,8 @@
 // routes/protected-uploads.routes.js — يخدم /uploads/avatars و/uploads/payments
-// و/uploads/requests (صور الشات + صور المشكلة) وراء مصادقة حقيقية، بدل
-// express.static العام (app.js). audios/ لسا غير مُغطّاة إطلاقاً (تحتاج تحقيقاً
-// فنياً منفصلاً — راجع DECISIONS.md). أي طلب لا يطابق راوتاً هون يكمل
-// لـexpress.static التالي بالسلسلة كما هو اليوم تماماً.
+// و/uploads/requests (صور الشات + صور المشكلة) و/uploads/audios (رسائل الشات
+// الصوتية) وراء مصادقة حقيقية، بدل express.static العام (كان بـapp.js، حُذف
+// نهائياً بعد اكتمال هذا الملف — [SEC-FIX-AUDIOAUTH-01]). أي طلب لا يطابق
+// راوتاً هون يرجع 404 (لا يوجد express.static بعده بعد الآن).
 //
 // [SEC-FIX-UPLOADS-01] راجع DECISIONS.md — كانت كل ملفات public/uploads تُقدَّم
 // بلا أي تحقق صلاحية إطلاقاً، فقط اسم ملف يصعب تخمينه (crypto.randomBytes،
@@ -119,6 +119,30 @@ module.exports = function (deps) {
         (req.user.role === 'technician' && canBrowseRequest(request, req.user.id));
       if (!allowed) return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
       sendRequestsFile(res, filename);
+    });
+  });
+
+  // [SEC-FIX-AUDIOAUTH-01] راجع DECISIONS.md (كلا المستودعين) — رسائل الشات
+  // الصوتية فقط (لا يوجد نوع ثانٍ بمجلد audios/، بعكس requests/ اللي فيها صور
+  // شات وصور مشكلة معاً)، فنفس قاعدة صلاحية صورة الشات بالضبط (canAccessRequestChat)
+  // تكفي وحدها — لا حاجة لفرع "تصفّح فني" هون لأنه لا يوجد ملف صوتي غير
+  // منتمٍ لمحادثة أصلاً. body الرسالة يُخزَّن كـ'[audio]' + الرابط، وقد يُلحَق
+  // به لاحقاً '|<duration>' (راجع routes/chat.routes.js) — المطابقة هون
+  // بادئة (prefix) صريحة عبر substr، لا LIKE، لتفادي أي معنى خاص لـ%/_
+  // بمحتوى اسم الملف القادم من الرابط (isSafeFilename يسمح بـ_ فعلياً، وهو
+  // حرف بديل بـLIKE لو استُخدمت بدل substr).
+  router.get('/audios/:filename', auth, (req, res) => {
+    const { filename } = req.params;
+    if (!isSafeFilename(filename)) return res.status(400).json({ error: 'اسم ملف غير صحيح', code: 'UPLOAD_INVALID_FILENAME' });
+    const prefix = '[audio]/uploads/audios/' + filename;
+    const message = db.prepare('SELECT request_id FROM messages WHERE substr(body, 1, length(?)) = ?').get(prefix, prefix);
+    if (!message) return res.status(404).json({ error: 'الملف غير موجود', code: 'UPLOAD_NOT_FOUND' });
+    const request = db.prepare('SELECT * FROM requests WHERE id=?').get(message.request_id);
+    if (!request || !canAccessRequestChat(req.user, request)) {
+      return res.status(403).json({ error: 'غير مصرح', code: 'FORBIDDEN_GENERIC' });
+    }
+    res.sendFile(path.resolve(UPLOAD_DIR, 'audios', filename), (err) => {
+      if (err && !res.headersSent) res.status(404).json({ error: 'الملف غير موجود', code: 'UPLOAD_NOT_FOUND' });
     });
   });
 

@@ -236,6 +236,16 @@ module.exports = function (deps) {
     if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
     if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+    // [SEC-FIX-BALANCETOGHOST-01] راجع DECISIONS.md — anonymizeUser (عند حذف
+    // حساب، utils/db-helpers.js) يضبط deleted_at لكنه لا يلمس balance إطلاقاً؛
+    // بلا هذا الفحص، أدمن يستهدف معرّفاً قديماً (سجل تدقيق، تذكرة دعم) يقدر
+    // يُضيف رصيداً فعلياً لحساب لم يعد أحد يستطيع تسجيل الدخول إليه أبداً
+    // (بريد/كلمة سر عشوائيان) — نفس فئة "رصيد عالق بلا استرجاع غير تدخّل
+    // مباشر بقاعدة البيانات" التي عالجتها SEC-FIX-PENDINGTOPUP-01 عند نقاط
+    // الحذف نفسها. عمداً deleted_at لا is_active — الإيقاف (تعليق) يضبط
+    // is_active=0 أيضاً لكنه قابل للتراجع (توجيل)، وحساب مُعلَّق قد يستحق
+    // تعديل رصيد فعلاً أثناء التحقيق قبل قرار نهائي.
+    if (u.deleted_at) return res.status(400).json({ error: 'لا يمكن تعديل رصيد حساب محذوف', code: 'USER_DELETED' });
     const amount = Number(req.body.amount);
     const reason = clean(req.body.reason || '');
     if (!Number.isFinite(amount) || amount === 0) return res.status(400).json({ error: 'أدخل مبلغاً صحيحاً (موجب للإضافة، سالب للخصم)' });
@@ -569,8 +579,13 @@ module.exports = function (deps) {
     const reason = clean(req.body.reason || '');
     if (!reason || reason.length < 3) return res.status(400).json({ error: 'سبب الإلغاء إلزامي (3 أحرف على الأقل)' });
     if (reason.length > 500) return res.status(400).json({ error: 'السبب طويل جداً، الحد الأقصى 500 حرف' });
-    db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(id);
-    db.prepare("UPDATE requests SET status='ملغي', cancel_reason=?, cancelled_by=?, cancelled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(reason, req.user.id, id);
+    // [DATA-INTEGRITY-04] راجع DECISIONS.md — نفس نمط applyRejection/applyAcceptance
+    // بـoffers.routes.js: معاملة واحدة، لا كتابتان منفصلتان.
+    const doCancel = db.transaction(() => {
+      db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(id);
+      db.prepare("UPDATE requests SET status='ملغي', cancel_reason=?, cancelled_by=?, cancelled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(reason, req.user.id, id);
+    });
+    doCancel();
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(id);
     safeEmit(id, 'request-status-updated', { request });
     io.to(`user-${request.customer_id}`).emit('requests-updated', { request });
