@@ -108,3 +108,58 @@ test.describe('[SEC-FIX-EMAILTIMEOUT-01] withTimeout يمنع تعليقاً أ�
     expect(result).toBe('ok');
   });
 });
+
+// [SEC-FIX-EMAILCANCEL-01] راجع DECISIONS.md — نطاق متروك عمداً بـ
+// SEC-FIX-EMAILTIMEOUT-01 أعلاه: withTimeout وحدها تحدّ فقط زمن انتظار
+// المستدعي، لا تُلغي طلب fetch الأصلي المهجور فعلياً. هذا الاختبار يستخدم
+// خادم HTTP حقيقي محلي لا يرد أبداً (يحاكي بالضبط "خادم Resend حيّ معلَّق
+// فعلياً" الذي وصفه SEC-FIX-EMAILTIMEOUT-01 كخارج نطاقه وقتها) — يثبت أن
+// الاتصال الحقيقي يُغلَق فعلاً من طرف العميل عند انتهاء المهلة، لا أن يبقى
+// معلَّقاً بالخلفية حتى بعد أن يستأنف المستدعي.
+test.describe('[SEC-FIX-EMAILCANCEL-01] onTimeout يُلغي طلب fetch الأصلي فعلياً، لا يتركه معلَّقاً بالخلفية', () => {
+  test('AbortController مُمرَّر لـresend.emails.send عبر signal يُغلق الاتصال الحقيقي فعلاً عند انتهاء المهلة', async () => {
+    const http = require('http');
+    const { Resend } = require('resend');
+    const { withTimeout } = require('../services/email');
+
+    let serverSawClose = false;
+    const server = http.createServer((req, res) => {
+      // لا يردّ أبداً — يحاكي خادم Resend معلَّق فعلياً بلا استجابة ولا إغلاق.
+      req.on('close', () => { serverSawClose = true; });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    try {
+      const resend = new Resend('re_fake_key_for_cancel_test', { baseUrl: `http://127.0.0.1:${port}` });
+      const controller = new AbortController();
+
+      const start = Date.now();
+      let threw = false;
+      try {
+        await withTimeout(
+          resend.emails.send({ from: 'x@example.com', to: 'x@example.com', subject: 'x', html: 'x' }, { signal: controller.signal }),
+          200,
+          'test cancel timeout',
+          () => controller.abort()
+        );
+      } catch (e) {
+        threw = true;
+        expect(e.message).toBe('test cancel timeout');
+      }
+      const elapsed = Date.now() - start;
+
+      expect(threw).toBe(true);
+      expect(elapsed).toBeLessThan(2000);
+
+      // الإثبات الحقيقي: الخادم نفسه يرى الاتصال يُغلَق من طرف العميل — دليل
+      // أن الطلب أُلغي فعلياً على مستوى الشبكة، لا مجرد تجاهل الوعد بجافاسكربت
+      // بينما الاتصال الحقيقي يبقى مفتوحاً بالخلفية. مهلة قصيرة إضافية لإعطاء
+      // حدث 'close' فرصة الوصول (قد يصل بعد رفض withTimeout بجزء من الثانية).
+      await new Promise((r) => setTimeout(r, 300));
+      expect(serverSawClose, 'الخادم لم يرَ الاتصال يُغلَق — الطلب بقي معلَّقاً بالخلفية رغم انتهاء المهلة').toBe(true);
+    } finally {
+      server.close();
+    }
+  });
+});
