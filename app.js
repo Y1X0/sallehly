@@ -28,24 +28,29 @@ function createApp(deps) {
 
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: true }));
-  app.use(express.static(path.join(env.BASE, 'public')));
-  // [SEC-FIX-UPLOADS-01] راجع DECISIONS.md وroutes/protected-uploads.routes.js —
-  // يعترض avatars/ وpayments/ فقط بمصادقة حقيقية قبل express.static العام
-  // أدناه (الذي يبقى يخدم requests/ وaudios/ كما هو تماماً حتى تكتمل بقية هذا
-  // الإصلاح، ثم يُحذف نهائياً). deps اختياري عمداً — بدونه (استيراد app.js
-  // وحده لاختبار خفيف بلا قاعدة بيانات حقيقية، راجع تعليق أعلى هذا الملف)
-  // السلوك يبقى بالضبط كما كان قبل هذا التعديل: express.static العام فقط.
+
+  // [SEC-FIX-UPLOADS-01] / [SEC-FIX-AUDIOAUTH-01] راجع DECISIONS.md —
+  // avatars/payments/requests/audios (كل مجلدات public/uploads الأربعة
+  // المستخدَمة فعلياً بالتطبيق) صارت جميعها وراء مصادقة حقيقية عبر
+  // routes/protected-uploads.routes.js. express.static العام لـ/uploads
+  // (كان fallback منفصل يخدم أي مجلد لا يطابق راوتاً محمياً بعد) حُذف نهائياً.
+  //
+  // [SEC-FIX-UPLOADDIR-ORDER-01] راجع DECISIONS.md — هذا الراوت **يجب** يُسجَّل
+  // قبل express.static('public') أدناه، لا بعده. بدون DATA_DIR مضبوطاً
+  // (config/env.js: UPLOAD_DIR = public/uploads بهذه الحالة تحديداً)، أي ملف
+  // مرفوع يقع فعلياً داخل مجلد public نفسه — لو سُجِّل express.static('public')
+  // أولاً، هو يجد الملف موجوداً فعلاً بالقرص ويقدّمه مباشرة بلا أي مرور على
+  // auth middleware إطلاقاً، متجاوزاً كل حماية protected-uploads.routes.js
+  // بصمت (كان هذا الترتيب الخاطئ موجوداً منذ SEC-FIX-UPLOADS-01 الأصلي، ولم
+  // يُكتشَف لأن كل بيئات الاختبار تضبط DATA_DIR دائماً فتتفادى المسار المُعطوب).
+  // deps اختياري عمداً (استيراد app.js وحده لاختبار خفيف بلا قاعدة بيانات
+  // حقيقية، راجع تعليق أعلى هذا الملف)؛ بدونه /uploads/* يرجع 404 ببساطة
+  // (express.static أدناه لا يزال يخدمه لو الملف موجود فعلياً بـpublic — لا
+  // استخدام حقيقي، اختبار أو إنتاج، يستدعي createApp بدون deps اليوم، راجع server.js).
   if (deps) {
     app.use('/uploads', require('./routes/protected-uploads.routes')(deps));
   }
-  // [FIX-CHATIMG-02] قدّم الملفات المرفوعة دائماً وبدون شرط — سواء كانت
-  // env.UPLOAD_DIR تشير لقرص دائم (DATA_DIR مضبوط) أو لمجلد داخل كود
-  // التطبيق نفسه (DATA_DIR غير مضبوط، وقتها UPLOAD_DIR = public/uploads
-  // أصلاً حسب config/env.js فتُغطّى بالسطر أعلاه أيضاً بلا تعارض). قبل هذا
-  // التعديل، تسجيل هذا المسار بأكمله كان مشروطاً بوجود DATA_DIR فقط — لو
-  // البيئة لم تُعرِّفه لأي سبب (خطأ إعداد على Render مثلاً)، /uploads/* كان
-  // سيرجع 404 دائماً بلا أي تحذير أو أثر بالسجلات يوضّح السبب.
-  app.use('/uploads', express.static(env.UPLOAD_DIR));
+  app.use(express.static(path.join(env.BASE, 'public')));
 
   return app;
 }
