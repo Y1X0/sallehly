@@ -5,6 +5,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { IS_PROD, ALLOWED_ORIGINS } = require('../config/env');
 const { alertError } = require('../services/error-alert');
+const { ForbiddenError } = require('../utils/errors');
 
 // [PERF-HARDEN-01] كان max=20 ثابتاً بلا استثناء بيئة الاختبار — الوحيد بين
 // كل الحدود الخمسة بهذا الملف بلا نمط IS_PROD الموجود بباقيها. بما أن هذا
@@ -152,6 +153,17 @@ function csrfCheck(req, res, next) {
 // V21 friendly upload/API error handler
 function apiErrorHandler(err, req, res, next) {
   if (err) {
+    // [SEC-FIX-CHATACCESS-CHOKEPOINT-01] راجع DECISIONS.md — ForbiddenError
+    // قرار صلاحية متوقَّع ومقصود (مثل utils/db-helpers.js's getMessages عند
+    // نسيان فحص canAccessRequestChat بموقع استدعاء جديد مستقبلاً)، لا خطأ
+    // غير متوقَّع. يجب أن يترجَم مباشرة لاستجابة 403 نظيفة بنفس شكل كل فحص
+    // صلاحية آخر بالمشروع ({error, code}) — بلا المرور بمسار التسجيل/التنبيه
+    // أدناه (نفس معاملة أخطاء التحقق حجم/نوع الملف تحديداً)، وقبل أي شيء آخر
+    // حتى لا يسقط بصمت على استجابة 400/500 عامة غير مقصودة (بالضبط الفارق
+    // بين "نصف إصلاح" و"إصلاح كامل" لأي حارس صلاحية يرمي بدل أن يُعيد قيمة).
+    if (err instanceof ForbiddenError) {
+      return res.status(err.status).json({ error: err.message, code: err.code });
+    }
     const msg = err.message || 'حدث خطأ في الخادم';
     if (String(msg).includes('File too large')) return res.status(400).json({ error: 'حجم الصورة كبير، الحد الأقصى 3MB', code: 'FILE_TOO_LARGE' });
     if (String(msg).includes('نوع الملف') || String(msg).includes('نوع التسجيل')) {

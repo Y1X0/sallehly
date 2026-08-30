@@ -138,7 +138,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, upload, uploadAudio, verifyImageMagicBytes } = deps.middleware;
-  const { clean, getMessages, markChatRead, logAudit, canAccessRequestChat } = deps.utils;
+  const { clean, getMessages, markChatRead, logAudit, canAccessRequestChat, getChatsList, getMessageForReport } = deps.utils;
   const { sendPush } = deps.services;
   const { messageLimiter, supportLimiter } = deps.limiters;
   const router = express.Router();
@@ -183,7 +183,7 @@ module.exports = function (deps) {
     if (rejectBlockedChat(req, res, r, body)) return;
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
     markChatRead(r.id, req.user.id);
-    const messages = getMessages(r.id);
+    const messages = getMessages(req.user, r.id);
     safeEmit(r.id, 'messages-updated', { requestId: r.id, messages, senderId: Number(req.user.id) });
 
     const chatPayload = {
@@ -245,7 +245,7 @@ module.exports = function (deps) {
     const body = '[audio]' + url + (duration ? '|' + duration : '');
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
     markChatRead(r.id, req.user.id);
-    const messages = getMessages(r.id);
+    const messages = getMessages(req.user, r.id);
     safeEmit(r.id, 'messages-updated', { requestId: r.id, messages, senderId: Number(req.user.id) });
     // [SEC-FIX-03] Targeted badges update for audio message
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
@@ -274,7 +274,7 @@ module.exports = function (deps) {
     const body = '[image]' + url;
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
     markChatRead(r.id, req.user.id);
-    const messages = getMessages(r.id);
+    const messages = getMessages(req.user, r.id);
     safeEmit(r.id, 'messages-updated', { requestId: r.id, messages, senderId: Number(req.user.id) });
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
     if (r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId: r.id });
@@ -296,7 +296,7 @@ module.exports = function (deps) {
     if (r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId: r.id });
     io.to('admin-room').emit('chat-badges-updated', { requestId: r.id });
     // [FIX-02] تحديث حالة "تمت المشاهدة" لدى الطرف الآخر فوراً
-    const readMessages = getMessages(req.params.id);
+    const readMessages = getMessages(req.user, req.params.id);
     safeEmit(r.id, 'messages-updated', { requestId: r.id, messages: readMessages, senderId: Number(req.user.id) });
     res.json({ messages: readMessages });
   });
@@ -328,7 +328,7 @@ module.exports = function (deps) {
     let messageBody = null;
     let reportedUserId = null;
     if (messageId) {
-      const msg = db.prepare('SELECT * FROM messages WHERE id=? AND request_id=?').get(messageId, r.id);
+      const msg = getMessageForReport(r.id, messageId);
       if (msg) { messageBody = String(msg.body || '').slice(0, 500); reportedUserId = msg.sender_id; }
     }
     if (!reportedUserId) reportedUserId = getOtherPartyId(r, req.user.id);
@@ -448,34 +448,13 @@ module.exports = function (deps) {
   // محادثة لمستخدم واحد) بنفس نمط GET /technicians و/admin/users تماماً —
   // ORDER BY آخر نشاط DESC يضمن بقاء المحادثات الأحدث (وأي رسالة غير مقروءة
   // منطقياً حديثة) ضمن النطاق المُرجَع دائماً.
+  // [SEC-FIX-CHATSCOPE-04] راجع DECISIONS.md — كان الشرط `EXISTS(...offers...)`
+  // بلا فلتر status، فيطابق عروضاً pending أو rejected أيضاً، لا الفني
+  // المؤكَّد فقط. [SEC-FIX-CHATACCESS-CHOKEPOINT-01] راجع DECISIONS.md — منطق
+  // الاستعلام والفلتر الإضافي انتقلا لـgetChatsList (utils/db-helpers.js)،
+  // بجوار getMessages — نقطة وصول واحدة لأي محتوى محادثة.
   router.get('/chats', auth, (req, res) => {
-    let rows = [];
-    if (req.user.role === 'customer') {
-      rows = db.prepare(`SELECT r.id request_id,r.service,r.status,u.name other_name,
-        (SELECT body FROM messages WHERE request_id=r.id ORDER BY id DESC LIMIT 1) last_body,
-        (SELECT created_at FROM messages WHERE request_id=r.id ORDER BY id DESC LIMIT 1) last_at,
-        (SELECT COUNT(*) FROM messages m LEFT JOIN chat_reads cr ON cr.request_id=m.request_id AND cr.user_id=? WHERE m.request_id=r.id AND m.sender_id<>? AND m.id>COALESCE(cr.last_read_message_id,0)) unread_count
-        FROM requests r LEFT JOIN users u ON u.id=r.technician_id
-        WHERE r.customer_id=? AND (r.technician_id IS NOT NULL OR EXISTS(SELECT 1 FROM messages m WHERE m.request_id=r.id))
-        ORDER BY COALESCE(last_at,r.created_at) DESC LIMIT 1000`).all(req.user.id, req.user.id, req.user.id);
-    } else if (req.user.role === 'technician') {
-      // [SEC-FIX-CHATSCOPE-04] راجع DECISIONS.md — كان الشرط
-      // `EXISTS(...offers...)` بلا فلتر status، فيطابق عروضاً pending أو
-      // rejected أيضاً، لا الفني المؤكَّد (r.technician_id) فقط. نفس قاعدة
-      // canAccessRequestChat بالضبط (utils/helpers.js) المطبَّقة أصلاً على
-      // كل نقاط الشات الأخرى — فني قدّم عرضاً رُفض لا يملك صلاحية قراءة هذه
-      // المحادثة إطلاقاً، فلا يجوز أن تظهر له بقائمة /chats أساساً (كانت
-      // تُسرّب آخر نص رسالة فعلي + اسم العميل الحقيقي).
-      rows = db.prepare(`SELECT r.id request_id,r.service,r.status,u.name other_name,
-        (SELECT body FROM messages WHERE request_id=r.id ORDER BY id DESC LIMIT 1) last_body,
-        (SELECT created_at FROM messages WHERE request_id=r.id ORDER BY id DESC LIMIT 1) last_at,
-        (SELECT COUNT(*) FROM messages m LEFT JOIN chat_reads cr ON cr.request_id=m.request_id AND cr.user_id=? WHERE m.request_id=r.id AND m.sender_id<>? AND m.id>COALESCE(cr.last_read_message_id,0)) unread_count
-        FROM requests r JOIN users u ON u.id=r.customer_id
-        WHERE r.technician_id=?
-        ORDER BY COALESCE(last_at,r.created_at) DESC LIMIT 1000`).all(req.user.id, req.user.id, req.user.id);
-    }
-    const total = rows.reduce((a, b) => a + Number(b.unread_count || 0), 0);
-    res.json({ chats: rows, total_unread: total });
+    res.json(getChatsList(req.user));
   });
 
   return router;
