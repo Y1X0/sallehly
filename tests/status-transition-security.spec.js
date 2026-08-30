@@ -270,3 +270,81 @@ test.describe('[SEC-FIX-STATUSFLOW-01] لا إكمال (أو تقدّم حالة
     }
   });
 });
+
+// [DATA-INTEGRITY-04] راجع DECISIONS.md — POST /requests/:id/status بفرع
+// status==='ملغي' كان يُنفّذ رفض العروض المعلَّقة وتحديث حالة الطلب كاستعلامين
+// منفصلين بلا db.transaction() واحدة، بنفس فئة DATA-INTEGRITY-03 (سحب العرض)
+// بالضبط. نفس تقنية إثبات الذرّية: SQLite trigger مؤقت يُفشل تحديداً UPDATE
+// requests للطلب المستهدَف.
+test.describe.serial('[DATA-INTEGRITY-04] إلغاء الطلب عبر POST /requests/:id/status ذرّي', () => {
+  test('فشل مصطنع أثناء تحديث حالة الطلب: العرض المعلَّق لا يُرفض (rollback كامل)، لا كتابة جزئية', async ({ request }) => {
+    const customer = await registerAndVerify(request, 'customer', { name: 'عميل اختبار ذرّية الإلغاء', city: CITY });
+    const technician = await registerAndVerify(request, 'technician', {
+      name: 'فني اختبار ذرّية الإلغاء', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      form: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب لاختبار ذرّية POST /requests/:id/status عند فشل منتصف المعاملة' },
+    });
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(technician.token),
+      form: { offer_price: '12', duration: 'فوري' },
+    });
+    expect(offerRes.status()).toBe(200);
+    const offerId = (await offerRes.json()).offers.find((o) => o.request_id === requestId).id;
+
+    const db = openTestDb();
+    try {
+      db.exec(`
+        CREATE TRIGGER data_integrity_04_force_fail
+        BEFORE UPDATE ON requests
+        WHEN NEW.id = ${requestId}
+        BEGIN SELECT RAISE(ABORT, 'DATA-INTEGRITY-04 simulated failure');
+        END;
+      `);
+    } finally {
+      db.close();
+    }
+
+    const cancelRes = await request.post(`/api/requests/${requestId}/status`, {
+      headers: authHeader(customer.token),
+      form: { status: 'ملغي' },
+    });
+    expect(cancelRes.status()).not.toBe(200);
+
+    const afterFailDb = openTestDb();
+    try {
+      // العرض لا يزال pending — لم يُرفض رغم أن المعالج تابع بعد UPDATE offers قديماً
+      const offerRow = afterFailDb.prepare('SELECT status FROM offers WHERE id=?').get(offerId);
+      expect(offerRow.status, 'رُفض العرض رغم فشل تحديث الطلب — لا ذرّية').toBe('pending');
+      const reqRow = afterFailDb.prepare('SELECT status FROM requests WHERE id=?').get(requestId);
+      expect(reqRow.status).toBe('وصلت عروض'); // لم يتغيّر
+    } finally {
+      afterFailDb.close();
+    }
+
+    const dropTriggerDb = openTestDb();
+    try {
+      dropTriggerDb.exec('DROP TRIGGER IF EXISTS data_integrity_04_force_fail');
+    } finally {
+      dropTriggerDb.close();
+    }
+
+    // بعد إزالة سبب الفشل المصطنع: الإلغاء الطبيعي ينجح فعلياً.
+    const retryRes = await request.post(`/api/requests/${requestId}/status`, {
+      headers: authHeader(customer.token),
+      form: { status: 'ملغي' },
+    });
+    expect(retryRes.status()).toBe(200);
+    const finalDb = openTestDb();
+    try {
+      expect(finalDb.prepare('SELECT status FROM offers WHERE id=?').get(offerId).status).toBe('rejected');
+      expect(finalDb.prepare('SELECT status FROM requests WHERE id=?').get(requestId).status).toBe('ملغي');
+    } finally {
+      finalDb.close();
+    }
+  });
+});

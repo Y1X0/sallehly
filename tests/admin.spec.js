@@ -497,6 +497,27 @@ test.describe.serial('لوحة الأدمن', () => {
     expect(res.status()).toBe(200);
   });
 
+  // [SEC-FIX-BALANCETOGHOST-01] راجع DECISIONS.md — anonymizeUser (يُشغَّل
+  // بـDELETE /admin/users/:id أعلاه) يضبط deleted_at لكن لا يلمس balance
+  // إطلاقاً؛ بلا فحص صريح، أدمن يستهدف معرّفاً قديماً كان يقدر يُضيف رصيداً
+  // فعلياً لحساب لم يعد أحد يقدر يسجّل دخوله إليه أبداً — رصيد عالق للأبد.
+  test('POST /admin/users/:id/balance — يُمنع تعديل رصيد حساب محذوف (بعد DELETE /admin/users/:id)', async ({ request }) => {
+    const deletedCustomer = await registerAndVerify(request, 'customer', { name: 'عميل سيُحذف قبل محاولة تعديل رصيده', city: CITY });
+    const deleteRes = await request.delete(`/api/admin/users/${deletedCustomer.user.id}`, { headers: authHeader(adminToken) });
+    expect(deleteRes.status()).toBe(200);
+
+    const res = await request.post(`/api/admin/users/${deletedCustomer.user.id}/balance`, {
+      headers: authHeader(adminToken),
+      form: { amount: '50', reason: 'محاولة إضافة رصيد بعد الحذف' },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('USER_DELETED');
+
+    const afterRes = await request.get(`/api/admin/users/${deletedCustomer.user.id}`, { headers: authHeader(adminToken) });
+    expect((await afterRes.json()).user.balance).toBe(0);
+  });
+
   test('إدارة الخدمات: إضافة، رفض التكرار، ثم حذف', async ({ request }) => {
     const uniqueServiceName = `خدمة اختبار ${Date.now()}`;
     const createRes = await request.post('/api/admin/services', {
@@ -721,6 +742,78 @@ test.describe.serial('لوحة الأدمن', () => {
       form: { reason: 'محاولة إلغاء مرة ثانية' },
     });
     expect(again.status()).toBe(400);
+  });
+
+  // [DATA-INTEGRITY-04] راجع DECISIONS.md — POST /admin/requests/:id/cancel
+  // كان يُنفّذ رفض العروض المعلَّقة وتحديث حالة الطلب كاستعلامين منفصلين بلا
+  // db.transaction() واحدة، بنفس فئة DATA-INTEGRITY-03 (سحب العرض). نفس تقنية
+  // إثبات الذرّية: SQLite trigger مؤقت يُفشل تحديداً UPDATE requests للطلب المستهدَف.
+  test('POST /admin/requests/:id/cancel — فشل مصطنع أثناء تحديث حالة الطلب: العرض المعلَّق لا يُرفض (rollback كامل)، لا كتابة جزئية', async ({ request }) => {
+    const c = await registerAndVerify(request, 'customer', { name: 'عميل اختبار ذرّية إلغاء الأدمن', city: CITY });
+    const t = await registerAndVerify(request, 'technician', {
+      name: 'فني اختبار ذرّية إلغاء الأدمن', city: CITY, national_number: uniqueNationalNumber(), services: 'كهربائي', areas: 'القويسمة',
+    });
+    const reqRes = await request.post('/api/requests', {
+      headers: authHeader(c.token),
+      multipart: { service: 'كهربائي', city: CITY, area: 'القويسمة', description: 'طلب لاختبار ذرّية إلغاء الأدمن عند فشل منتصف المعاملة' },
+    });
+    const requestId = (await reqRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(t.token),
+      form: { offer_price: '12', duration: 'فوري' },
+    });
+    expect(offerRes.status()).toBe(200);
+    const offerId = (await offerRes.json()).offers.find((o) => o.request_id === requestId).id;
+
+    const db = openTestDb();
+    try {
+      db.exec(`
+        CREATE TRIGGER data_integrity_04_admincancel_force_fail
+        BEFORE UPDATE ON requests
+        WHEN NEW.id = ${requestId}
+        BEGIN SELECT RAISE(ABORT, 'DATA-INTEGRITY-04 admin-cancel simulated failure');
+        END;
+      `);
+    } finally {
+      db.close();
+    }
+
+    const cancelRes = await request.post(`/api/admin/requests/${requestId}/cancel`, {
+      headers: authHeader(adminToken),
+      form: { reason: 'محاولة إلغاء أثناء فشل مصطنع' },
+    });
+    expect(cancelRes.status()).not.toBe(200);
+
+    const afterFailDb = openTestDb();
+    try {
+      const offerRow = afterFailDb.prepare('SELECT status FROM offers WHERE id=?').get(offerId);
+      expect(offerRow.status, 'رُفض العرض رغم فشل تحديث الطلب — لا ذرّية').toBe('pending');
+      const reqRow = afterFailDb.prepare('SELECT status FROM requests WHERE id=?').get(requestId);
+      expect(reqRow.status).toBe('وصلت عروض');
+    } finally {
+      afterFailDb.close();
+    }
+
+    const dropTriggerDb = openTestDb();
+    try {
+      dropTriggerDb.exec('DROP TRIGGER IF EXISTS data_integrity_04_admincancel_force_fail');
+    } finally {
+      dropTriggerDb.close();
+    }
+
+    const retryRes = await request.post(`/api/admin/requests/${requestId}/cancel`, {
+      headers: authHeader(adminToken),
+      form: { reason: 'إلغاء طبيعي بعد إزالة الفشل المصطنع' },
+    });
+    expect(retryRes.status()).toBe(200);
+    const finalDb = openTestDb();
+    try {
+      expect(finalDb.prepare('SELECT status FROM offers WHERE id=?').get(offerId).status).toBe('rejected');
+      expect(finalDb.prepare('SELECT status FROM requests WHERE id=?').get(requestId).status).toBe('ملغي');
+    } finally {
+      finalDb.close();
+    }
   });
 
   test('GET /admin/audit-logs — يعكس العمليات الإدارية السابقة، ويدعم البحث', async ({ request }) => {

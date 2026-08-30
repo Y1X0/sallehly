@@ -2,7 +2,7 @@
 // يغطي: إنشاء طلب من عميل، فحوصات التحقق الأساسية، ورؤية الفني المطابق لخدمته/مدينته للطلب.
 
 const { test, expect } = require('@playwright/test');
-const { getPendingOtp } = require('./helpers/db');
+const { getPendingOtp, openTestDb } = require('./helpers/db');
 
 function uniqueEmail(tag) {
   return `test-${tag}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}@example.com`;
@@ -576,5 +576,72 @@ test.describe.serial('[SEC-FIX-COORDMASK-01] الإحداثيات الدقيقة
     const customerRow = (await customerRes.json()).requests.find((r) => r.id === requestId);
     expect(customerRow.lat).toBe(LAT);
     expect(customerRow.lng).toBe(LNG);
+  });
+});
+
+// [DATA-INTEGRITY-04] راجع DECISIONS.md — DELETE /requests/:id كان يُنفّذ
+// رفض العروض المعلَّقة ثم تحديث حالة الطلب لـ'ملغي' كاستعلامين منفصلين بلا
+// db.transaction() واحدة، بنفس فئة DATA-INTEGRITY-03 (سحب العرض). نفس تقنية
+// إثبات الذرّية: SQLite trigger مؤقت يُفشل تحديداً UPDATE requests للطلب المستهدَف.
+test.describe.serial('[DATA-INTEGRITY-04] إلغاء الطلب عبر DELETE /requests/:id ذرّي', () => {
+  test('فشل مصطنع أثناء تحديث حالة الطلب: العرض المعلَّق لا يُرفض (rollback كامل)، لا كتابة جزئية', async ({ request }) => {
+    const customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار ذرّية DELETE /requests', city: CITY } });
+    const technician = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني اختبار ذرّية DELETE /requests', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة' },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      form: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب لاختبار ذرّية DELETE /requests/:id عند فشل منتصف المعاملة' },
+    });
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: { Authorization: `Bearer ${technician.token}` },
+      form: { offer_price: '12', duration: 'فوري' },
+    });
+    expect(offerRes.status()).toBe(200);
+    const offerId = (await offerRes.json()).offers.find((o) => o.request_id === requestId).id;
+
+    const db = openTestDb();
+    try {
+      db.exec(`
+        CREATE TRIGGER data_integrity_04_delete_force_fail
+        BEFORE UPDATE ON requests
+        WHEN NEW.id = ${requestId}
+        BEGIN SELECT RAISE(ABORT, 'DATA-INTEGRITY-04 delete simulated failure');
+        END;
+      `);
+    } finally {
+      db.close();
+    }
+
+    const deleteRes = await request.delete(`/api/requests/${requestId}`, {
+      headers: { Authorization: `Bearer ${customer.token}` },
+    });
+    expect(deleteRes.status()).not.toBe(200);
+
+    const afterFailDb = openTestDb();
+    try {
+      const offerRow = afterFailDb.prepare('SELECT status FROM offers WHERE id=?').get(offerId);
+      expect(offerRow.status, 'رُفض العرض رغم فشل تحديث الطلب — لا ذرّية').toBe('pending');
+      const reqRow = afterFailDb.prepare('SELECT status FROM requests WHERE id=?').get(requestId);
+      expect(reqRow.status).toBe('وصلت عروض');
+    } finally {
+      afterFailDb.close();
+    }
+
+    const dropTriggerDb = openTestDb();
+    try {
+      dropTriggerDb.exec('DROP TRIGGER IF EXISTS data_integrity_04_delete_force_fail');
+    } finally {
+      dropTriggerDb.close();
+    }
+
+    // بعد إزالة سبب الفشل المصطنع: الحذف الطبيعي مستحيل الآن أصلاً (الطلب له
+    // عرض pending فلا يزال "وصلت عروض" — حالة قابلة للحذف). يبقى الإثبات
+    // الأساسي أعلاه: لا كتابة جزئية عند الفشل.
   });
 });

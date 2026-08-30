@@ -197,8 +197,14 @@ module.exports = function (deps) {
     if (['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'].includes(r.status)) {
       return res.status(400).json({ error: 'لا يمكن إلغاء الطلب بعد قبول عرض الفني. تواصل مع الدعم الفني إذا واجهت مشكلة.', code: 'REQUEST_CANNOT_CANCEL_AFTER_OFFER_ACCEPTED' });
     }
-    db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(r.id);
-    db.prepare("UPDATE requests SET status='ملغي', cancelled_by=?, cancelled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(req.user.id, r.id);
+    // [DATA-INTEGRITY-04] راجع DECISIONS.md — نفس نمط applyRejection/applyAcceptance
+    // بـoffers.routes.js: رفض العروض المعلَّقة وتحديث حالة الطلب الآن معاملة
+    // واحدة، لا كتابتان منفصلتان.
+    const doCancel = db.transaction(() => {
+      db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(r.id);
+      db.prepare("UPDATE requests SET status='ملغي', cancelled_by=?, cancelled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(req.user.id, r.id);
+    });
+    doCancel();
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);
     // [SEC-FIX-03] Targeted emit
     safeEmit(r.id, 'request-status-updated', { request });
@@ -355,8 +361,13 @@ module.exports = function (deps) {
       // عرض 'pending' قابلاً للقبول لاحقاً على طلب "ملغي" (يُعالَج الآن أيضاً
       // بفحص مستقل بـPOST /offers/:id/decision، لكن هذا يمنع الحالة الشاذة
       // من الحدوث أصلاً بدل الاعتماد فقط على فحص لاحق).
-      db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(r.id);
-      db.prepare("UPDATE requests SET status=?, cancelled_by=?, cancelled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(status, req.user.id, r.id);
+      // [DATA-INTEGRITY-04] راجع DECISIONS.md — نفس نمط applyRejection/applyAcceptance
+      // بـoffers.routes.js: معاملة واحدة، لا كتابتان منفصلتان.
+      const doCancel = db.transaction(() => {
+        db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(r.id);
+        db.prepare("UPDATE requests SET status=?, cancelled_by=?, cancelled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(status, req.user.id, r.id);
+      });
+      doCancel();
     } else {
       db.prepare('UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(status, r.id);
     }
