@@ -463,3 +463,86 @@ test.describe.serial('[SEC-FIX-19] منع تقديم عرض خارج خدمات 
     expect(body.request.status).toBe('وصلت عروض');
   });
 });
+
+// [DATA-INTEGRITY-03] راجع DECISIONS.md — DELETE /offers/:id (سحب عرض) كان
+// يُنفّذ DELETE FROM offers ثم UPDATE requests SET status=... كاستعلامين
+// منفصلين بلا db.transaction() واحدة تلفّهما. لا يوجد سيناريو عمل حقيقي يفشل
+// طبيعياً بين الاثنين (بعكس نقص الرصيد بـdoComplete)، فيُثبت هذا الاختبار
+// الذرّية مباشرة عبر SQLite trigger مؤقت (RAISE(ABORT,...)) يُفشل تحديداً
+// UPDATE requests للطلب المستهدَف — تقنية قياسية لمحاكاة فشل منتصف معاملة.
+test.describe.serial('[DATA-INTEGRITY-03] سحب العرض (DELETE /offers/:id) ذرّي — لا يترك عرضاً محذوفاً وحالة طلب قديمة', () => {
+  let customer;
+  let tech;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار ذرّية سحب العرض', city: CITY } });
+    tech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { ...technicianRegisterExtra, name: 'فني اختبار ذرّية سحب العرض', national_number: uniqueNationalNumber() },
+      multipart: technicianAvatar,
+    });
+    await request.dispose();
+  });
+
+  test('فشل مصطنع أثناء تحديث حالة الطلب: العرض لا يُحذف (rollback كامل)، لا حذف جزئي', async ({ request }) => {
+    const r = await createRequest(request, customer.token, { description: 'طلب لاختبار ذرّية سحب العرض عند فشل منتصف المعاملة' });
+    const offerRes = await request.post(`/api/requests/${r.id}/offer`, {
+      headers: authHeader(tech.token),
+      form: { offer_price: '12', duration: 'فوري' },
+    });
+    expect(offerRes.status()).toBe(200);
+    const offerId = (await offerRes.json()).offers.find((o) => o.request_id === r.id).id;
+
+    // trigger عادي (لا TEMP) — لازم يكون مرئياً لاتصال السيرفر نفسه (عملية
+    // منفصلة تماماً عن هذا الاتصال)، وTEMP TRIGGER محلي فقط للاتصال الذي أنشأه.
+    const db = openTestDb();
+    try {
+      db.exec(`
+        CREATE TRIGGER data_integrity_03_force_fail
+        BEFORE UPDATE ON requests
+        WHEN NEW.id = ${r.id}
+        BEGIN SELECT RAISE(ABORT, 'DATA-INTEGRITY-03 simulated failure');
+        END;
+      `);
+    } finally {
+      db.close();
+    }
+
+    const withdrawRes = await request.delete(`/api/offers/${offerId}`, { headers: authHeader(tech.token) });
+    expect(withdrawRes.status()).not.toBe(200);
+
+    const afterFailDb = openTestDb();
+    try {
+      // العرض لا يزال موجوداً — لم يُحذف رغم أن المعالج تابع بعد DELETE قديماً
+      const offerRow = afterFailDb.prepare('SELECT * FROM offers WHERE id=?').get(offerId);
+      expect(offerRow, 'العرض حُذف رغم فشل الخطوة التالية — لا ذرّية').toBeTruthy();
+      expect(offerRow.status).toBe('pending');
+      // حالة الطلب لم تتغيّر (كانت ستبقى "وصلت عروض" لهذا العرض الوحيد أصلاً)
+      const reqRow = afterFailDb.prepare('SELECT status FROM requests WHERE id=?').get(r.id);
+      expect(reqRow.status).toBe('وصلت عروض');
+    } finally {
+      afterFailDb.close();
+    }
+
+    const dropTriggerDb = openTestDb();
+    try {
+      dropTriggerDb.exec('DROP TRIGGER IF EXISTS data_integrity_03_force_fail');
+    } finally {
+      dropTriggerDb.close();
+    }
+
+    // بعد إزالة سبب الفشل المصطنع: السحب الطبيعي ينجح فعلياً (يثبت أن الفشل
+    // أعلاه كان بسبب الـtrigger المؤقت فقط، لا عطل حقيقي بالمسار).
+    const retryRes = await request.delete(`/api/offers/${offerId}`, { headers: authHeader(tech.token) });
+    expect(retryRes.status()).toBe(200);
+    const finalDb = openTestDb();
+    try {
+      expect(finalDb.prepare('SELECT * FROM offers WHERE id=?').get(offerId)).toBeUndefined();
+      const finalReq = finalDb.prepare('SELECT status FROM requests WHERE id=?').get(r.id);
+      expect(finalReq.status).toBe('بانتظار العروض');
+    } finally {
+      finalDb.close();
+    }
+  });
+});
