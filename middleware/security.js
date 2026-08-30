@@ -67,6 +67,22 @@ const offerLimiter = rateLimit({
   legacyHeaders: false
 });
 
+// [SEC-FIX-REQSPAM-01] راجع DECISIONS.md — POST /requests كان بلا أي حد
+// طلبات إطلاقاً، الوحيد بين كل نقاط الإنشاء الحقيقية بهذا الملف. كل نداء
+// ناجح يُدرج صفاً بقاعدة البيانات ويُنشئ إشعاراً دائماً لكل فني على المنصة
+// (routes/requests.routes.js:getTechnicianIds/notifyBatch) — عملية متزامنة
+// تتناسب تكلفتها مع عدد الفنيين، لا مع أي شيء يخصّ العميل نفسه. حد أضيق
+// بكثير من offerLimiter عمداً: عميل حقيقي نادراً ما ينشئ أكثر من طلب أو
+// طلبين بالساعة، بينما 10/ساعة كافية جداً لأي استخدام طبيعي وتمنع تماماً
+// نمط الإغراق (كل نداء يُكلِّف كل مستخدم آخر على المنصة أثناء تنفيذه).
+const requestLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: IS_PROD ? 10 : 1000,
+  message: { error: 'طلبات كثيرة جداً خلال وقت قصير، حاول بعد قليل', code: 'RATE_LIMIT_REQUEST' },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
 // [SEC-FIX-13] Helmet with explicit frameguard DENY + CSP hardened
 const helmetMiddleware = helmet({
   frameguard: { action: 'deny' },
@@ -150,5 +166,6 @@ module.exports = {
   registerLimiter,
   passwordResetLimiter,
   messageLimiter,
-  offerLimiter
+  offerLimiter,
+  requestLimiter
 };
