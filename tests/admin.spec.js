@@ -656,3 +656,60 @@ test.describe.serial('لوحة الأدمن', () => {
     expect(res.status()).toBe(403);
   });
 });
+
+test.describe('[SEC-FIX-ADMINTARGET-01] أدمن عادي لا يقدر يوقف أو يحذف حساب أدمن آخر', () => {
+  // [SEC-FIX-ADMINTARGET-01] راجع DECISIONS.md — لا endpoint عام لإنشاء حساب
+  // أدمن ثانٍ (POST /auth/register يرفض role='admin' صراحة، وPOST
+  // /admin/users/:id/role يسمح فقط بالتحويل بين عميل/فني) — الإدراج المباشر
+  // بقاعدة البيانات هو الطريقة الوحيدة لتجهيز حساب أدمن ثانٍ لهذا الاختبار،
+  // بنفس أسلوب tests/bcrypt-migration.spec.js.
+  async function createSecondAdmin(email, password) {
+    const bcrypt = require('bcrypt');
+    const hash = await bcrypt.hash(password, 12);
+    const db = openTestDb();
+    try {
+      db.prepare(
+        "INSERT INTO users(role,name,email,phone,password_hash,is_active,is_super_admin) VALUES('admin',?,?,?,?,1,0)"
+      ).run('أدمن ثانٍ للاختبار', email, `07${Math.floor(10000000 + Math.random() * 89999999)}`, hash);
+    } finally {
+      db.close();
+    }
+  }
+
+  test('POST /admin/users/:id/toggle وDELETE /admin/users/:id — يُرفَضان على حساب أدمن آخر بـ400', async ({ request }) => {
+    const actorEmail = `admin-actor-${Date.now()}@example.com`;
+    const targetEmail = `admin-target-${Date.now()}@example.com`;
+    const password = 'AdminTestPass123';
+    await createSecondAdmin(actorEmail, password);
+    await createSecondAdmin(targetEmail, password);
+
+    const actorLoginRes = await request.post('/api/auth/login', { form: { email: actorEmail, password } });
+    expect(actorLoginRes.status()).toBe(200);
+    const actorToken = (await actorLoginRes.json()).token;
+
+    const db = openTestDb();
+    let targetId;
+    try {
+      targetId = db.prepare('SELECT id FROM users WHERE email=?').get(targetEmail).id;
+    } finally {
+      db.close();
+    }
+
+    const toggleRes = await request.post(`/api/admin/users/${targetId}/toggle`, { headers: authHeader(actorToken) });
+    expect(toggleRes.status()).toBe(400);
+    expect((await toggleRes.json()).code).toBe('ADMIN_CANNOT_TARGET_ADMIN');
+
+    const deleteRes = await request.delete(`/api/admin/users/${targetId}`, { headers: authHeader(actorToken) });
+    expect(deleteRes.status()).toBe(400);
+    expect((await deleteRes.json()).code).toBe('ADMIN_CANNOT_TARGET_ADMIN');
+
+    // الهدف بقي فعّالاً بلا أي تغيير — لا نصف نجاح
+    const checkDb = openTestDb();
+    try {
+      const row = checkDb.prepare('SELECT is_active FROM users WHERE id=?').get(targetId);
+      expect(row.is_active).toBe(1);
+    } finally {
+      checkDb.close();
+    }
+  });
+});

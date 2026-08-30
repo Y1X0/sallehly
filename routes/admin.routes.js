@@ -107,6 +107,12 @@ module.exports = function (deps) {
     if (Number(req.params.id) === req.user.id) return res.status(400).json({ error: 'لا يمكنك إيقاف حسابك الخاص' });
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
     if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+    // [SEC-FIX-ADMINTARGET-01] راجع DECISIONS.md — نفس فحص `role === 'admin'`
+    // المستخدَم أصلاً بـPOST /admin/users/:id/role (تحويل الدور)، الذي يمنع
+    // استهداف حساب إدارة آخر تماماً. requireRole('admin') وحدها هنا تسمح لأي
+    // أدمن عادي بإيقاف أو حذف حساب أدمن آخر — بما فيه محتمل super admin —
+    // مخاطرة داخلية بحتة (حساب أدمن مُخترَق أو خبيث).
+    if (u.role === 'admin') return res.status(400).json({ error: 'لا يمكن إيقاف حساب إدارة آخر', code: 'ADMIN_CANNOT_TARGET_ADMIN' });
     const newStatus = u.is_active ? 0 : 1;
     // [SEC-FIX-SUSPENDACTIVE-01] راجع DECISIONS.md — نفس فحص الطلب النشط
     // الموجود أصلاً بـDELETE /admin/users/:id (سطر ~318) لكنه كان غائباً هنا:
@@ -347,6 +353,8 @@ module.exports = function (deps) {
     if (id === req.user.id) return res.status(400).json({ error: 'لا يمكنك حذف حسابك الخاص' });
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
     if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
+    // [SEC-FIX-ADMINTARGET-01] راجع DECISIONS.md وتعليق /toggle أعلاه — نفس الفحص.
+    if (u.role === 'admin') return res.status(400).json({ error: 'لا يمكن حذف حساب إدارة آخر', code: 'ADMIN_CANNOT_TARGET_ADMIN' });
     const activeRequest = db.prepare(
       "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
     ).get(id, id);
