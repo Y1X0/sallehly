@@ -288,3 +288,43 @@ test.describe.serial('[FIX-DELETE-CRASH-01] حذف حساب له تاريخ اس
     expect(body.messages.length).toBeGreaterThanOrEqual(2);
   });
 });
+
+// [FIX-PENDINGOFFER-01] راجع DECISIONS.md — فحص activeRequest أعلاه يغطي
+// requests.technician_id فقط (NULL طالما لم يُقبَل عرض)، فيفوت فنياً له عرض
+// pending فقط. مستقل تماماً عن describe.serial أعلاه (حساب/طلب/عرض خاصان به).
+test.describe('[FIX-PENDINGOFFER-01] لا يمكن حذف حساب ذاتي له عرض معلَّق لم يُحسَم بعد', () => {
+  test('DELETE /api/me لفني له عرض pending فقط: يُرفض بـ409 DELETE_ACCOUNT_PENDING_OFFER', async ({ request }) => {
+    const offeringTech = await registerAndVerify(request, 'technician', {
+      name: 'فني بعرض معلَّق لاختبار الحذف الذاتي', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
+    });
+    const waitingCustomer = await registerAndVerify(request, 'customer', { name: 'عميل ينتظر قراراً على عرض حذف ذاتي', city: CITY });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(waitingCustomer.token),
+      form: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب لاختبار منع حذف فني له عرض معلَّق' },
+    });
+    expect(createRes.ok()).toBeTruthy();
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(offeringTech.token),
+      form: { offer_price: '20', duration: '30 دقيقة' },
+    });
+    expect(offerRes.ok()).toBeTruthy();
+    expect((await offerRes.json()).offers.find((o) => o.technician_id === offeringTech.user.id).status).toBe('pending');
+
+    const deleteRes = await request.delete('/api/me', {
+      headers: authHeader(offeringTech.token),
+      form: { password: VALID_PASSWORD },
+    });
+    expect(deleteRes.status()).toBe(409);
+    const body = await deleteRes.json();
+    expect(body.code).toBe('DELETE_ACCOUNT_PENDING_OFFER');
+
+    // الحساب لا يزال موجوداً وفعّالاً — لم يُحذَف رغم فشل الطلب
+    const loginRes = await request.post('/api/auth/login', {
+      form: { email: offeringTech.email, password: VALID_PASSWORD },
+    });
+    expect(loginRes.status()).toBe(200);
+  });
+});

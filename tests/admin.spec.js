@@ -344,6 +344,44 @@ test.describe.serial('لوحة الأدمن', () => {
     }
   });
 
+  // [FIX-PENDINGOFFER-01] راجع DECISIONS.md — الفحص أعلاه (SEC-FIX-SUSPENDACTIVE-01)
+  // يغطي requests.technician_id، الذي يبقى NULL طالما لم يُقبَل عرض بعد.
+  // فني قدَّم عرضاً pending فقط (لم يُقبَل بعد) كان يفوت ذلك الفحص تماماً.
+  test('POST /admin/users/:id/toggle وDELETE /admin/users/:id — لا يمكن إيقاف أو حذف فني له عرض معلَّق (لم يُقبَل بعد)', async ({ request }) => {
+    const offeringTech = await registerAndVerify(request, 'technician', {
+      name: 'فني بعرض معلَّق لاختبار الإيقاف', city: CITY, national_number: uniqueNationalNumber(), services: 'كهربائي', areas: 'القويسمة',
+    });
+    const waitingCustomer = await registerAndVerify(request, 'customer', { name: 'عميل ينتظر قراراً على عرض', city: CITY });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(waitingCustomer.token),
+      form: { service: 'كهربائي', city: CITY, area: 'القويسمة', description: 'طلب لاختبار منع إيقاف فني له عرض معلَّق' },
+    });
+    expect(createRes.ok()).toBeTruthy();
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(offeringTech.token),
+      form: { offer_price: '20', duration: '30 دقيقة' },
+    });
+    expect(offerRes.ok()).toBeTruthy();
+    // العرض لسا pending — لم يقبله العميل بعد، requests.technician_id لا يزال NULL
+    expect((await offerRes.json()).offers.find((o) => o.technician_id === offeringTech.user.id).status).toBe('pending');
+
+    const toggleRes = await request.post(`/api/admin/users/${offeringTech.user.id}/toggle`, { headers: authHeader(adminToken) });
+    expect(toggleRes.status()).toBe(409);
+
+    const deleteRes = await request.delete(`/api/admin/users/${offeringTech.user.id}`, { headers: authHeader(adminToken) });
+    expect(deleteRes.status()).toBe(409);
+
+    const checkDb = openTestDb();
+    try {
+      expect(checkDb.prepare('SELECT is_active FROM users WHERE id=?').get(offeringTech.user.id).is_active).toBe(1);
+    } finally {
+      checkDb.close();
+    }
+  });
+
   test('POST /admin/users/:id/profile — تعديل الاسم والمدينة', async ({ request }) => {
     const res = await request.post(`/api/admin/users/${technician.user.id}/profile`, {
       headers: authHeader(adminToken),
