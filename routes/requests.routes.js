@@ -42,9 +42,20 @@ module.exports = function (deps) {
   // هذا المشروع.
   router.post('/requests', auth, requireRole('customer'), requestLimiter, upload.single('problem_image'), (req, res) => {
     const { service, city, area, description, preferred_time } = req.body;
-    const lat = req.body.lat ? Number(req.body.lat) : null;
-    const lng = req.body.lng ? Number(req.body.lng) : null;
-    const requestedTechId = req.body.technician_id ? Number(req.body.technician_id) : null;
+    // [SEC-FIX-COORDZERO-01] راجع DECISIONS.md — `req.body.lat ? ... : null`
+    // كانت تُسقط إحداثية 0 الشرعية (خط الاستواء/خط غرينتش) لأنها falsy بجافاسكربت
+    // بالضبط كـundefined — فحص وجود صريح بدل الاعتماد على truthiness.
+    const lat = (req.body.lat !== undefined && req.body.lat !== null && req.body.lat !== '') ? Number(req.body.lat) : null;
+    const lng = (req.body.lng !== undefined && req.body.lng !== null && req.body.lng !== '') ? Number(req.body.lng) : null;
+    // [SEC-FIX-NANTECHID-01] راجع DECISIONS.md — نفس المشكلة أدناه لكن بشكل
+    // مختلف: `technician_id` غير رقمي (مثلاً نص عشوائي) كان يمر فحص truthiness
+    // (نص غير فارغ) فيتحوّل لـNaN بـNumber()، ثم `if (requestedTechId)` أسفل
+    // يتجاهله (NaN falsy) فيتخطى فحص وجود الفني تماماً، ويُخزَّن NULL بصمت
+    // (better-sqlite3 يحوّل NaN لـNULL بلا أي خطأ) — طلب المستخدم الموجَّه فعلياً
+    // لفني معيّن يتحوّل لطلب عام بلا أي تنبيه أن الفني المطلوب لم يُعالَج أصلاً.
+    const rawTechId = req.body.technician_id;
+    const requestedTechId = (rawTechId !== undefined && rawTechId !== null && rawTechId !== '') ? Number(rawTechId) : null;
+    if (requestedTechId !== null && isNaN(requestedTechId)) return res.status(400).json({ error: 'معرّف الفني غير صحيح', code: 'REQUEST_INVALID_TECHNICIAN_ID' });
     const problemImage = req.file ? '/uploads/requests/' + req.file.filename : '';
     if (!clean(service) || !clean(city) || clean(description).length < 10) return res.status(400).json({ error: 'أكمل بيانات الطلب: الخدمة، المحافظة، ووصف لا يقل عن 10 أحرف', code: 'REQUEST_INVALID_FIELDS' });
     if (clean(description).length > 1000) return res.status(400).json({ error: 'الوصف طويل جداً، الحد الأقصى 1000 حرف', code: 'REQUEST_DESCRIPTION_TOO_LONG' });
