@@ -10,14 +10,29 @@ module.exports = function (deps) {
   const router = express.Router();
 
   router.post('/topups', auth, requireRole('technician'), upload.single('receipt'), (req, res) => {
-    const pkg = db.prepare('SELECT * FROM packages WHERE id=? AND is_active=1').get(req.body.package_id);
+    // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — package_id كان يصل خاماً
+    // بلا أي تحويل نوع. multer يتجاوز معالجة req.body بصمت لو الطلب ليس
+    // multipart فعلياً، فطلب بـContent-Type: application/json
+    // وbody={"package_id":[1,2]} يصل هنا بمصفوفة حقيقية — better-sqlite3
+    // يرمي RangeError متزامناً لمعامل من نوع مصفوفة/كائن، فيصل هذا الراوت
+    // (بلا try/catch) كخطأ 400 غير نظيف بدل PACKAGE_NOT_FOUND المقصود.
+    // فحص typeof صريح هنا لازم قبل parseInt — parseInt(['1','2']) يحوّل
+    // المصفوفة أولاً لنص ("1,2") ثم يقرأ الرقم البادئ منها (1)، فلا يرجع NaN
+    // كما قد يُفترَض؛ يقبل بصمت أول رقم بمصفوفة قد لا علاقة لها بالباقة
+    // المقصودة أصلاً.
+    const rawPackageId = req.body.package_id;
+    const packageId = (typeof rawPackageId === 'string' || typeof rawPackageId === 'number') ? parseInt(rawPackageId, 10) : NaN;
+    const pkg = (packageId && !isNaN(packageId)) ? db.prepare('SELECT * FROM packages WHERE id=? AND is_active=1').get(packageId) : null;
     if (!pkg) return res.status(404).json({ error: 'الباقة غير موجودة', code: 'PACKAGE_NOT_FOUND' });
     // منع إرسال أكثر من طلب شحن معلق في نفس الوقت
     const pendingCount = db.prepare("SELECT COUNT(*) c FROM topups WHERE technician_id=? AND status='pending'").get(req.user.id).c;
     if (pendingCount >= 2) return res.status(429).json({ error: 'لديك طلبات شحن قيد المراجعة. انتظر موافقة الإدارة أولاً', code: 'TOPUP_TOO_MANY_PENDING' });
     if (!req.file) return res.status(400).json({ error: 'يجب رفع صورة إثبات الدفع', code: 'TOPUP_RECEIPT_REQUIRED' });
     const receipt_url = '/uploads/payments/' + req.file.filename;
-    const info = db.prepare('INSERT INTO topups(technician_id,package_id,amount,bonus,receipt_url) VALUES(?,?,?,?,?)').run(req.user.id, pkg.id, pkg.amount, pkg.bonus, receipt_url);
+    // [FIX-COMMISSIONSNAPSHOT-01] راجع DECISIONS.md — عمولة الباقة تُلقَط هنا
+    // وقت التقديم، لا وقت المراجعة لاحقاً (routes أدناه)، حتى لا يتأثر الفني
+    // بتعديل إداري لعمولة الباقة يحصل بعد أن يكون قد دفع فعلياً بمعدّل مختلف.
+    const info = db.prepare('INSERT INTO topups(technician_id,package_id,amount,bonus,commission_per_order,receipt_url) VALUES(?,?,?,?,?,?)').run(req.user.id, pkg.id, pkg.amount, pkg.bonus, pkg.commission_per_order, receipt_url);
     const topup = db.prepare('SELECT * FROM topups WHERE id=?').get(info.lastInsertRowid);
 
     // [SEC-FIX-03] Topup notifications only to admin + the technician themselves
@@ -67,8 +82,13 @@ module.exports = function (deps) {
       if (status === 'approved') {
         const tech = db.prepare('SELECT * FROM users WHERE id=?').get(t.technician_id);
         const add = Number(t.amount) + Number(t.bonus || 0); const after = Number((tech.balance + add).toFixed(2));
+        // [FIX-COMMISSIONSNAPSHOT-01] راجع DECISIONS.md — تُستخدَم القيمة
+        // المُلتقَطة وقت التقديم (t.commission_per_order)، لا القيمة الحيّة
+        // الحالية بجدول packages (قد تكون تغيّرت منذ التقديم). fallback على
+        // packages ثم على active_commission الحالي فقط لطلبات شحن قديمة قُدِّمت
+        // قبل إضافة هذا العمود (تبقى NULL لها بعد ADD COLUMN).
         const pkg = db.prepare('SELECT commission_per_order FROM packages WHERE id=?').get(t.package_id);
-        const newCommission = Number(pkg?.commission_per_order ?? tech.active_commission ?? 2);
+        const newCommission = Number(t.commission_per_order ?? pkg?.commission_per_order ?? tech.active_commission ?? 2);
         db.prepare('UPDATE users SET balance=?, active_commission=? WHERE id=?').run(after, newCommission, tech.id);
         db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note) VALUES(?,?,?,?,?)').run(tech.id, 'شحن رصيد', add, after, `موافقة على طلب شحن رقم ${t.id}`);
       }

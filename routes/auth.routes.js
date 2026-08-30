@@ -382,6 +382,18 @@ module.exports = function (deps) {
         params: { id: activeRequest.id },
       });
     }
+    // [FIX-PENDINGOFFER-01] راجع DECISIONS.md — نفس الفحص المُضاف بمسارَي
+    // الأدمن المقابلين (توقيف/حذف)، لنفس السبب: عرض pending لا يظهر بفحص
+    // activeRequest أعلاه (requests.technician_id لا يزال NULL طالما لم
+    // يُقبَل العرض بعد) لكنه يبقى قابلاً للقبول من العميل بعد حذف الحساب.
+    const pendingOffer = db.prepare("SELECT id FROM offers WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
+    if (pendingOffer) {
+      return res.status(409).json({
+        error: `لا يمكن حذف حسابك حالياً — لديك عرض معلَّق رقم ${pendingOffer.id} بانتظار قرار عميل. اسحبه أو انتظر حسمه أولاً.`,
+        code: 'DELETE_ACCOUNT_PENDING_OFFER',
+        params: { id: pendingOffer.id },
+      });
+    }
     if (Number(u.balance || 0) > 0) {
       return res.status(409).json({
         error: `لا يمكن حذف حسابك حالياً — رصيدك الحالي ${u.balance} د.أ. تواصل مع الدعم لتصفيته أولاً.`,

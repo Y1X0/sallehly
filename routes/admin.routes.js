@@ -112,6 +112,15 @@ module.exports = function (deps) {
         "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
       ).get(u.id, u.id);
       if (activeRequest) return res.status(409).json({ error: `لا يمكن إيقاف هذا الحساب — عنده طلب نشط رقم ${activeRequest.id}. أنهِ أو ألغِ الطلب أولاً.` });
+      // [FIX-PENDINGOFFER-01] راجع DECISIONS.md — الفحص أعلاه يغطي requests.technician_id
+      // فقط، وهو NULL على الطلب طالما لم يُقبَل عرض بعد. فني قدَّم عرضاً
+      // pending على طلب لم يُحسَم كان يفوت هذا الفحص تماماً، فيُوقَف بينما
+      // عرضه لا يزال قابلاً للقبول لاحقاً — العميل يقبله فيرتبط الطلب بحساب
+      // ميت. نفس نمط الفحص المستخدَم أصلاً بـ/admin/users/:id/role (تحويل
+      // فني→عميل، سطر ~282) الذي يغطي هذا الاحتمال بالفعل — لم يكن مُطبَّقاً
+      // هنا رغم معالجته لنفس فئة "حساب على وشك التعطّل له التزام معلَّق".
+      const pendingOffer = db.prepare("SELECT id FROM offers WHERE technician_id=? AND status='pending' LIMIT 1").get(u.id);
+      if (pendingOffer) return res.status(409).json({ error: `لا يمكن إيقاف هذا الحساب — لديه عرض معلَّق رقم ${pendingOffer.id} بانتظار قرار عميل. اسحبه أو انتظر حسمه أولاً.` });
     }
     const reason = clean(req.body.reason || '');
     if (reason.length > 300) return res.status(400).json({ error: 'سبب الإيقاف طويل جداً، الحد الأقصى 300 حرف' });
@@ -332,6 +341,12 @@ module.exports = function (deps) {
       "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
     ).get(id, id);
     if (activeRequest) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — عنده طلب نشط رقم ${activeRequest.id}. أنهِ أو ألغِ الطلب أولاً.` });
+    // [FIX-PENDINGOFFER-01] راجع DECISIONS.md وتعليق /toggle أعلاه — نفس
+    // الفحص، نفس السبب: عرض pending غير مرتبط بأي طلب "نشط" بمعنى الفحص
+    // أعلاه (requests.technician_id لا يزال NULL) لكنه لا يزال قابلاً
+    // للقبول من العميل بعد حذف هذا الحساب.
+    const pendingOffer = db.prepare("SELECT id FROM offers WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
+    if (pendingOffer) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — لديه عرض معلَّق رقم ${pendingOffer.id} بانتظار قرار عميل. اسحبه أو انتظر حسمه أولاً.` });
     if (Number(u.balance || 0) > 0) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — رصيده الحالي ${u.balance} د.أ. صفّر الرصيد أولاً.` });
     // [FIX-DELETE-CRASH-01] راجع utils/db-helpers.js (anonymizeUser) — كانت
     // DELETE FROM users هنا ترمي SqliteError (FOREIGN KEY constraint failed)

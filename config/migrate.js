@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS topups(
   package_id INTEGER NOT NULL,
   amount REAL NOT NULL,
   bonus REAL DEFAULT 0,
+  commission_per_order REAL,
   receipt_url TEXT,
   status TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','rejected')),
   admin_note TEXT,
@@ -313,6 +314,16 @@ try { db.prepare("ALTER TABLE chat_violations ADD COLUMN status TEXT NOT NULL DE
 // حذف/إخفاء حساب (DELETE /me أو DELETE /admin/users/:id) لتمييزه عن حساب
 // موقوف عادي (is_active=0 لوحده لا يفرّق بين "موقوف مؤقتاً" و"محذوف نهائياً").
 try { db.prepare('ALTER TABLE users ADD COLUMN deleted_at TEXT').run(); } catch (e) {}
+
+// [FIX-COMMISSIONSNAPSHOT-01] راجع DECISIONS.md — قبل هذا الإصلاح، عمولة كل
+// شحن رصيد كانت تُقرأ حيّة من packages.commission_per_order وقت مراجعة الأدمن
+// (POST /admin/topups/:id/review)، لا وقت تقديم الطلب. لو عدّل الأدمن عمولة
+// الباقة بين تقديم الفني للطلب (يرفع إثبات دفع، ينتظر المراجعة — قد يستغرق
+// أياماً) وموافقته عليه، الفني يُطبَّق عليه معدّل مختلف تماماً عمّا كان سارياً
+// فعلياً لحظة دفعه. الأعمدة الجديدة تُملأ NULL لكل صف موجود مسبقاً (سلوك ADD
+// COLUMN القياسي بـ SQLite) — سطر المراجعة بأسفل يتعامل معها بـfallback صريح
+// للتوافق مع أي طلب شحن قديم قُدِّم قبل هذا الإصلاح.
+try { db.prepare('ALTER TABLE topups ADD COLUMN commission_per_order REAL').run(); } catch (e) {}
 
 // [FIX-CLEANUP-01] كان هنا سابقاً تعريف ثانٍ لجدول complaints بأعمدة مختلفة
 // (customer_id/technician_id بدل user_id/subject/status). بفضل IF NOT EXISTS

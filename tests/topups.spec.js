@@ -119,6 +119,19 @@ test.describe.serial('طلبات شحن الرصيد ومراجعة الأدمن
     expect(res.status()).toBe(400);
   });
 
+  // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — طلب بـContent-Type: application/json
+  // (لا multipart، فmulter يتجاوز المعالجة بصمت) وpackage_id كمصفوفة كان
+  // يُسقط better-sqlite3 بـRangeError غير نظيف بدل PACKAGE_NOT_FOUND المقصود.
+  test('POST /api/topups — package_id كمصفوفة (بجسم JSON) لا يُسقط الاستعلام، يُرفض بـ404 نظيف', async ({ request }) => {
+    const res = await request.post('/api/topups', {
+      headers: authHeader(technician.token),
+      data: { package_id: [1, 2] },
+    });
+    expect(res.status()).toBe(404);
+    const body = await res.json();
+    expect(body.code).toBe('PACKAGE_NOT_FOUND');
+  });
+
   test('POST /api/topups — ينشئ طلب شحن صحيحاً بحالة pending', async ({ request }) => {
     const res = await request.post('/api/topups', {
       headers: authHeader(technician.token),
@@ -246,5 +259,55 @@ test.describe.serial('طلبات شحن الرصيد ومراجعة الأدمن
       },
     });
     expect(res.status()).toBe(403);
+  });
+});
+
+test.describe('[FIX-COMMISSIONSNAPSHOT-01] عمولة الباقة تُلقَط وقت تقديم طلب الشحن، لا وقت مراجعته لاحقاً', () => {
+  test('الأدمن يعدّل عمولة الباقة بعد تقديم الفني للطلب وقبل موافقته — العمولة المُطبَّقة تبقى القيمة وقت التقديم', async ({ request }) => {
+    const technician = await registerAndVerifyTechnician(request);
+    const admin = await loginAdmin(request);
+
+    // باقة جديدة مستقلة (لا نلمس الباقات المشتركة مع بقية اختبارات الملف)
+    // بعمولة بداية 5 — قيمة مميّزة لا تتشابه مع أي افتراضي (2) قد يُخفي الخطأ.
+    const createPkgRes = await request.post('/api/admin/packages', {
+      headers: authHeader(admin.token),
+      form: { name: 'باقة اختبار لقطة العمولة', amount: '15', bonus: '0', commission_per_order: '5' },
+    });
+    expect(createPkgRes.status()).toBe(200);
+    const testPkg = (await createPkgRes.json()).package;
+    expect(testPkg.commission_per_order).toBe(5);
+
+    // الفني يقدّم طلب شحن على الباقة بعمولتها الحالية (5).
+    const topupRes = await request.post('/api/topups', {
+      headers: authHeader(technician.token),
+      multipart: {
+        package_id: String(testPkg.id),
+        receipt: { name: 'receipt.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+      },
+    });
+    expect(topupRes.status()).toBe(200);
+    const topupId = (await topupRes.json()).topup.id;
+
+    // الأدمن يعدّل عمولة نفس الباقة لاحقاً (قبل أن يراجع طلب الشحن نفسه) —
+    // يحاكي فرقاً زمنياً واقعياً بين التقديم والمراجعة.
+    const editPkgRes = await request.put(`/api/admin/packages/${testPkg.id}`, {
+      headers: authHeader(admin.token),
+      form: { name: testPkg.name, amount: '15', bonus: '0', commission_per_order: '9' },
+    });
+    expect(editPkgRes.status()).toBe(200);
+    expect((await editPkgRes.json()).package.commission_per_order).toBe(9);
+
+    // الأدمن يوافق على طلب الشحن الآن — بعد أن صارت عمولة الباقة الحيّة 9.
+    const reviewRes = await request.post(`/api/admin/topups/${topupId}/review`, {
+      headers: authHeader(admin.token),
+      form: { status: 'approved' },
+    });
+    expect(reviewRes.status()).toBe(200);
+
+    // [FIX-COMMISSIONSNAPSHOT-01] العمولة المُطبَّقة فعلياً على الفني يجب أن
+    // تبقى 5 (قيمة وقت التقديم)، لا 9 (القيمة الحيّة الحالية بالباقة).
+    const meRes = await request.get('/api/me', { headers: authHeader(technician.token) });
+    const me = (await meRes.json()).user;
+    expect(me.active_commission).toBe(5);
   });
 });

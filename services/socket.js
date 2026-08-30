@@ -64,15 +64,30 @@ function createSocket(app) {
     if (socket.user.role === 'technician') socket.join('technicians-room');
 
     socket.on('join-request', (requestId) => {
-      if (!requestId) return;
-      // Only allow joining rooms for requests the user is part of
-      const r = db.prepare('SELECT * FROM requests WHERE id=?').get(requestId);
-      if (!r) return;
-      // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع
-      // routes/chat.routes.js (utils/helpers.js) بدل نسخة مكتوبة هنا يدوياً.
-      // هذا الفحص تحديداً انحرف مرتين ([SEC-FIX-CHATSCOPE-01]، [SEC-FIX-CHATSCOPE-02])
-      // قبل التوحيد — دالة واحدة تمنع تكرار الانحراف بدل الاعتماد على تذكّر تحديث نسختين.
-      if (canAccessRequestChat(socket.user, r)) socket.join(String(requestId));
+      // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — requestId كان يصل خاماً
+      // لـdb.prepare(...).get() بلا أي تحقق من نوعه. better-sqlite3 يرمي
+      // RangeError متزامناً لو الوسيط كائناً/مصفوفة بدل رقم/نص بسيط — أي عميل
+      // متصل (بلا أي صلاحية خاصة، فقط تسجيل دخول عادي) يقدر يرسل
+      // socket.emit('join-request', {...}) بحمولة مشوَّهة. socket.io 4.8.3
+      // يستدعي مستمعي الأحداث مباشرة داخل process.nextTick بلا أي try/catch
+      // بمكتبته نفسها — استثناء غير مُلتقَط هنا يصل مباشرة لـ
+      // process.on('uncaughtException') بـserver.js، الذي يُنفِّذ gracefulShutdown
+      // كاملاً: **يُسقط السيرفر بأكمله لكل المستخدمين المتصلين**، لا فقط طلب
+      // العميل المُرسِل. try/catch هنا كافٍ وحده تقنياً، لكن التحقق الصريح من
+      // النوع أولاً أوضح للقارئ ويطابق نمط استخدام parseInt+isNaN المُستخدَم
+      // بكل مسارات REST المشابهة (مثال: routes/offers.routes.js).
+      try {
+        const id = parseInt(requestId, 10);
+        if (!id || isNaN(id)) return;
+        // Only allow joining rooms for requests the user is part of
+        const r = db.prepare('SELECT * FROM requests WHERE id=?').get(id);
+        if (!r) return;
+        // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع
+        // routes/chat.routes.js (utils/helpers.js) بدل نسخة مكتوبة هنا يدوياً.
+        // هذا الفحص تحديداً انحرف مرتين ([SEC-FIX-CHATSCOPE-01]، [SEC-FIX-CHATSCOPE-02])
+        // قبل التوحيد — دالة واحدة تمنع تكرار الانحراف بدل الاعتماد على تذكّر تحديث نسختين.
+        if (canAccessRequestChat(socket.user, r)) socket.join(String(r.id));
+      } catch (e) {}
     });
     socket.on('leave-request', (requestId) => { if (requestId) socket.leave(String(requestId)); });
   });

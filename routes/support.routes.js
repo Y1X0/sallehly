@@ -107,27 +107,37 @@ module.exports = function (deps) {
   // [FIX-07] الجدول الحقيقي بقاعدة البيانات أعمدته: user_id, subject(NOT NULL), body(NOT NULL), status
   // (وليس customer_id/technician_id كما كان الكود يفترض خطأً — كان هذا يسبب فشل 500 على كل شكوى).
   router.post('/complaints', auth, requireRole('customer'), (req, res) => {
-    const { request_id } = req.body;
+    // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — request_id كان يصل خاماً
+    // من req.body (راوت JSON عادي، بلا multer إطلاقاً) بلا أي تحويل نوع.
+    // مصفوفة/كائن كـrequest_id يجعل better-sqlite3 يرمي RangeError متزامناً
+    // عند تمريره لـ.get() أدناه — بلا try/catch هنا، يصل كخطأ 400 غير نظيف
+    // بدل تجاهله بهدوء كـ"لا يوجد request_id صالح" (نفس سلوك القيمة الفارغة).
+    // فحص typeof صريح قبل parseInt — راجع نفس التعليق بـtopups.routes.js:
+    // parseInt(['1','2']) يقرأ الرقم البادئ من نص المصفوفة ("1,2") بدل NaN،
+    // فيقبل بصمت معرّف طلب قد لا علاقة له بالمقصود إطلاقاً.
+    const rawRequestId = req.body.request_id;
+    const requestId = (typeof rawRequestId === 'string' || typeof rawRequestId === 'number') ? parseInt(rawRequestId, 10) : NaN;
+    const validRequestId = (requestId && !isNaN(requestId)) ? requestId : null;
     const body = clean(req.body.body || '');
     if (body.length < 1) return res.status(400).json({ error: 'الشكوى فارغة', code: 'COMPLAINT_EMPTY' });
     if (body.length > 1000) return res.status(400).json({ error: 'الشكوى طويلة جداً، الحد الأقصى 1000 حرف', code: 'COMPLAINT_TOO_LONG' });
 
     // تحقق أن الطلب فعلاً يخص هذا العميل (إن أُرسل request_id)
-    const request = request_id
-      ? db.prepare('SELECT id, service, technician_id FROM requests WHERE id=? AND customer_id=?').get(request_id, req.user.id)
+    const request = validRequestId
+      ? db.prepare('SELECT id, service, technician_id FROM requests WHERE id=? AND customer_id=?').get(validRequestId, req.user.id)
       : null;
 
     const subject = request ? `شكوى على طلب: ${request.service}` : 'شكوى عامة';
 
     const info = db.prepare('INSERT INTO complaints (user_id, request_id, subject, body) VALUES (?,?,?,?)')
-      .run(req.user.id, request_id || null, subject, body);
+      .run(req.user.id, validRequestId, subject, body);
     const complaint = db.prepare('SELECT * FROM complaints WHERE id=?').get(info.lastInsertRowid);
 
     // إشعار للأدمن
     io.to('admin-room').emit('new-complaint', { complaint });
     // Push للأدمن
     const admins = db.prepare("SELECT fcm_token FROM users WHERE role='admin' AND fcm_token IS NOT NULL").all();
-    admins.forEach(a => sendPush(a.fcm_token, '⚠️ شكوى جديدة', `العميل ${req.user.name || ''} قدّم شكوى على طلب #${request_id || ''}`, { type: 'complaint' }));
+    admins.forEach(a => sendPush(a.fcm_token, '⚠️ شكوى جديدة', `العميل ${req.user.name || ''} قدّم شكوى على طلب #${validRequestId || ''}`, { type: 'complaint' }));
 
     // [NOTIF-PHASE2B-1] نسخة دائمة لكل الأدمنية. complaints ليس له عمود مخصّص
     // بجدول notifications (بعكس request_id/ticket_id) — complaintId يُحفظ

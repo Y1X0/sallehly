@@ -469,3 +469,108 @@ test.describe('[SEC-FIX-CHATSCOPE-01] فني رُفض عرضه لا يعود ط�
     expect(readBAgain.status()).toBe(403);
   });
 });
+
+test.describe('[SEC-FIX-BLOCKSCOPE-01] DELETE /block وGET /block-status مقصوران على طرفي المحادثة فقط', () => {
+  test('فني لا علاقة له بالطلب يُمنع كلياً من GET /block-status وDELETE /block لطلب عميل آخر', async ({ request }) => {
+    const customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل لاختبار نطاق الحظر', city: CITY } });
+    const outsider = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني غريب عن الطلب', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      multipart: { service: SERVICE, city: CITY, area: AREA, description: 'طلب لاختبار نطاق حظر المحادثة' },
+    });
+    const req1 = (await createRes.json()).request;
+
+    // [SEC-FIX-BLOCKSCOPE-01] راجع DECISIONS.md — قبل هذا الإصلاح، كلا
+    // الطلبين كانا ينجحان (200) لفني لا علاقة له بالطلب إطلاقاً، ويكشف
+    // block-status الرد customer_id الحقيقي للعميل عبر otherUserId.
+    const statusRes = await request.get(`/api/requests/${req1.id}/block-status`, { headers: authHeader(outsider.token) });
+    expect(statusRes.status()).toBe(403);
+
+    const unblockRes = await request.delete(`/api/requests/${req1.id}/block`, { headers: authHeader(outsider.token) });
+    expect(unblockRes.status()).toBe(403);
+
+    // بالمقابل: العميل نفسه (طرف حقيقي بالطلب) يصل الاثنين بنجاح
+    const ownStatusRes = await request.get(`/api/requests/${req1.id}/block-status`, { headers: authHeader(customer.token) });
+    expect(ownStatusRes.status()).toBe(200);
+  });
+});
+
+test.describe('[SEC-FIX-INVISIBLECHARS-01] إدراج حروف Unicode غير مرئية لا يتجاوز فحص مشاركة التواصل', () => {
+  let customer;
+  let acceptedRequest;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل لاختبار الحروف غير المرئية', city: CITY } });
+    const technician = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني لاختبار الحروف غير المرئية', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      multipart: { service: SERVICE, city: CITY, area: AREA, description: 'طلب لاختبار تجاوز الحروف غير المرئية' },
+    });
+    acceptedRequest = (await createRes.json()).request;
+
+    await request.post(`/api/requests/${acceptedRequest.id}/offer`, {
+      headers: authHeader(technician.token),
+      form: { offer_price: '10', duration: 'خلال ساعة' },
+    });
+    const offersRes = await request.get(`/api/requests/${acceptedRequest.id}/offers`, { headers: authHeader(customer.token) });
+    const offerId = (await offersRes.json()).offers[0].id;
+    await request.post(`/api/offers/${offerId}/decision`, { headers: authHeader(customer.token), form: { decision: 'accepted' } });
+
+    await request.dispose();
+  });
+
+  // [SEC-FIX-INVISIBLECHARS-01] راجع DECISIONS.md — قبل هذا الإصلاح، إدراج
+  // مسافة بعرض صفر (U+200B) بين أرقام رقم الهاتف يفكّك مقطع الأرقام المتصل
+  // فيمر الفحص بـ200، بلا أي أثر مرئي للطرف المستقبِل.
+  test('POST /requests/:id/messages — رقم هاتف مفصول بمسافات بعرض صفر (U+200B) يُرفض بـ400', async ({ request }) => {
+    const zwspPhone = '0​7​9​1​2​3​4​5​6​7';
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: `تواصل معي على ${zwspPhone} مباشرة` },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('هاتف');
+  });
+
+  // نفس الحيلة تفكّك أيضاً substring اسم منصة التواصل (ZERO WIDTH NON-JOINER
+  // داخل "whatsapp").
+  test('POST /requests/:id/messages — اسم منصة مفصول بـZERO WIDTH NON-JOINER (U+200C) يُرفض بـ400', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: 'أضفني wh‌atsapp أسهل' },
+    });
+    expect(res.status()).toBe(400);
+  });
+
+  // BOM بداية النص (U+FEFF) + Arabic Letter Mark (U+061C) داخل "واتساب".
+  test('POST /requests/:id/messages — BOM بداية النص وArabic Letter Mark وسط الكلمة يُرفضان بـ400', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: '﻿أضفني على الوا؜تساب أسهل' },
+    });
+    expect(res.status()).toBe(400);
+  });
+
+  // يثبت أن الإصلاح لا يكسر النص العربي العادي: الأحرف المرئية فعلياً (بما
+  // فيها التشكيل الطبيعي) تبقى تمر بلا رفض خاطئ.
+  test('POST /requests/:id/messages — رسالة عربية عادية بلا حروف غير مرئية تبقى تمر بنجاح', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: 'ممكن توصل الساعة أربعة ونص لو سمحت؟' },
+    });
+    expect(res.status()).toBe(200);
+  });
+});
