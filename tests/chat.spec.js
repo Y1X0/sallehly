@@ -573,4 +573,25 @@ test.describe('[SEC-FIX-INVISIBLECHARS-01] إدراج حروف Unicode غير م
     });
     expect(res.status()).toBe(200);
   });
+
+  // [SEC-FIX-INVISIBLECHARS-01] راجع DECISIONS.md — توسعة النطاقات: variation
+  // selector (U+FE0F) وحرف تحكم C0 نادر (U+0001) لم يكونا مغطَّيين بالنسخة
+  // الأولى من القائمة.
+  test('POST /requests/:id/messages — اسم منصة مفصول بـVARIATION SELECTOR (U+FE0F) يُرفض بـ400', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: 'أضفني wh️atsapp أسهل' },
+    });
+    expect(res.status()).toBe(400);
+  });
+
+  test('POST /requests/:id/messages — رقم هاتف مفصول بحرف تحكم C0 نادر (U+0001) يُرفض بـ400', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/messages`, {
+      headers: authHeader(customer.token),
+      form: { body: 'تواصل معي على 0791234567 مباشرة' },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.error).toContain('هاتف');
+  });
 });
