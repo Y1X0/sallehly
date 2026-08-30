@@ -38,7 +38,7 @@ async function registerAndVerify(request, role, extra = {}) {
     ? await request.post('/api/auth/register', {
         multipart: {
           role, email, phone, password: VALID_PASSWORD, ...extra,
-          avatar: { name: 'avatar.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+          avatar: { name: 'avatar.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
         },
       })
     : await request.post('/api/auth/register', { form: { role, email, phone, password: VALID_PASSWORD, ...extra } });
@@ -231,7 +231,7 @@ test.describe('[Rate Limits] قيم حدود الإنتاج لم تتغيّر ب
     const technician = await registerAndVerify(request, 'technician', {
       name: 'فني حد الشحن', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
     });
-    const receipt = { name: 'r.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) };
+    const receipt = { name: 'r.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) };
     const first = await request.post('/api/topups', { headers: authHeader(technician.token), multipart: { package_id: '1', receipt } });
     const second = await request.post('/api/topups', { headers: authHeader(technician.token), multipart: { package_id: '1', receipt } });
     const third = await request.post('/api/topups', { headers: authHeader(technician.token), multipart: { package_id: '1', receipt } });

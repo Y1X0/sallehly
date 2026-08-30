@@ -137,7 +137,7 @@ function chatViolationReason(body) {
 module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
-  const { auth, requireRole, upload, uploadAudio } = deps.middleware;
+  const { auth, requireRole, upload, uploadAudio, verifyImageMagicBytes } = deps.middleware;
   const { clean, getMessages, markChatRead, logAudit, canAccessRequestChat } = deps.utils;
   const { sendPush } = deps.services;
   const { messageLimiter, supportLimiter } = deps.limiters;
@@ -257,7 +257,7 @@ module.exports = function (deps) {
   // ── إرسال صورة في الشات (يستخدم نفس حماية ونمط مسار الصوت) ──
   // [PERF-HARDEN-02] نفس تعليق /requests/:id/audio أعلاه بالضبط — كانت بلا
   // أي حد طلبات، الآن نفس حد الرسائل النصية.
-  router.post('/requests/:id/images', auth, messageLimiter, upload.single('image'), (req, res) => {
+  router.post('/requests/:id/images', auth, messageLimiter, upload.single('image'), verifyImageMagicBytes, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً

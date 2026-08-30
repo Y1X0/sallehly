@@ -4,7 +4,7 @@ const express = require('express');
 module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
-  const { auth, requireRole, upload } = deps.middleware;
+  const { auth, requireRole, upload, verifyImageMagicBytes } = deps.middleware;
   const { clean, calcRating, notify } = deps.utils;
   const { sendPush } = deps.services;
   const { requestLimiter } = deps.limiters;
@@ -40,7 +40,7 @@ module.exports = function (deps) {
   // requestLimiter قبل upload.single عمداً (فحص رخيص يوقف الطلب قبل إنفاق أي
   // جهد بتحليل جسم multipart)، بنفس ترتيب offerLimiter/messageLimiter بباقي
   // هذا المشروع.
-  router.post('/requests', auth, requireRole('customer'), requestLimiter, upload.single('problem_image'), (req, res) => {
+  router.post('/requests', auth, requireRole('customer'), requestLimiter, upload.single('problem_image'), verifyImageMagicBytes, (req, res) => {
     const { service, city, area, description, preferred_time } = req.body;
     // [SEC-FIX-COORDZERO-01] راجع DECISIONS.md — `req.body.lat ? ... : null`
     // كانت تُسقط إحداثية 0 الشرعية (خط الاستواء/خط غرينتش) لأنها falsy بجافاسكربت

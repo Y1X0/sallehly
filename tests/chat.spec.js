@@ -58,12 +58,12 @@ test.describe.serial('الدردشة على الطلبات', () => {
     technician = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني اختبار شات', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     outsider = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني خارج الطلب', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     // إنشاء طلب وقبول عرض الفني عليه حتى يصير طرفاً رسمياً بالمحادثة
@@ -345,7 +345,7 @@ test.describe.serial('الدردشة على الطلبات', () => {
   test('POST /requests/:id/images — يرفض طرفاً خارجياً غير مرتبط بالطلب', async ({ request }) => {
     const res = await request.post(`/api/requests/${acceptedRequest.id}/images`, {
       headers: authHeader(outsider.token),
-      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     expect(res.status()).toBe(403);
   });
@@ -359,7 +359,7 @@ test.describe.serial('الدردشة على الطلبات', () => {
   test('POST /requests/:id/images و/audio — حد الطلبات (messageLimiter) مُفعَّل فعلياً', async ({ request }) => {
     const imgRes = await request.post(`/api/requests/${acceptedRequest.id}/images`, {
       headers: authHeader(customer.token),
-      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { image: { name: 'chat.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     expect(imgRes.status()).toBe(200);
     expect(imgRes.headers()['ratelimit-limit']).toBeTruthy();
@@ -429,12 +429,12 @@ test.describe('[SEC-FIX-CHATSCOPE-01] فني رُفض عرضه لا يعود ط�
     const techA = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني أ يُقبل', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
     const techB = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني ب يُرفض', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     const createRes = await request.post('/api/requests', {
@@ -476,7 +476,7 @@ test.describe('[SEC-FIX-BLOCKSCOPE-01] DELETE /block وGET /block-status مقص�
     const outsider = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني غريب عن الطلب', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     const createRes = await request.post('/api/requests', {
@@ -511,7 +511,7 @@ test.describe('[SEC-FIX-INVISIBLECHARS-01] إدراج حروف Unicode غير م
     const technician = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني لاختبار الحروف غير المرئية', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: AREA },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     const createRes = await request.post('/api/requests', {
@@ -607,7 +607,7 @@ test.describe('[SEC-FIX-SUPPORTSPAM-01] بلاغ الرسالة (report-message)
     technician = await registerAndVerify(request, {
       role: 'technician',
       extra: { name: 'فني اختبار بلاغات الرسائل', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة' },
-      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
     });
 
     const createRes = await request.post('/api/requests', {

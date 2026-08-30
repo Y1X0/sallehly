@@ -2,6 +2,7 @@
 // إعدادات رفع الملفات (multer) للصور والصوت. أي تعديل على أنواع/أحجام الملفات المسموحة مكانه هون.
 
 const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const multer = require('multer');
 const { UPLOAD_DIR } = require('../config/env');
@@ -55,4 +56,40 @@ const uploadAudio = multer({
   }
 });
 
-module.exports = { upload, uploadAudio };
+// [SEC-FIX-UPLOADMAGIC-01] راجع DECISIONS.md — fileFilter أعلاه (multer) لا
+// يتحقق إلا من file.mimetype (يُقرّره المتصفح/العميل، قابل للتلاعب بسهولة
+// بطلب مُعدَّل يدوياً) وامتداد الاسم — لا من محتوى الملف الفعلي، الذي لا
+// يتوفر بعد أصلاً وقت fileFilter (قبل اكتمال الكتابة للقرص). هذه middleware
+// إضافية تُشغَّل بعد upload.single(...) مباشرة (الملف مكتوب فعلياً على
+// القرص بهذه المرحلة) — تقرأ أول 12 بايت فقط (لا الملف كاملاً) وتتحقق أن
+// "التوقيع السحري" (magic bytes) يطابق فعلياً نوع MIME الذي ادّعاه الطلب،
+// لا مجرد أن الامتداد/الترويسة يبدوان معقولين. عدم تطابق (أو ملف غير قابل
+// للقراءة أصلاً) يحذف الملف فوراً (لا يُترَك يتيماً بالقرص) ويرفض بنفس نمط
+// رسالة "نوع الملف" التي يتعرّف عليها apiErrorHandler أصلاً (middleware/security.js)
+// فيُترجَم تلقائياً لـFILE_TYPE_NOT_ALLOWED بلا أي تعديل هناك.
+const IMAGE_MAGIC_BYTES = {
+  'image/jpeg': (buf) => buf.length >= 3 && buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF,
+  'image/png': (buf) => buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47 && buf[4] === 0x0D && buf[5] === 0x0A && buf[6] === 0x1A && buf[7] === 0x0A,
+  'image/webp': (buf) => buf.length >= 12 && buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46 && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50
+};
+
+function verifyImageMagicBytes(req, res, next) {
+  if (!req.file) return next();
+  const check = IMAGE_MAGIC_BYTES[req.file.mimetype];
+  try {
+    const fd = fs.openSync(req.file.path, 'r');
+    const buf = Buffer.alloc(12);
+    // Buffer.alloc يُصفّر كل البايتات مسبقاً، فـbuf.length يبقى 12 دائماً
+    // بغض النظر عن حجم الملف الفعلي — bytesRead وحده يعكس ما قُرئ فعلياً،
+    // فيُمرَّر slice به لا الـbuffer المُخصَّص كاملاً لكل دوال IMAGE_MAGIC_BYTES.
+    const bytesRead = fs.readSync(fd, buf, 0, 12, 0);
+    fs.closeSync(fd);
+    if (!check || !check(buf.subarray(0, bytesRead))) throw new Error('mismatch');
+    next();
+  } catch (e) {
+    try { fs.unlinkSync(req.file.path); } catch (e2) {}
+    next(new Error('نوع الملف لا يطابق محتواه الفعلي'));
+  }
+}
+
+module.exports = { upload, uploadAudio, verifyImageMagicBytes };

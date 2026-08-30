@@ -23,7 +23,7 @@ const { JWT_SECRET } = require('../config/env');
 module.exports = function (deps) {
   const { db } = deps;
   const { io } = deps.realtime;
-  const { auth, upload } = deps.middleware;
+  const { auth, upload, verifyImageMagicBytes } = deps.middleware;
   const { sign, sendOtpEmail } = deps.services;
   const { clean, userPublic, anonymizeUser } = deps.utils;
   const { COOKIE_OPTS, BASE } = deps.constants;
@@ -40,7 +40,7 @@ module.exports = function (deps) {
   // يكن قد طُبِّق بعد على باقي راوتات async المشابهة بهذا الملف. try/catch هنا
   // لا يغيّر أي مسار نجاح أو رسالة خطأ حالية (كل return res.status(...)
   // الموجودة تبقى كما هي تماماً) — يضيف فقط شبكة أمان لحالة الفشل غير المتوقّع.
-  router.post('/auth/register', registerLimiter, upload.single('avatar'), async (req, res) => {
+  router.post('/auth/register', registerLimiter, upload.single('avatar'), verifyImageMagicBytes, async (req, res) => {
    try {
     const role = clean(req.body.role);
     const name = clean(req.body.name || req.body.full_name || req.body.fullName || req.body.username);
@@ -284,7 +284,7 @@ module.exports = function (deps) {
     res.json({ user });
   });
 
-  router.post('/me/profile', auth, upload.single('avatar'), (req, res) => {
+  router.post('/me/profile', auth, upload.single('avatar'), verifyImageMagicBytes, (req, res) => {
     // [FIX-UPLOAD-01] أي ملف وصل عبر multer ولم يُستخدم فعلياً (رُفض بسبب
     // فشل تحقق آخر، أو لأن الدور ليس "فني") يُحذف فوراً من القرص عند انتهاء
     // الطلب — بغض النظر عن أي مسار Return تم أخذه. هذا يمنع بقاء ملفات

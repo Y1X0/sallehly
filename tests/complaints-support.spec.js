@@ -29,7 +29,7 @@ async function registerAndVerify(request, role, extra = {}) {
     ? await request.post('/api/auth/register', {
         multipart: {
           role, email, phone, password: VALID_PASSWORD, ...extra,
-          avatar: { name: 'avatar.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) },
+          avatar: { name: 'avatar.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
         },
       })
     : await request.post('/api/auth/register', {
