@@ -7,6 +7,7 @@ module.exports = function (deps) {
   const { auth, requireRole, upload } = deps.middleware;
   const { clean, calcRating, notify } = deps.utils;
   const { sendPush } = deps.services;
+  const { requestLimiter } = deps.limiters;
   const router = express.Router();
 
   // [NOTIF-PHASE2B-2] نفس جمهور بث 'new-request-created' بالضبط (technicians-room،
@@ -35,7 +36,11 @@ module.exports = function (deps) {
     for (const userId of userIds) notify(buildPayload(userId));
   });
 
-  router.post('/requests', auth, requireRole('customer'), upload.single('problem_image'), (req, res) => {
+  // [SEC-FIX-REQSPAM-01] راجع DECISIONS.md وmiddleware/security.js —
+  // requestLimiter قبل upload.single عمداً (فحص رخيص يوقف الطلب قبل إنفاق أي
+  // جهد بتحليل جسم multipart)، بنفس ترتيب offerLimiter/messageLimiter بباقي
+  // هذا المشروع.
+  router.post('/requests', auth, requireRole('customer'), requestLimiter, upload.single('problem_image'), (req, res) => {
     const { service, city, area, description, preferred_time } = req.body;
     const lat = req.body.lat ? Number(req.body.lat) : null;
     const lng = req.body.lng ? Number(req.body.lng) : null;

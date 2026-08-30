@@ -128,6 +128,11 @@ test.describe.serial('إنشاء الطلبات وعرضها', () => {
       },
     });
     expect(res.status()).toBe(200);
+    // [SEC-FIX-REQSPAM-01] يثبت أن requestLimiter مربوط فعلياً على هذا المسار
+    // (لا فقط أن ثابته صحيح بالمصدر — ذلك مغطّى بحارس التراجع بـ
+    // security-hardening.spec.js). نفس النمط المُستخدَم أصلاً لـmessageLimiter
+    // بـtests/chat.spec.js.
+    expect(res.headers()['ratelimit-limit']).toBeTruthy();
     const body = await res.json();
     expect(body.request.id).toBeTruthy();
     expect(body.request.status).toBe('بانتظار العروض');
