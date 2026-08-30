@@ -100,6 +100,19 @@ module.exports = function (deps) {
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(req.params.id);
     if (!u) return res.status(404).json({ error: 'المستخدم غير موجود' });
     const newStatus = u.is_active ? 0 : 1;
+    // [SEC-FIX-SUSPENDACTIVE-01] راجع DECISIONS.md — نفس فحص الطلب النشط
+    // الموجود أصلاً بـDELETE /admin/users/:id (سطر ~318) لكنه كان غائباً هنا:
+    // بدونه، إيقاف حساب فني له طلب "تم اختيار عرض"/"قيد التنفيذ"/"بانتظار
+    // تأكيد الدفع" يقفله عن REST فوراً (middleware/auth.js) بلا أي طريقة
+    // لإكمال أو حتى رؤية ذلك الطلب لاحقاً — يبقى طلب العميل عالقاً "قيد
+    // التنفيذ" للأبد إلا بتدخّل يدوي من أدمن آخر. نفس الفحص (customer_id
+    // OR technician_id) يحمي العميل أيضاً لو كان هو من يُوقَف.
+    if (newStatus === 0) {
+      const activeRequest = db.prepare(
+        "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+      ).get(u.id, u.id);
+      if (activeRequest) return res.status(409).json({ error: `لا يمكن إيقاف هذا الحساب — عنده طلب نشط رقم ${activeRequest.id}. أنهِ أو ألغِ الطلب أولاً.` });
+    }
     const reason = clean(req.body.reason || '');
     if (reason.length > 300) return res.status(400).json({ error: 'سبب الإيقاف طويل جداً، الحد الأقصى 300 حرف' });
     if (newStatus === 0) {
@@ -445,9 +458,14 @@ module.exports = function (deps) {
     const bonusVal = Number(bonus || 0);
     const commission = Number(commission_per_order || 2);
     if (!clean(name) || clean(name).length < 2) return res.status(400).json({ error: 'اسم الباقة مطلوب' });
-    if (!amount || amount <= 0) return res.status(400).json({ error: 'قيمة الباقة يجب أن تكون أكبر من صفر' });
-    if (bonusVal < 0) return res.status(400).json({ error: 'البونص لا يمكن أن يكون سالباً' });
-    if (commission < 0) return res.status(400).json({ error: 'العمولة لا يمكن أن تكون سالبة' });
+    // [SEC-FIX-PKGFINITE-01] راجع DECISIONS.md — نفس فحص Number.isFinite
+    // المستخدَم أصلاً بـ/admin/users/:id/balance أعلاه؛ `!amount` وحدها لا
+    // ترفض Infinity (تُقيَّم falsy فقط لـ0/NaN، لا لـInfinity)، وbonus/commission
+    // كانا بلا أي فحص isFinite إطلاقاً فيقبلان Infinity أو NaN (NaN يُخزَّن
+    // NULL بصمت بـbetter-sqlite3، بلا أي خطأ).
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'قيمة الباقة يجب أن تكون أكبر من صفر' });
+    if (!Number.isFinite(bonusVal) || bonusVal < 0) return res.status(400).json({ error: 'البونص لا يمكن أن يكون سالباً' });
+    if (!Number.isFinite(commission) || commission < 0) return res.status(400).json({ error: 'العمولة لا يمكن أن تكون سالبة' });
     const info = db.prepare('INSERT INTO packages(name,amount,bonus,commission_per_order) VALUES(?,?,?,?)').run(clean(name), amount, bonusVal, commission);
     logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'إضافة باقة', targetType: 'package', targetId: info.lastInsertRowid, details: { name: clean(name), amount, bonus: bonusVal, commission } });
     res.json({ package: db.prepare('SELECT * FROM packages WHERE id=?').get(info.lastInsertRowid) });
@@ -470,9 +488,10 @@ module.exports = function (deps) {
     const commission = Number(req.body.commission_per_order ?? req.body.commissionPerOrder ?? 2);
     const isActive = req.body.is_active !== undefined ? (req.body.is_active ? 1 : 0) : pkg.is_active;
     if (!name || name.length < 2) return res.status(400).json({ error: 'اسم الباقة مطلوب' });
-    if (!amount || amount <= 0) return res.status(400).json({ error: 'قيمة الباقة يجب أن تكون أكبر من صفر' });
-    if (bonusVal < 0) return res.status(400).json({ error: 'البونص لا يمكن أن يكون سالباً' });
-    if (commission < 0) return res.status(400).json({ error: 'العمولة لا يمكن أن تكون سالبة' });
+    // [SEC-FIX-PKGFINITE-01] راجع DECISIONS.md وتعليق POST /admin/packages أعلاه.
+    if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'قيمة الباقة يجب أن تكون أكبر من صفر' });
+    if (!Number.isFinite(bonusVal) || bonusVal < 0) return res.status(400).json({ error: 'البونص لا يمكن أن يكون سالباً' });
+    if (!Number.isFinite(commission) || commission < 0) return res.status(400).json({ error: 'العمولة لا يمكن أن تكون سالبة' });
     db.prepare('UPDATE packages SET name=?, amount=?, bonus=?, commission_per_order=?, is_active=? WHERE id=?')
       .run(name, amount, bonusVal, commission, isActive, id);
     logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'تعديل باقة', targetType: 'package', targetId: id, details: { name, amount, bonus: bonusVal, commission, is_active: isActive } });

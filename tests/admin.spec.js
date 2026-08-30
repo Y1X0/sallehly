@@ -296,6 +296,54 @@ test.describe.serial('لوحة الأدمن', () => {
     expect(res.status()).toBe(400);
   });
 
+  // [SEC-FIX-SUSPENDACTIVE-01] راجع DECISIONS.md — قبل هذا الإصلاح، هذا
+  // المسار كان يوقف فنياً (أو عميلاً) له طلب "تم اختيار عرض" بلا أي فحص،
+  // فيُقفَل عن REST فوراً (middleware/auth.js) بلا أي طريقة لإكمال الطلب،
+  // ويبقى الطرف الآخر عالقاً للأبد. DELETE /admin/users/:id يحمل نفس الفحص
+  // أصلاً — هذا الاختبار يثبت أن /toggle صار يطابقه.
+  test('POST /admin/users/:id/toggle — لا يمكن إيقاف فني أو عميل له طلب نشط (تم اختيار عرض)', async ({ request }) => {
+    const busyTech = await registerAndVerify(request, 'technician', {
+      name: 'فني بطلب نشط لاختبار الإيقاف', city: CITY, national_number: uniqueNationalNumber(), services: 'كهربائي', areas: 'القويسمة',
+    });
+    const busyCustomer = await registerAndVerify(request, 'customer', { name: 'عميل بطلب نشط لاختبار الإيقاف', city: CITY });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(busyCustomer.token),
+      form: { service: 'كهربائي', city: CITY, area: 'القويسمة', description: 'طلب لاختبار منع إيقاف حساب نشط' },
+    });
+    expect(createRes.ok()).toBeTruthy();
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(busyTech.token),
+      form: { offer_price: '20', duration: '30 دقيقة' },
+    });
+    expect(offerRes.ok()).toBeTruthy();
+    const offerId = (await offerRes.json()).offers.find((o) => o.technician_id === busyTech.user.id).id;
+
+    const acceptRes = await request.post(`/api/offers/${offerId}/decision`, {
+      headers: authHeader(busyCustomer.token),
+      form: { decision: 'accepted' },
+    });
+    expect(acceptRes.ok()).toBeTruthy();
+
+    // الفني نفسه له الآن طلب "تم اختيار عرض" — إيقافه يجب أن يُرفض
+    const toggleTechRes = await request.post(`/api/admin/users/${busyTech.user.id}/toggle`, { headers: authHeader(adminToken) });
+    expect(toggleTechRes.status()).toBe(409);
+
+    // ونفس الفحص يحمي العميل (customer_id OR technician_id بالاستعلام الواحد)
+    const toggleCustomerRes = await request.post(`/api/admin/users/${busyCustomer.user.id}/toggle`, { headers: authHeader(adminToken) });
+    expect(toggleCustomerRes.status()).toBe(409);
+
+    const checkDb = openTestDb();
+    try {
+      expect(checkDb.prepare('SELECT is_active FROM users WHERE id=?').get(busyTech.user.id).is_active).toBe(1);
+      expect(checkDb.prepare('SELECT is_active FROM users WHERE id=?').get(busyCustomer.user.id).is_active).toBe(1);
+    } finally {
+      checkDb.close();
+    }
+  });
+
   test('POST /admin/users/:id/profile — تعديل الاسم والمدينة', async ({ request }) => {
     const res = await request.post(`/api/admin/users/${technician.user.id}/profile`, {
       headers: authHeader(adminToken),
@@ -398,6 +446,56 @@ test.describe.serial('لوحة الأدمن', () => {
 
     const deleteRes = await request.delete(`/api/admin/packages/${pkg.id}`, { headers: authHeader(adminToken) });
     expect(deleteRes.status()).toBe(200);
+  });
+
+  // [SEC-FIX-PKGFINITE-01] راجع DECISIONS.md — Infinity/NaN كانا يمرّان فحص
+  // `!amount`/`amount < 0` (كلاهما false لـInfinity، وNaN falsy لكن `< 0`
+  // أيضاً false لها) ويُخزَّنان فعلياً: Infinity حرفياً بعمود REAL، وNaN
+  // كـNULL صامت. Number.isFinite يرفض كليهما الآن.
+  test('POST/PUT /admin/packages — Infinity وNaN بـamount/bonus/commission_per_order تُرفض بـ400، لا تُخزَّن أبداً', async ({ request }) => {
+    const badAmountRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      data: { name: `باقة رقم غير منتهٍ ${Date.now()}`, amount: 'Infinity', bonus: 1, commission_per_order: 2 },
+    });
+    expect(badAmountRes.status()).toBe(400);
+
+    const badBonusRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      data: { name: `باقة بونص غير رقمي ${Date.now()}`, amount: 15, bonus: 'abc', commission_per_order: 2 },
+    });
+    expect(badBonusRes.status()).toBe(400);
+
+    const badCommissionRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      data: { name: `باقة عمولة غير منتهية ${Date.now()}`, amount: 15, bonus: 1, commission_per_order: 'Infinity' },
+    });
+    expect(badCommissionRes.status()).toBe(400);
+
+    // نفس الفحوص على مسار التعديل، على باقة سليمة موجودة أصلاً
+    const okCreate = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      form: { name: `باقة سليمة للتعديل ${Date.now()}`, amount: '15', bonus: '1', commission_per_order: '2' },
+    });
+    const pkg = (await okCreate.json()).package;
+
+    const badUpdateRes = await request.put(`/api/admin/packages/${pkg.id}`, {
+      headers: authHeader(adminToken),
+      data: { name: pkg.name, amount: 'Infinity', bonus: 1, commission_per_order: 2 },
+    });
+    expect(badUpdateRes.status()).toBe(400);
+
+    // الباقة تبقى بقيمها الأصلية السليمة — لا Infinity ولا NULL تسرّب لقاعدة البيانات
+    const checkDb = openTestDb();
+    try {
+      const dbRow = checkDb.prepare('SELECT amount, bonus, commission_per_order FROM packages WHERE id=?').get(pkg.id);
+      expect(dbRow.amount).toBe(15);
+      expect(dbRow.bonus).toBe(1);
+      expect(dbRow.commission_per_order).toBe(2);
+    } finally {
+      checkDb.close();
+    }
+
+    await request.delete(`/api/admin/packages/${pkg.id}`, { headers: authHeader(adminToken) });
   });
 
   test('PUT /admin/packages/:id — تعطيل باقة يخفيها من /meta العامة فوراً', async ({ request }) => {

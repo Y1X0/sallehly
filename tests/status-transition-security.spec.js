@@ -154,4 +154,112 @@ test.describe('[SEC-FIX-STATUSFLOW-01] لا إكمال (أو تقدّم حالة
       expect((await res.json()).code).toBe('STATUS_TRANSITION_INVALID');
     }
   });
+
+  test('[SEC-FIX-CANCELREVIVE-01] إلغاء الطلب برفض العرض المعلَّق فوراً — ولا يمكن إحياء الطلب لاحقاً بقبول ذلك العرض', async ({ request }) => {
+    const customer = await registerAndVerify(request, 'customer', { name: 'عميل تجربة الإحياء', city: CITY });
+    const technician = await registerAndVerify(request, 'technician', {
+      name: 'فني تجربة الإحياء', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      form: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب سيُلغى ثم تُحاول إحياؤه بقبول عرض قديم' },
+    });
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(technician.token),
+      form: { offer_price: '20', duration: '30 دقيقة' },
+    });
+    expect(offerRes.ok()).toBeTruthy();
+    const offerId = (await offerRes.json()).offers.find(o => o.technician_id === technician.user.id).id;
+
+    // العميل يُلغي الطلب — العرض لسا 'pending' وقت الإلغاء (لا فحص سابق يمنع هذا)
+    const cancelRes = await request.post(`/api/requests/${requestId}/status`, {
+      headers: authHeader(customer.token),
+      form: { status: 'ملغي' },
+    });
+    expect(cancelRes.ok()).toBeTruthy();
+
+    // [SEC-FIX-CANCELREVIVE-01] الإلغاء نفسه لازم يرفض العرض المعلَّق فوراً —
+    // نتحقق من قاعدة البيانات مباشرة قبل أي محاولة قبول، حتى نثبت أن الإصلاح
+    // الأول (منع الحالة الشاذة من الحدوث أصلاً) يعمل بمعزل عن الفحص الثاني.
+    const midDb = openTestDb();
+    try {
+      const offerAfterCancel = midDb.prepare('SELECT status FROM offers WHERE id=?').get(offerId);
+      expect(offerAfterCancel.status).toBe('rejected');
+      const reqAfterCancel = midDb.prepare('SELECT status, cancelled_by, cancelled_at FROM requests WHERE id=?').get(requestId);
+      expect(reqAfterCancel.status).toBe('ملغي');
+      expect(reqAfterCancel.cancelled_by).toBe(customer.user.id);
+      expect(reqAfterCancel.cancelled_at).not.toBeNull();
+    } finally {
+      midDb.close();
+    }
+
+    // محاولة الإحياء الفعلية: قبول نفس العرض (الآن 'rejected' لا 'pending')
+    // بعد الإلغاء — يجب أن تُرفض بفحص "العرض لسا pending" أصلاً بهذه النقطة.
+    const decisionRes = await request.post(`/api/offers/${offerId}/decision`, {
+      headers: authHeader(customer.token),
+      form: { decision: 'accepted' },
+    });
+    expect(decisionRes.status()).toBe(400);
+    expect((await decisionRes.json()).code).toBe('OFFER_DECISION_ALREADY_MADE');
+
+    const checkDb = openTestDb();
+    try {
+      const dbRequest = checkDb.prepare('SELECT status, technician_id FROM requests WHERE id=?').get(requestId);
+      expect(dbRequest.status).toBe('ملغي');
+      expect(dbRequest.technician_id).toBeNull();
+    } finally {
+      checkDb.close();
+    }
+  });
+
+  test('[SEC-FIX-CANCELREVIVE-01] لو نجح عرض بالبقاء pending رغم إلغاء الطلب (طبقة دفاع ثانية)، قبوله يُرفض أيضاً بفحص حالة الطلب مباشرة', async ({ request }) => {
+    const customer = await registerAndVerify(request, 'customer', { name: 'عميل تجربة الطبقة الثانية', city: CITY });
+    const technician = await registerAndVerify(request, 'technician', {
+      name: 'فني تجربة الطبقة الثانية', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      form: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب لاختبار الطبقة الدفاعية الثانية مباشرة' },
+    });
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(technician.token),
+      form: { offer_price: '20', duration: '30 دقيقة' },
+    });
+    const offerId = (await offerRes.json()).offers.find(o => o.technician_id === technician.user.id).id;
+
+    // إلغاء الطلب مباشرة بقاعدة البيانات (يحاكي أي مسار مستقبلي قد ينسى نفس
+    // تعديل هذا الإصلاح — العرض يبقى 'pending' عمداً هنا) للتأكد من أن فحص
+    // request_status بمسار /offers/:id/decision نفسه (الطبقة الثانية، لا
+    // اعتماداً فقط على أن مسار الإلغاء تصرّف بشكل صحيح) يمنع الإحياء بمفرده.
+    const rawDb = openTestDb();
+    try {
+      rawDb.prepare("UPDATE requests SET status='ملغي' WHERE id=?").run(requestId);
+    } finally {
+      rawDb.close();
+    }
+
+    const decisionRes = await request.post(`/api/offers/${offerId}/decision`, {
+      headers: authHeader(customer.token),
+      form: { decision: 'accepted' },
+    });
+    expect(decisionRes.status()).toBe(409);
+    expect((await decisionRes.json()).code).toBe('REQUEST_NO_LONGER_OPEN');
+
+    const checkDb = openTestDb();
+    try {
+      const dbRequest = checkDb.prepare('SELECT status, technician_id FROM requests WHERE id=?').get(requestId);
+      expect(dbRequest.status).toBe('ملغي');
+      expect(dbRequest.technician_id).toBeNull();
+      const dbOffer = checkDb.prepare('SELECT status FROM offers WHERE id=?').get(offerId);
+      expect(dbOffer.status).toBe('pending'); // لم يُقبَل — رُفض القرار قبل أي كتابة
+    } finally {
+      checkDb.close();
+    }
+  });
 });
