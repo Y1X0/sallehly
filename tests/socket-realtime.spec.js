@@ -246,3 +246,33 @@ test.describe('[SEC-FIX-CHATSCOPE-02] فني بعرض pending لا ينضم لغ
     techSocket.close();
   });
 });
+
+test.describe('[SEC-FIX-SOCKETDISCONNECT-01] حذف حساب من الأدمن يقطع أي اتصال Socket.IO حيّ فوراً', () => {
+  // [SEC-FIX-SOCKETDISCONNECT-01] راجع DECISIONS.md — قبل هذا الإصلاح،
+  // DELETE /admin/users/:id كان يحظر REST فوراً (is_active/token_version)
+  // لكن يترك أي اتصال Socket.IO حيّ وقت الحذف يعمل بلا انقطاع، بعكس
+  // /toggle و/role اللذين يقطعانه صراحة.
+  test('عميل متصل فعلياً بالسوكت وقت حذف حسابه من الأدمن يُقطَع اتصاله خلال ثوانٍ', async ({ request, baseURL }) => {
+    const adminRes = await request.post('/api/auth/login', { form: { email: 'admin-test@example.com', password: 'AdminTestPass123' } });
+    expect(adminRes.status()).toBe(200);
+    const adminToken = (await adminRes.json()).token;
+
+    const customer = await registerAndVerify(request, 'customer', { name: 'عميل لاختبار قطع السوكت عند الحذف', city: CITY });
+
+    const socket = connectSocket(baseURL, customer.token);
+    await waitForConnect(socket);
+
+    const disconnectPromise = new Promise((resolve) => {
+      socket.once('disconnect', resolve);
+      setTimeout(() => resolve(null), 5000);
+    });
+
+    const deleteRes = await request.delete(`/api/admin/users/${customer.user.id}`, { headers: authHeader(adminToken) });
+    expect(deleteRes.status()).toBe(200);
+
+    const disconnectReason = await disconnectPromise;
+    expect(disconnectReason, 'السوكت بقي متصلاً بعد حذف الحساب من الأدمن — لم يُقطَع إطلاقاً').not.toBeNull();
+
+    socket.close();
+  });
+});

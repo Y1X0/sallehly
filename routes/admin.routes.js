@@ -377,6 +377,11 @@ module.exports = function (deps) {
       console.error('user deletion failed:', e.message);
       return res.status(500).json({ error: 'تعذر حذف المستخدم، حاول لاحقاً' });
     }
+    // [SEC-FIX-SOCKETDISCONNECT-01] راجع DECISIONS.md — بعكس /toggle (SEC-FIX-10)
+    // و/role (SEC-FIX-09) بنفس الملف، هذا المسار كان يترك أي اتصال Socket.IO
+    // حيّ وقت الحذف يعمل بلا انقطاع (REST محظور فوراً عبر is_active/token_version،
+    // لكن القناة الحية لا) حتى انقطاع طبيعي أو إعادة اتصال لاحقة.
+    try { io.in(`user-${id}`).disconnectSockets(true); } catch (e) {}
     logAudit({
       adminId: req.user.id, actorName: req.user.name,
       action: 'حذف مستخدم نهائياً', targetType: 'user', targetId: id,
