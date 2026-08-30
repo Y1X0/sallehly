@@ -5,7 +5,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole } = deps.middleware;
-  const { clean, notify } = deps.utils;
+  const { clean, notify, maskCoordsUnlessConfirmedTechnician } = deps.utils;
   const { sendPush } = deps.services;
   const { offerLimiter } = deps.limiters;
   const router = express.Router();
@@ -107,7 +107,12 @@ module.exports = function (deps) {
       requestId: r.id
     });
 
-    res.json({ request, offers });
+    // [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — technician_id لا يزال NULL
+    // بهذه اللحظة بالذات (العرض لسا pending، لم يُقبَل بعد) — الفني المُقدِّم
+    // هنا ليس مؤكَّداً بعد بأي حال، فيُقنَّع دائماً بغض النظر عن الفحص. نسخة
+    // مقنَّعة منفصلة للاستجابة فقط — request الأصلية تبقى كاملة للبث أعلاه
+    // (safeEmit/customer/admin، يستحقون الإحداثيات الكاملة).
+    res.json({ request: maskCoordsUnlessConfirmedTechnician(request, req.user.id), offers });
   });
 
   router.get('/requests/:id/offers', auth, (req, res) => {
@@ -128,7 +133,12 @@ module.exports = function (deps) {
     let rows = db.prepare(`SELECT o.*, u.name technician_name, u.city technician_city, u.areas technician_areas, u.avatar_url, u.rating_avg, u.rating_count, u.completed_jobs
       FROM offers o JOIN users u ON u.id=o.technician_id WHERE o.request_id=? ORDER BY CASE o.status WHEN 'accepted' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, o.id DESC`).all(r.id);
     if (req.user.role === 'technician' && r.customer_id !== req.user.id && r.technician_id !== req.user.id) rows = rows.filter(o => o.technician_id === req.user.id);
-    res.json({ offers: rows, request: r });
+    // [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — allowed أعلاه يسمح لأي فني
+    // له عرض (pending أو مرفوض، لا مقبولاً بالضرورة) بالوصول لهذا الـendpoint
+    // — لا يعني ذلك أنه يستحق الإحداثيات الدقيقة. لا أثر على العميل/الأدمن
+    // (technician_id لا يطابق معرّفهما أصلاً فالدالة لا تُستدعى لهما).
+    const request = req.user.role === 'technician' ? maskCoordsUnlessConfirmedTechnician(r, req.user.id) : r;
+    res.json({ offers: rows, request });
   });
 
   router.post('/offers/:id/decision', auth, requireRole('customer'), (req, res) => {
@@ -181,7 +191,12 @@ module.exports = function (deps) {
     if (request.technician_id) io.to(`user-${request.technician_id}`).emit('requests-updated', { request });
     // جميع الفنيين يرون قائمة الطلبات الجديدة؛ عند قبول عرض يجب أن يصلهم الحدث
     // كي يختفي الطلب فوراً من القائمة ويتحدّث العداد بدون تحديث يدوي.
-    io.to('technicians-room').emit('requests-updated', { request });
+    // [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — بث لكل الفنيين على المنصة
+    // (لا فني واحد مستهدَف) كان يحمل الإحداثيات الدقيقة كاملة لكل من بالغرفة،
+    // بغض النظر عن علاقته الفعلية (أو عدمها) بهذا الطلب. تمريره ثابت `null`
+    // كمعرّف الفني عمداً — هذا البث الجماعي لا يستهدف فنياً بعينه، فلا مطابقة
+    // technician_id ممكنة أصلاً هنا (بعكس الاستدعاءات الأخرى بهذا الملف).
+    io.to('technicians-room').emit('requests-updated', { request: maskCoordsUnlessConfirmedTechnician(request, null) });
     io.to('admin-room').emit('requests-updated', { request });
     if (decision === 'accepted') {
       io.to(`user-${offer.technician_id}`).emit('offer-accepted', {

@@ -480,3 +480,101 @@ test.describe('[FIX-DEADFIELD-02] technician_id بجسم POST /requests أُزي
     expect(offerRes.status()).toBe(200);
   });
 });
+
+// [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — قرار منتج: فني قدّم عرضاً بس لسا
+// ما انقبل (أو يتصفح فقط بلا أي عرض) يشوف المدينة والمنطقة فقط، لا إحداثيات
+// lat/lng الدقيقة لبيت الزبون. الإحداثيات الكاملة تظهر فقط بعد قبول عرضه
+// فعلياً. يغطي هذا describe كل نقطة كانت تُعيد بيانات الطلب لفني: GET
+// /requests (تصفّح)، استجابة POST /requests/:id/offer، وGET /requests/:id/offers.
+test.describe.serial('[SEC-FIX-COORDMASK-01] الإحداثيات الدقيقة تُخفى عن الفني قبل قبول عرضه', () => {
+  let customer;
+  let bidder;
+  let requestId;
+  const LAT = 31.9539;
+  const LNG = 35.9106;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار إخفاء الإحداثيات', city: CITY } });
+    bidder = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني مزايد لاختبار إخفاء الإحداثيات', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة' },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ لاختبار إخفاء الإحداثيات الدقيقة', lat: LAT, lng: LNG },
+    });
+    requestId = (await createRes.json()).request.id;
+
+    await request.dispose();
+  });
+
+  test('GET /requests — الفني يتصفّح الطلب قبل تقديم أي عرض: lat/lng مخفيّان (null)، المدينة/المنطقة ظاهرتان', async ({ request }) => {
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${bidder.token}` } });
+    const row = (await res.json()).requests.find((r) => r.id === requestId);
+    expect(row).toBeTruthy();
+    expect(row.lat).toBeNull();
+    expect(row.lng).toBeNull();
+    expect(row.city).toBe(CITY);
+    expect(row.area).toBe('القويسمة');
+  });
+
+  test('POST /requests/:id/offer — استجابة تقديم العرض نفسها: lat/lng مخفيّان رغم أن العرض قُبِل بالخادم', async ({ request }) => {
+    const res = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: { Authorization: `Bearer ${bidder.token}` },
+      form: { offer_price: '20', duration: 'فوري' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.request.lat).toBeNull();
+    expect(body.request.lng).toBeNull();
+  });
+
+  test('GET /requests — بعد تقديم عرض pending (لم يُقبَل بعد): lat/lng تبقى مخفيّة', async ({ request }) => {
+    const res = await request.get('/api/requests', { headers: { Authorization: `Bearer ${bidder.token}` } });
+    const row = (await res.json()).requests.find((r) => r.id === requestId);
+    expect(row.lat).toBeNull();
+    expect(row.lng).toBeNull();
+  });
+
+  test('GET /requests/:id/offers — فني بعرض pending (لم يُقبَل بعد): lat/lng مخفيّان بحقل request المُرجَع', async ({ request }) => {
+    const res = await request.get(`/api/requests/${requestId}/offers`, { headers: { Authorization: `Bearer ${bidder.token}` } });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.request.lat).toBeNull();
+    expect(body.request.lng).toBeNull();
+  });
+
+  test('بعد قبول العميل للعرض: الفني المؤكَّد يرى الإحداثيات الكاملة الحقيقية بكل النقاط الثلاث', async ({ request }) => {
+    const offersRes = await request.get(`/api/requests/${requestId}/offers`, { headers: { Authorization: `Bearer ${customer.token}` } });
+    const offerId = (await offersRes.json()).offers.find((o) => o.technician_id === bidder.user.id).id;
+
+    const decisionRes = await request.post(`/api/offers/${offerId}/decision`, {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      form: { decision: 'accepted' },
+    });
+    expect(decisionRes.status()).toBe(200);
+
+    const listRes = await request.get('/api/requests', { headers: { Authorization: `Bearer ${bidder.token}` } });
+    const row = (await listRes.json()).requests.find((r) => r.id === requestId);
+    expect(row.lat).toBe(LAT);
+    expect(row.lng).toBe(LNG);
+
+    const offersAfterRes = await request.get(`/api/requests/${requestId}/offers`, { headers: { Authorization: `Bearer ${bidder.token}` } });
+    const bodyAfter = await offersAfterRes.json();
+    expect(bodyAfter.request.lat).toBe(LAT);
+    expect(bodyAfter.request.lng).toBe(LNG);
+  });
+
+  // فرع العميل بـGET /requests (routes/requests.routes.js) استعلام منفصل
+  // تماماً عن فرع الفني الذي عدّله هذا الإصلاح — يبقى بلا أي تعديل، ويثبت
+  // هذا الاختبار أنه لم يتأثر: العميل يرى إحداثياته الحقيقية دائماً.
+  test('العميل صاحب الطلب يرى الإحداثيات الكاملة دائماً، بغض النظر عن حالة قبول أي عرض', async ({ request }) => {
+    const customerRes = await request.get('/api/requests', { headers: { Authorization: `Bearer ${customer.token}` } });
+    const customerRow = (await customerRes.json()).requests.find((r) => r.id === requestId);
+    expect(customerRow.lat).toBe(LAT);
+    expect(customerRow.lng).toBe(LNG);
+  });
+});

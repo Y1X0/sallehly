@@ -276,3 +276,55 @@ test.describe('[SEC-FIX-SOCKETDISCONNECT-01] حذف حساب من الأدمن �
     socket.close();
   });
 });
+
+// [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — POST /offers/:id/decision يبث
+// requests-updated لكل الفنيين المتصلين (technicians-room، ينضمّون تلقائياً
+// عند الاتصال — راجع services/socket.js) حتى يختفي/يظهر الطلب من قوائمهم
+// فوراً. هذا البث كان يحمل lat/lng الحقيقية لكل من بالغرفة، بغض النظر عن
+// علاقته الفعلية (أو عدمها) بالطلب — فني غريب تماماً متصل بالسوكت فقط.
+test.describe('[SEC-FIX-COORDMASK-01] بث requests-updated لكل الفنيين لا يحمل إحداثيات دقيقة', () => {
+  test('فني غريب متصل بالسوكت (بلا أي علاقة بالطلب) يستقبل requests-updated عند قبول عرض فني آخر — بلا lat/lng', async ({ request, baseURL }) => {
+    const customer = await registerAndVerify(request, 'customer', { name: 'عميل اختبار بث الإحداثيات', city: CITY });
+    const bidder = await registerAndVerify(request, 'technician', {
+      name: 'فني مزايد — بث الإحداثيات', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
+    });
+    const bystander = await registerAndVerify(request, 'technician', {
+      name: 'فني غريب متفرّج — بث الإحداثيات', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'صويلح',
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب لاختبار عدم تسريب الإحداثيات ببث الفنيين', lat: 32.0728, lng: 35.8825 },
+    });
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: authHeader(bidder.token), form: { offer_price: '25', duration: 'فوري' },
+    });
+    const offerId = (await offerRes.json()).offers[0].id;
+
+    const bystanderSocket = connectSocket(baseURL, bystander.token);
+    await waitForConnect(bystanderSocket);
+    // لا join-request هنا عمداً — الانضمام لـtechnicians-room تلقائي عند
+    // الاتصال لأي حساب فني (services/socket.js)، بلا حاجة لأي إجراء إضافي.
+
+    const requestsUpdatedPromise = waitForEvent(bystanderSocket, 'requests-updated', 3000);
+
+    const decisionRes = await request.post(`/api/offers/${offerId}/decision`, {
+      headers: authHeader(customer.token), form: { decision: 'accepted' },
+    });
+    expect(decisionRes.status()).toBe(200);
+
+    const received = await requestsUpdatedPromise;
+    expect(received, 'الفني الغريب لم يستقبل requests-updated إطلاقاً').not.toBeNull();
+    expect(received.request.id).toBe(requestId);
+    expect(received.request.lat).toBeNull();
+    expect(received.request.lng).toBeNull();
+    // بقية الحقول (المدينة، الحالة) يجب أن تبقى ظاهرة — التقنيع مقصور على
+    // الإحداثيات فقط، لا حجب الحدث بأكمله.
+    expect(received.request.city).toBe(CITY);
+    expect(received.request.status).toBe('تم اختيار عرض');
+
+    bystanderSocket.close();
+  });
+});

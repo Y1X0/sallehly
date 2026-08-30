@@ -42,4 +42,21 @@ function canAccessRequestChat(user, request) {
     (request.technician_id != null && Number(user.id) === Number(request.technician_id));
 }
 
-module.exports = { escapeLike, hasSafeExt, safeUploadName, clean, userPublic, canAccessRequestChat };
+// [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — قرار منتج: فني قدّم عرضاً (حتى
+// لو لم يُقبَل بعد، أو يتصفح فقط بلا أي عرض) يرى مدينة/منطقة الطلب فقط، لا
+// إحداثيات lat/lng الدقيقة لبيت الزبون — تلك تظهر فقط بعد أن يصبح الفني
+// المؤكَّد فعلياً (عرضه مقبول، request.technician_id يطابق معرّفه). دالة صرفة
+// واحدة تُستدعى من كل نقطة تُعيد بيانات طلب لفني، بدل تكرار نفس الشرط يدوياً
+// بكل مكان — نفس درس SEC-FIX-CHATSCOPE-03 بالضبط (نسخة مكرَّرة يدوياً انحرفت
+// مرتين سابقاً لأن تعديل واحدة لا يضمن تعديل الأخرى). لا تُستدعى إطلاقاً لعميل/
+// أدمن (يرون الإحداثيات دائماً) — الاستدعاء نفسه محصور على فروع الفني فقط،
+// فالدالة لا تحتاج معرفة دور المُستدعي. تُعيد نسخة سطحية جديدة (لا تُعدِّل
+// الكائن الأصلي) — الكائن المصدر قد يُستخدَم لبث/استجابات أخرى لأطراف تستحق
+// رؤية الإحداثيات الكاملة (العميل، الفني المؤكَّد، الأدمن) بنفس اللحظة.
+function maskCoordsUnlessConfirmedTechnician(request, technicianId) {
+  if (!request) return request;
+  if (request.technician_id != null && Number(request.technician_id) === Number(technicianId)) return request;
+  return { ...request, lat: null, lng: null };
+}
+
+module.exports = { escapeLike, hasSafeExt, safeUploadName, clean, userPublic, canAccessRequestChat, maskCoordsUnlessConfirmedTechnician };

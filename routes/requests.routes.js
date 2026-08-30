@@ -5,7 +5,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, upload, verifyImageMagicBytes } = deps.middleware;
-  const { clean, calcRating, notify } = deps.utils;
+  const { clean, calcRating, notify, maskCoordsUnlessConfirmedTechnician } = deps.utils;
   const { sendPush } = deps.services;
   const { requestLimiter } = deps.limiters;
   const router = express.Router();
@@ -175,9 +175,15 @@ module.exports = function (deps) {
       }
       // LEFT JOIN يرجّع null صراحة لغياب العرض؛ السلوك القديم كان يحذف
       // المفتاح كلياً بهذه الحالة بدل تركه null — نحافظ على نفس شكل الرد.
-      for (const r of rows) {
+      // [SEC-FIX-COORDMASK-01] راجع DECISIONS.md — الشرط WHERE أعلاه يجمع
+      // فرعين مختلفين تماماً بنفس النتيجة: طلبات الفني المؤكَّد (r.technician_id
+      // = معرّفه، يستحق الإحداثيات الكاملة) وطلبات يتصفّحها فقط أو قدّم عرضاً
+      // معلَّقاً عليها (r.status ضمن الحالتين المفتوحتين، لا يستحق الإحداثيات
+      // الدقيقة بعد) — maskCoordsUnlessConfirmedTechnician تفرّق بينهما لكل صف.
+      rows = rows.map(r => {
         if (r._myOfferId == null) delete r._myOfferId;
-      }
+        return maskCoordsUnlessConfirmedTechnician(r, req.user.id);
+      });
     }
     res.json(total !== undefined ? { requests: rows, total } : { requests: rows });
   });
