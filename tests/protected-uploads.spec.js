@@ -1,9 +1,7 @@
 // tests/protected-uploads.spec.js
-// يغطي routes/protected-uploads.routes.js — أول ثلاث خطوات (avatars/,
-// payments/, وصور الشات ضمن requests/) من [SEC-FIX-UPLOADS-01].
-// problem_image_url (بنفس مجلد requests/) وaudios/ لسا غير مُغطَّاين — قاعدة
-// صلاحية problem_image_url مختلفة عن صور الشات (راجع DECISIONS.md)، وaudios/
-// خطوة منفصلة تحتاج تحقيقاً فنياً أولاً.
+// يغطي routes/protected-uploads.routes.js بالكامل — avatars/, payments/,
+// صور الشات وproblem_image_url ضمن requests/ ([SEC-FIX-UPLOADS-01])، وaudios/
+// (رسائل الشات الصوتية، [SEC-FIX-AUDIOAUTH-01]).
 
 const { test, expect } = require('@playwright/test');
 const { getPendingOtp } = require('./helpers/db');
@@ -145,13 +143,6 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/avatars و/uploads/payments 
     expect([400, 404]).toContain(res.status());
   });
 
-  test('GET /uploads/audios/ — لسا بلا مصادقة (خطوة متبقية من نفس الإصلاح، تحتاج تحقيقاً فنياً أولاً)', async ({ request }) => {
-    // لا يمر بأي راوت محمي حالياً، فلا يوجد أي رفض 401 هون بغضّ النظر عن وجود
-    // الملف من عدمه (ملف غير موجود يصل catch-all الـSPA بـserver.js فيرجع
-    // index.html بحالة 200 — هذا سلوك عام للتطبيق كله، لا علاقة له بهذا الإصلاح).
-    const res = await request.get('/uploads/audios/definitely-does-not-exist.wav');
-    expect(res.status()).not.toBe(401);
-  });
 });
 
 test.describe.serial('[SEC-FIX-UPLOADS-01] /uploads/requests — صور الشات وصور المشكلة (problem_image_url) وراء مصادقة', () => {
@@ -344,5 +335,104 @@ test.describe.serial('[SEC-FIX-UPLOADS-01] problem_image_url — فني يتصف
   test('فني بمدينة/منطقة مختلفة كلياً — يُمنع (403)', async ({ request }) => {
     const res = await request.get(browsableProblemImageUrl, { headers: authHeader(wrongCityTech.token) });
     expect(res.status()).toBe(403);
+  });
+});
+
+// [SEC-FIX-AUDIOAUTH-01] راجع DECISIONS.md — لا يوجد نوع ثانٍ بمجلد audios/
+// (بعكس requests/ اللي فيها صور شات وproblem_image_url معاً)، فقاعدة الصلاحية
+// هون واحدة فقط: نفس قاعدة صور الشات بالضبط (canAccessRequestChat). لا حالة
+// "تصفّح فني" هون — لا يوجد ملف صوتي غير منتمٍ لمحادثة أصلاً.
+test.describe.serial('[SEC-FIX-AUDIOAUTH-01] /uploads/audios — رسائل الشات الصوتية وراء مصادقة', () => {
+  let customer, technicianA, technicianB, adminToken;
+  let acceptedRequest, chatAudioUrl;
+
+  async function registerAndVerify(request, { role, extra = {}, multipart = null }) {
+    const email = uniqueEmail(role);
+    const phone = uniquePhone();
+    const registerRes = multipart
+      ? await request.post('/api/auth/register', { multipart: { role, email, phone, password: VALID_PASSWORD, ...extra, ...multipart } })
+      : await request.post('/api/auth/register', { form: { role, email, phone, password: VALID_PASSWORD, ...extra } });
+    if (!registerRes.ok()) throw new Error(`فشل تسجيل (${role}): ${registerRes.status()} ${await registerRes.text()}`);
+    const otp = getPendingOtp(email);
+    const res = await request.post('/api/auth/verify-otp', { form: { email, otp } });
+    if (!res.ok()) throw new Error(`فشل verify-otp (${role}): ${res.status()} ${await res.text()}`);
+    const body = await res.json();
+    return { email, phone, token: body.token, user: body.user };
+  }
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار صوت', city: CITY } });
+    technicianA = await registerAndVerifyTechnician(request, 'audioA');
+    technicianB = await registerAndVerifyTechnician(request, 'audioB');
+    adminToken = await loginAdmin(request);
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      multipart: {
+        service: 'كهربائي', city: CITY, area: 'القويسمة',
+        description: 'وصف تجريبي كافٍ للطول لاختبار رفع تسجيل صوتي محمي',
+      },
+    });
+    acceptedRequest = (await createRes.json()).request;
+
+    // تأكيد الفني A كطرف رسمي بالمحادثة (نفس نمط describe الصور أعلاه بالضبط)
+    await request.post(`/api/requests/${acceptedRequest.id}/offer`, {
+      headers: authHeader(technicianA.token),
+      form: { offer_price: '10', duration: 'خلال ساعة' },
+    });
+    const offersRes = await request.get(`/api/requests/${acceptedRequest.id}/offers`, { headers: authHeader(customer.token) });
+    const offerId = (await offersRes.json()).offers[0].id;
+    await request.post(`/api/offers/${offerId}/decision`, { headers: authHeader(customer.token), form: { decision: 'accepted' } });
+
+    const audioRes = await request.post(`/api/requests/${acceptedRequest.id}/audio`, {
+      headers: authHeader(customer.token),
+      multipart: {
+        audio: { name: 'voice.wav', mimeType: 'audio/wav', buffer: Buffer.from([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0]) },
+        duration: '5',
+      },
+    });
+    if (!audioRes.ok()) throw new Error(`فشل رفع الصوت: ${audioRes.status()} ${await audioRes.text()}`);
+    const messages = (await audioRes.json()).messages;
+    const audioMessage = messages.find((m) => m.body.startsWith('[audio]'));
+    chatAudioUrl = audioMessage.body.replace('[audio]', '').split('|')[0];
+
+    await request.dispose();
+  });
+
+  test('رسالة صوتية — يرفض بلا توكن', async ({ request }) => {
+    const res = await request.get(chatAudioUrl);
+    expect(res.status()).toBe(401);
+  });
+
+  test('رسالة صوتية — العميل صاحب الطلب يقدر يسمعها', async ({ request }) => {
+    const res = await request.get(chatAudioUrl, { headers: authHeader(customer.token) });
+    expect(res.status()).toBe(200);
+  });
+
+  test('رسالة صوتية — الفني المؤكَّد بالطلب يقدر يسمعها', async ({ request }) => {
+    const res = await request.get(chatAudioUrl, { headers: authHeader(technicianA.token) });
+    expect(res.status()).toBe(200);
+  });
+
+  test('رسالة صوتية — فني آخر لا علاقة له بالطلب يُمنع (403)', async ({ request }) => {
+    const res = await request.get(chatAudioUrl, { headers: authHeader(technicianB.token) });
+    expect(res.status()).toBe(403);
+  });
+
+  test('رسالة صوتية — الأدمن يقدر يسمع أي رسالة صوتية', async ({ request }) => {
+    const res = await request.get(chatAudioUrl, { headers: authHeader(adminToken) });
+    expect(res.status()).toBe(200);
+  });
+
+  test('رسالة صوتية — ملف غير مرتبط بأي رسالة يرجع 404 (ليس 403)، بلا تسريب وجوده من عدمه', async ({ request }) => {
+    const res = await request.get('/uploads/audios/definitely-does-not-exist.wav', { headers: authHeader(customer.token) });
+    expect(res.status()).toBe(404);
+  });
+
+  test('رسالة صوتية — اسم ملف يحاول اجتياز مسار (path traversal) يُرفض بـ400 قبل أي وصول للقرص', async ({ request }) => {
+    const res = await request.get('/uploads/audios/..%2F..%2Fserver.js', { headers: authHeader(adminToken) });
+    expect([400, 404]).toContain(res.status());
   });
 });

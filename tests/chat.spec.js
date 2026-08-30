@@ -373,9 +373,13 @@ test.describe.serial('الدردشة على الطلبات', () => {
   });
 
   // [FIX-AUDIODUR-01] المدة المُرسَلة مع التسجيل تُخزَّن وتُرجَع ضمن body،
-  // والرابط المُرجَع يبقى قابلاً للجلب فعلياً رغم إضافة '|<duration>' له
-  // (نفس فحص "الرابط الحقيقي يعمل" المُطبَّق أعلاه على الصور).
-  test('POST /requests/:id/audio — المدة المُرسَلة تُخزَّن وتُرجَع، والرابط يبقى صالحاً', async ({ request }) => {
+  // والرابط المُرجَع يبقى قابلاً للجلب فعلياً (بتوكن مصادَق) رغم إضافة
+  // '|<duration>' له (نفس فحص "الرابط الحقيقي يعمل" المُطبَّق أعلاه على
+  // الصور). [SEC-FIX-AUDIOAUTH-01] راجع DECISIONS.md — الرابط أصبح محمياً
+  // بمصادقة حقيقية (routes/protected-uploads.routes.js)، فالجلب هون يمرّر
+  // توكن العميل نفسه؛ تغطية رفض الجلب بلا توكن/بتوكن طرف آخر موجودة بالكامل
+  // بـtests/protected-uploads.spec.js.
+  test('POST /requests/:id/audio — المدة المُرسَلة تُخزَّن وتُرجَع، والرابط يبقى صالحاً (بمصادقة)', async ({ request }) => {
     const uploadRes = await request.post(`/api/requests/${acceptedRequest.id}/audio`, {
       headers: authHeader(customer.token),
       multipart: {
@@ -392,7 +396,7 @@ test.describe.serial('الدردشة على الطلبات', () => {
     const audioUrl = audioMessage.body.replace('[audio]', '').split('|')[0];
     expect(audioUrl).toMatch(/^\/uploads\/audios\//);
 
-    const fetchRes = await request.get(audioUrl);
+    const fetchRes = await request.get(audioUrl, { headers: authHeader(customer.token) });
     expect(fetchRes.status()).toBe(200);
   });
 
