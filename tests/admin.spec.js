@@ -400,6 +400,56 @@ test.describe.serial('لوحة الأدمن', () => {
     expect(deleteRes.status()).toBe(200);
   });
 
+  // [SEC-FIX-PKGFINITE-01] راجع DECISIONS.md — Infinity/NaN كانا يمرّان فحص
+  // `!amount`/`amount < 0` (كلاهما false لـInfinity، وNaN falsy لكن `< 0`
+  // أيضاً false لها) ويُخزَّنان فعلياً: Infinity حرفياً بعمود REAL، وNaN
+  // كـNULL صامت. Number.isFinite يرفض كليهما الآن.
+  test('POST/PUT /admin/packages — Infinity وNaN بـamount/bonus/commission_per_order تُرفض بـ400، لا تُخزَّن أبداً', async ({ request }) => {
+    const badAmountRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      data: { name: `باقة رقم غير منتهٍ ${Date.now()}`, amount: 'Infinity', bonus: 1, commission_per_order: 2 },
+    });
+    expect(badAmountRes.status()).toBe(400);
+
+    const badBonusRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      data: { name: `باقة بونص غير رقمي ${Date.now()}`, amount: 15, bonus: 'abc', commission_per_order: 2 },
+    });
+    expect(badBonusRes.status()).toBe(400);
+
+    const badCommissionRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      data: { name: `باقة عمولة غير منتهية ${Date.now()}`, amount: 15, bonus: 1, commission_per_order: 'Infinity' },
+    });
+    expect(badCommissionRes.status()).toBe(400);
+
+    // نفس الفحوص على مسار التعديل، على باقة سليمة موجودة أصلاً
+    const okCreate = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      form: { name: `باقة سليمة للتعديل ${Date.now()}`, amount: '15', bonus: '1', commission_per_order: '2' },
+    });
+    const pkg = (await okCreate.json()).package;
+
+    const badUpdateRes = await request.put(`/api/admin/packages/${pkg.id}`, {
+      headers: authHeader(adminToken),
+      data: { name: pkg.name, amount: 'Infinity', bonus: 1, commission_per_order: 2 },
+    });
+    expect(badUpdateRes.status()).toBe(400);
+
+    // الباقة تبقى بقيمها الأصلية السليمة — لا Infinity ولا NULL تسرّب لقاعدة البيانات
+    const checkDb = openTestDb();
+    try {
+      const dbRow = checkDb.prepare('SELECT amount, bonus, commission_per_order FROM packages WHERE id=?').get(pkg.id);
+      expect(dbRow.amount).toBe(15);
+      expect(dbRow.bonus).toBe(1);
+      expect(dbRow.commission_per_order).toBe(2);
+    } finally {
+      checkDb.close();
+    }
+
+    await request.delete(`/api/admin/packages/${pkg.id}`, { headers: authHeader(adminToken) });
+  });
+
   test('PUT /admin/packages/:id — تعطيل باقة يخفيها من /meta العامة فوراً', async ({ request }) => {
     const createRes = await request.post('/api/admin/packages', {
       headers: authHeader(adminToken),
