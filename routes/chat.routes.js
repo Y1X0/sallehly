@@ -34,8 +34,29 @@ function chatViolationReason(body) {
   // Internal app payloads are allowed: location and audio do not reveal phone/WhatsApp.
   if (LOCATION_BODY_RE.test(rawBody)) return '';
   if (/^\[audio\]\/uploads\/audios\/[A-Za-z0-9_.-]+$/.test(rawBody)) return '';
-  const original = rawBody;
-  const lower = String(body || '').toLowerCase()
+  // [SEC-FIX-INVISIBLECHARS-01] راجع DECISIONS.md — إدراج حرف Unicode غير
+  // مرئي (مثل U+200B، مسافة بعرض صفر) بين أرقام رقم الهاتف يفكّك "مقطع
+  // الأرقام المتصل" الذي يعتمد عليه الفحص أدناه (كل رقم يصير مقطعاً منفصلاً
+  // بطول 1، لا يصل أبداً لعتبة 10 خانات)، بلا أي أثر مرئي للطرف المستقبِل —
+  // الحرف نفسه لا يُعرَض إطلاقاً. نفس الحيلة تفكّك أيضاً كلمات المنصات
+  // ("واتساب"/"whatsapp") المفحوصة أدناه. الحل: إزالة كل حروف Unicode غير
+  // المرئية المعروفة (مسافات بعرض صفر، علامات اتجاه النص bidi — بما فيها
+  // ARABIC LETTER MARK U+061C ذات الصلة المباشرة بتطبيق عربي، فواصل بلا
+  // عرض) من بداية الفحص، قبل أي معالجة أخرى — نص المستخدم الفعلي المرئي لا
+  // يتأثر إطلاقاً، هذه الحروف بلا تمثيل مرئي بأي حال.
+  // النطاقات بالاسم: U+00AD SOFT HYPHEN، U+034F COMBINING GRAPHEME JOINER،
+  // U+061C ARABIC LETTER MARK، U+180E MONGOLIAN VOWEL SEPARATOR،
+  // U+200B-U+200F (ZERO WIDTH SPACE/NON-JOINER/JOINER، LRM/RLM)،
+  // U+202A-U+202E (bidi embedding/override)، U+2060-U+2064 (WORD JOINER
+  // وما شابه)، U+2066-U+2069 (bidi isolate)، U+FEFF (BOM/ZERO WIDTH
+  // NO-BREAK SPACE). استُخدمت \uXXXX الصريحة بدل حروف حرفية غير مرئية في
+  // الكود المصدري كي تبقى قابلة للمراجعة البصرية.
+  const INVISIBLE_CHARS_RE = new RegExp(
+    '[\\u00AD\\u034F\\u061C\\u180E\\u200B-\\u200F\\u202A-\\u202E' +
+    '\\u2060-\\u2064\\u2066-\\u2069\\uFEFF]', 'g'
+  );
+  const original = rawBody.replace(INVISIBLE_CHARS_RE, '');
+  const lower = original.toLowerCase()
     .replace(/[٠-٩]/g, ch => String('٠١٢٣٤٥٦٧٨٩'.indexOf(ch)))
     .replace(/[۰-۹]/g, ch => String('۰۱۲۳۴۵۶۷۸۹'.indexOf(ch)))
     .replace(/[oO]/g, '0');
