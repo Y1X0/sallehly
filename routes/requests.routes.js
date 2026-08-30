@@ -339,7 +339,18 @@ module.exports = function (deps) {
         requestId: r.id
       });
     }
-    db.prepare('UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(status, r.id);
+    if (status === 'ملغي') {
+      // [SEC-FIX-CANCELREVIVE-01] راجع DECISIONS.md — هذا المسار (على عكس
+      // DELETE /requests/:id وPOST /admin/requests/:id/cancel) كان يُلغي
+      // الطلب بلا رفض العروض المعلَّقة عليه ولا تسجيل من ألغاه ومتى، فيبقى
+      // عرض 'pending' قابلاً للقبول لاحقاً على طلب "ملغي" (يُعالَج الآن أيضاً
+      // بفحص مستقل بـPOST /offers/:id/decision، لكن هذا يمنع الحالة الشاذة
+      // من الحدوث أصلاً بدل الاعتماد فقط على فحص لاحق).
+      db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=? AND status='pending'").run(r.id);
+      db.prepare("UPDATE requests SET status=?, cancelled_by=?, cancelled_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP WHERE id=?").run(status, req.user.id, r.id);
+    } else {
+      db.prepare('UPDATE requests SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?').run(status, r.id);
+    }
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(r.id);
     // [SEC-FIX-03] Targeted emit for status update
     safeEmit(r.id, 'request-status-updated', { request });
