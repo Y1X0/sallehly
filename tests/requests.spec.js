@@ -365,3 +365,73 @@ test.describe.serial('[PERF-01] GET /requests للفني — الاستعلام 
     expect(wrongIds).not.toContain(matchingRequestId);
   });
 });
+
+test.describe('[SEC-FIX-COORDZERO-01] إحداثية 0 الشرعية لا تُسقَط كأنها غير مُرسَلة', () => {
+  let customer;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار إحداثيات', city: CITY } });
+    await request.dispose();
+  });
+
+  // [SEC-FIX-COORDZERO-01] راجع DECISIONS.md — `req.body.lat ? ... : null`
+  // كانت تعامل 0 (خط الاستواء/غرينتش، إحداثية شرعية تماماً) كأنها لم تُرسَل
+  // إطلاقاً لأن 0 falsy بجافاسكربت. جسم JSON (لا multipart) حتى يصل lat/lng
+  // كرقم 0 حقيقي، لا كنص "0" (نص غير فارغ يبقى truthy فيمر بالخطأ صدفة).
+  test('POST /api/requests — lat=0 وlng=0 بجسم JSON تُحفَظان كما هما، لا NULL', async ({ request }) => {
+    const res = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ لاختبار إحداثية صفر', lat: 0, lng: 0 },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.request.lat).toBe(0);
+    expect(body.request.lng).toBe(0);
+  });
+
+  test('POST /api/requests — بلا lat/lng إطلاقاً: تبقى NULL كسابقاً (لا تراجع)', async ({ request }) => {
+    const res = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ بلا أي إحداثيات إطلاقاً' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.request.lat).toBeNull();
+    expect(body.request.lng).toBeNull();
+  });
+});
+
+test.describe('[SEC-FIX-NANTECHID-01] technician_id غير رقمي يُرفَض بوضوح، لا يتحوّل NULL بصمت', () => {
+  let customer;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار معرّف فني', city: CITY } });
+    await request.dispose();
+  });
+
+  // [SEC-FIX-NANTECHID-01] راجع DECISIONS.md — `req.body.technician_id ? Number(...) : null`
+  // كانت تحوّل نصاً غير رقمي (truthy) لـNaN، ثم `if (requestedTechId)` يتخطى
+  // فحص وجود الفني (NaN falsy)، وbetter-sqlite3 يخزّن NaN كـNULL بصمت — طلب
+  // موجَّه فعلياً لمعرّف فني خاطئ كان يُقبَل بهدوء كطلب عام، لا يُرفَض أبداً.
+  test('POST /api/requests — technician_id نص غير رقمي يُرفَض بـ400 بدل أن يتحوّل NULL بصمت', async ({ request }) => {
+    const res = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ لاختبار معرّف فني خاطئ', technician_id: 'abc' },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('REQUEST_INVALID_TECHNICIAN_ID');
+  });
+
+  test('POST /api/requests — بلا technician_id إطلاقاً: تبقى NULL كسابقاً (لا تراجع)', async ({ request }) => {
+    const res = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ بلا معرّف فني إطلاقاً' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.request.technician_id).toBeNull();
+  });
+});
