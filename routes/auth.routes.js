@@ -376,6 +376,15 @@ module.exports = function (deps) {
     const updated = db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
     const token = sign(updated);
     res.cookie('token', token, COOKIE_OPTS);
+    // [SEC-FIX-MEPWSOCKET-01] راجع DECISIONS.md — كان الوحيد بين كل مسارات
+    // تغيير token_version (logout، reset-password SEC-FIX-RESETTOKENVER-01،
+    // admin toggle/role/DELETE) بلا قطع صريح لأي اتصال Socket.IO حي بهذا
+    // الحساب. token_version+1 وحدها لا تقطع سوكتاً قائماً فوراً (يُعاد التحقق
+    // فقط عند اتصال جديد) — أي نسخة مسروقة كانت متصلة بسوكت حي وقت تغيير
+    // كلمة السر (السيناريو الفعلي الذي يدفع مستخدماً لتغييرها أصلاً) تبقى
+    // متصلة وتستقبل كل التحديثات اللحظية (رسائل شات، تحديثات طلبات...) رغم
+    // إبطال توكنها بالكامل على مستوى REST.
+    try { io.in(`user-${req.user.id}`).disconnectSockets(true); } catch (e2) {}
     res.json({ ok: true, token });
    } catch (e) {
      console.error('password change failed:', e.message);
