@@ -29,7 +29,10 @@ module.exports = function (deps) {
     if (pendingCount >= 2) return res.status(429).json({ error: 'لديك طلبات شحن قيد المراجعة. انتظر موافقة الإدارة أولاً', code: 'TOPUP_TOO_MANY_PENDING' });
     if (!req.file) return res.status(400).json({ error: 'يجب رفع صورة إثبات الدفع', code: 'TOPUP_RECEIPT_REQUIRED' });
     const receipt_url = '/uploads/payments/' + req.file.filename;
-    const info = db.prepare('INSERT INTO topups(technician_id,package_id,amount,bonus,receipt_url) VALUES(?,?,?,?,?)').run(req.user.id, pkg.id, pkg.amount, pkg.bonus, receipt_url);
+    // [FIX-COMMISSIONSNAPSHOT-01] راجع DECISIONS.md — عمولة الباقة تُلقَط هنا
+    // وقت التقديم، لا وقت المراجعة لاحقاً (routes أدناه)، حتى لا يتأثر الفني
+    // بتعديل إداري لعمولة الباقة يحصل بعد أن يكون قد دفع فعلياً بمعدّل مختلف.
+    const info = db.prepare('INSERT INTO topups(technician_id,package_id,amount,bonus,commission_per_order,receipt_url) VALUES(?,?,?,?,?,?)').run(req.user.id, pkg.id, pkg.amount, pkg.bonus, pkg.commission_per_order, receipt_url);
     const topup = db.prepare('SELECT * FROM topups WHERE id=?').get(info.lastInsertRowid);
 
     // [SEC-FIX-03] Topup notifications only to admin + the technician themselves
@@ -79,8 +82,13 @@ module.exports = function (deps) {
       if (status === 'approved') {
         const tech = db.prepare('SELECT * FROM users WHERE id=?').get(t.technician_id);
         const add = Number(t.amount) + Number(t.bonus || 0); const after = Number((tech.balance + add).toFixed(2));
+        // [FIX-COMMISSIONSNAPSHOT-01] راجع DECISIONS.md — تُستخدَم القيمة
+        // المُلتقَطة وقت التقديم (t.commission_per_order)، لا القيمة الحيّة
+        // الحالية بجدول packages (قد تكون تغيّرت منذ التقديم). fallback على
+        // packages ثم على active_commission الحالي فقط لطلبات شحن قديمة قُدِّمت
+        // قبل إضافة هذا العمود (تبقى NULL لها بعد ADD COLUMN).
         const pkg = db.prepare('SELECT commission_per_order FROM packages WHERE id=?').get(t.package_id);
-        const newCommission = Number(pkg?.commission_per_order ?? tech.active_commission ?? 2);
+        const newCommission = Number(t.commission_per_order ?? pkg?.commission_per_order ?? tech.active_commission ?? 2);
         db.prepare('UPDATE users SET balance=?, active_commission=? WHERE id=?').run(after, newCommission, tech.id);
         db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note) VALUES(?,?,?,?,?)').run(tech.id, 'شحن رصيد', add, after, `موافقة على طلب شحن رقم ${t.id}`);
       }
