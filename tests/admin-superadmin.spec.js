@@ -182,6 +182,48 @@ test.describe.serial('Super Admin وقدرات الأدمن الموسّعة', (
       });
     });
 
+    // [SEC-FIX-PENDINGTOPUP-02] راجع DECISIONS.md — فني له طلب شحن معلَّق كان
+    // يقدر يُحوَّل لعميل بلا أي فحص، ثم موافقة أدمن لاحقة على ذلك الطلب تُضيف
+    // رصيداً حقيقياً لحساب عميل (لا مسار يصرفه إطلاقاً) — نفس فئة الضرر
+    // (رصيد عالق بلا استرجاع) التي عالجتها SEC-FIX-PENDINGTOPUP-01 عند حذف/
+    // إيقاف الحساب، لم تكن مُطبَّقة هنا.
+    test('فني بطلب شحن رصيد معلَّق يُمنع تحويله لعميل', async ({ request }) => {
+      const techWithPendingTopup = await registerAndVerify(request, 'technician', {
+        name: 'فني بطلب شحن معلَّق', city: CITY, national_number: uniqueNationalNumber(), services: 'كهربائي', areas: 'القويسمة',
+      });
+
+      const metaRes = await request.get('/api/meta', { headers: authHeader(techWithPendingTopup.token) });
+      const pkg = (await metaRes.json()).packages[0];
+      const topupRes = await request.post('/api/topups', {
+        headers: authHeader(techWithPendingTopup.token),
+        multipart: {
+          package_id: String(pkg.id),
+          receipt: { name: 'receipt.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
+        },
+      });
+      expect(topupRes.status()).toBe(200);
+      const topupId = (await topupRes.json()).topup.id;
+
+      const roleRes = await request.post(`/api/admin/users/${techWithPendingTopup.user.id}/role`, {
+        headers: authHeader(adminToken),
+        form: { role: 'customer' },
+      });
+      expect(roleRes.status()).toBe(409);
+      expect((await roleRes.json()).code).toBe('ROLECHANGE_PENDING_TOPUP');
+
+      // بعد رفض طلب الشحن (لا موافقة عليه)، التحويل ينجح بشكل طبيعي.
+      const reviewRes = await request.post(`/api/admin/topups/${topupId}/review`, {
+        headers: authHeader(adminToken),
+        form: { status: 'rejected' },
+      });
+      expect(reviewRes.status()).toBe(200);
+      const retryRes = await request.post(`/api/admin/users/${techWithPendingTopup.user.id}/role`, {
+        headers: authHeader(adminToken),
+        form: { role: 'customer' },
+      });
+      expect(retryRes.status()).toBe(200);
+    });
+
     test('عميل بدون صورة شخصية يُمنع تحويله لفني', async ({ request }) => {
       const res = await request.post(`/api/admin/users/${plainCustomer.user.id}/role`, {
         headers: authHeader(adminToken),

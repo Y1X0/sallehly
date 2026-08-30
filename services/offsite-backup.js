@@ -31,8 +31,22 @@ function apiHeaders(extra = {}) {
   };
 }
 
+// [SEC-FIX-BACKUPTIMEOUT-01] راجع DECISIONS.md — نفس فئة SEC-FIX-EMAILTIMEOUT-01
+// (services/email.js): fetch المدمَجة بـNode بلا أي مهلة افتراضية إطلاقاً.
+// انقطاع أو تعليق بطرف GitHub API كان يعلّق كل استدعاء هنا للأبد. لا أثر على
+// أي مستدعٍ حالي — كل الدوال هنا مُغلَّفة أصلاً بـtry/catch لا يرمي للخارج
+// (uploadBackupOffsite/pruneOldOffsiteBackups، راجع تعليقاتهما)، فمهلة تنتهي
+// بخطأ بدل تعليق أبدي تعني فقط أن العملية الخلفية تفشل بوضوح وتُسجَّل بالسجلات
+// بدل الجلوس بالخلفية للأبد — 60 ثانية سخية عمداً (رفع ملف .sqlite فعلي كـasset،
+// لا استدعاء API خفيف كإيميل OTP).
+const GITHUB_REQUEST_TIMEOUT_MS = 60_000;
+
 async function githubRequest(url, options = {}) {
-  const res = await fetch(url, { ...options, headers: apiHeaders(options.headers) });
+  const res = await fetch(url, {
+    ...options,
+    headers: apiHeaders(options.headers),
+    signal: options.signal || AbortSignal.timeout(GITHUB_REQUEST_TIMEOUT_MS),
+  });
   if (!res.ok) {
     const body = await res.text().catch(() => '');
     throw new Error(`GitHub API ${res.status} على ${url}: ${body.slice(0, 300)}`);

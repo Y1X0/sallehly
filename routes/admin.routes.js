@@ -316,6 +316,15 @@ module.exports = function (deps) {
       if (activeAsTech) return res.status(409).json({ error: `لا يمكن التحويل — لديه طلب نشط رقم ${activeAsTech.id} كفني.` });
       const pendingOffers = db.prepare("SELECT id FROM offers WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
       if (pendingOffers) return res.status(409).json({ error: 'لا يمكن التحويل — لديه عروض معلّقة على طلبات. اسحبها أو انتظر حسمها أولاً.' });
+      // [SEC-FIX-PENDINGTOPUP-02] راجع DECISIONS.md — نفس فحص SEC-FIX-PENDINGTOPUP-01
+      // (المُطبَّق على حذف/إيقاف الحساب) لكنه كان غائباً هنا: بلا هذا الفحص،
+      // تحويل فني له طلب شحن معلَّق إلى عميل ثم موافقة أدمن لاحقاً على ذلك
+      // الطلب (POST /admin/topups/:id/review يبحث بـtechnician_id فقط، بلا
+      // فحص role) يُضيف رصيداً حقيقياً لحساب "عميل" الآن — لا مسار كتابة
+      // يصرف balance عميل إطلاقاً (كل منطق العروض/الشحن يفترض role='technician')،
+      // فالمبلغ يبقى عالقاً بلا استرجاع غير تدخّل مباشر بقاعدة البيانات.
+      const pendingTopup = db.prepare("SELECT id FROM topups WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
+      if (pendingTopup) return res.status(409).json({ error: `لا يمكن التحويل — لديه طلب شحن رصيد معلَّق رقم ${pendingTopup.id} بانتظار مراجعة الأدمن. راجعه (موافقة أو رفض) أولاً.`, code: 'ROLECHANGE_PENDING_TOPUP' });
 
       db.prepare(`UPDATE users SET role='customer', national_number=NULL, services=NULL, areas=NULL,
         active_commission=2, free_offers_used=0, free_orders_used=0, verification_status='verified' WHERE id=?`).run(id);
