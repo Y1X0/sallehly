@@ -536,6 +536,55 @@ test.describe.serial('لوحة الأدمن', () => {
     await request.delete(`/api/admin/packages/${pkg.id}`, { headers: authHeader(adminToken) });
   });
 
+  // [SEC-FIX-AMOUNTBOUND-01] راجع DECISIONS.md — Number.isFinite وحدها لا
+  // تضع أي سقف واقعي؛ رقم منتهٍ فعلاً كـ1e15 كان يمر بصمت (خطأ كتابة أو
+  // تلاعب متعمَّد) بلا أي تحذير. سقف دفاعي بحت (MAX_FINANCIAL_AMOUNT).
+  test('POST /admin/users/:id/balance وPOST/PUT /admin/packages — مبلغ منتهٍ لكن ضخم جداً يُرفَض بـ400', async ({ request }) => {
+    const hugeBalanceRes = await request.post(`/api/admin/users/${technician.user.id}/balance`, {
+      headers: authHeader(adminToken),
+      form: { amount: '99999999999', reason: 'محاولة تعديل رصيد بمبلغ غير واقعي' },
+    });
+    expect(hugeBalanceRes.status()).toBe(400);
+    // الرصيد الفعلي لم يتغيّر إطلاقاً — لا نصف نجاح
+    const meRes = await request.get('/api/me', { headers: authHeader(technician.token) });
+    expect((await meRes.json()).user.balance).toBeLessThan(99999999999);
+
+    const hugePackageRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      data: { name: `باقة مبلغ ضخم ${Date.now()}`, amount: 99999999999, bonus: 1, commission_per_order: 2 },
+    });
+    expect(hugePackageRes.status()).toBe(400);
+
+    const hugeBonusRes = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      data: { name: `باقة بونص ضخم ${Date.now()}`, amount: 15, bonus: 99999999999, commission_per_order: 2 },
+    });
+    expect(hugeBonusRes.status()).toBe(400);
+
+    // نفس الفحص على مسار التعديل، على باقة سليمة موجودة أصلاً
+    const okCreate = await request.post('/api/admin/packages', {
+      headers: authHeader(adminToken),
+      form: { name: `باقة سليمة لاختبار سقف المبلغ ${Date.now()}`, amount: '15', bonus: '1', commission_per_order: '2' },
+    });
+    const pkg = (await okCreate.json()).package;
+    const hugeUpdateRes = await request.put(`/api/admin/packages/${pkg.id}`, {
+      headers: authHeader(adminToken),
+      data: { name: pkg.name, amount: 99999999999, bonus: 1, commission_per_order: 2 },
+    });
+    expect(hugeUpdateRes.status()).toBe(400);
+
+    // الباقة تبقى بقيمتها الأصلية — لا رقم ضخم تسرّب لقاعدة البيانات
+    const checkDb = openTestDb();
+    try {
+      const dbRow = checkDb.prepare('SELECT amount FROM packages WHERE id=?').get(pkg.id);
+      expect(dbRow.amount).toBe(15);
+    } finally {
+      checkDb.close();
+    }
+
+    await request.delete(`/api/admin/packages/${pkg.id}`, { headers: authHeader(adminToken) });
+  });
+
   test('PUT /admin/packages/:id — تعطيل باقة يخفيها من /meta العامة فوراً', async ({ request }) => {
     const createRes = await request.post('/api/admin/packages', {
       headers: authHeader(adminToken),

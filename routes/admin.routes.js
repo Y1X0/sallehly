@@ -9,6 +9,14 @@ module.exports = function (deps) {
   const { createDbBackup, sendPush } = deps.services;
   const router = express.Router();
 
+  // [SEC-FIX-AMOUNTBOUND-01] راجع DECISIONS.md — Number.isFinite وحدها ترفض
+  // NaN/Infinity فقط، لا تضع أي سقف واقعي. مبلغ مالي مثل 1e15 يمر بصمت (رقم
+  // منتهٍ فعلاً)، سواء عن خطأ كتابة (رقم إضافي بالغلط) أو تلاعب متعمّد — يفسد
+  // حسابات الرصيد/دفتر الأستاذ لاحقاً بأرقام غير واقعية بلا أي تحذير. سقف
+  // دفاعي بحت (لا قاعدة عمل)، أعلى بكثير من أي استخدام فعلي معقول اليوم
+  // (أكبر باقة حالية 100 د.أ) — يمكن تعديله بسهولة من هنا وحدها لاحقاً.
+  const MAX_FINANCIAL_AMOUNT = 1000000;
+
   router.post('/admin/backup', auth, requireRole('admin'), async (req, res) => {
     const file = await createDbBackup();
     if (!file) return res.status(500).json({ error: 'تعذر إنشاء النسخة الاحتياطية' });
@@ -225,6 +233,8 @@ module.exports = function (deps) {
     const amount = Number(req.body.amount);
     const reason = clean(req.body.reason || '');
     if (!Number.isFinite(amount) || amount === 0) return res.status(400).json({ error: 'أدخل مبلغاً صحيحاً (موجب للإضافة، سالب للخصم)' });
+    // [SEC-FIX-AMOUNTBOUND-01] راجع DECISIONS.md — أعلى تعليق بالملف.
+    if (Math.abs(amount) > MAX_FINANCIAL_AMOUNT) return res.status(400).json({ error: `المبلغ كبير جداً، الحد الأقصى ${MAX_FINANCIAL_AMOUNT} د.أ` });
     if (!reason || reason.length < 3) return res.status(400).json({ error: 'سبب التعديل إلزامي (3 أحرف على الأقل)' });
     if (reason.length > 300) return res.status(400).json({ error: 'السبب طويل جداً، الحد الأقصى 300 حرف' });
     const after = Number((Number(u.balance || 0) + amount).toFixed(2));
@@ -481,6 +491,8 @@ module.exports = function (deps) {
     if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'قيمة الباقة يجب أن تكون أكبر من صفر' });
     if (!Number.isFinite(bonusVal) || bonusVal < 0) return res.status(400).json({ error: 'البونص لا يمكن أن يكون سالباً' });
     if (!Number.isFinite(commission) || commission < 0) return res.status(400).json({ error: 'العمولة لا يمكن أن تكون سالبة' });
+    // [SEC-FIX-AMOUNTBOUND-01] راجع DECISIONS.md — أعلى الملف.
+    if (amount > MAX_FINANCIAL_AMOUNT || bonusVal > MAX_FINANCIAL_AMOUNT) return res.status(400).json({ error: `القيمة كبيرة جداً، الحد الأقصى ${MAX_FINANCIAL_AMOUNT} د.أ` });
     const info = db.prepare('INSERT INTO packages(name,amount,bonus,commission_per_order) VALUES(?,?,?,?)').run(clean(name), amount, bonusVal, commission);
     logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'إضافة باقة', targetType: 'package', targetId: info.lastInsertRowid, details: { name: clean(name), amount, bonus: bonusVal, commission } });
     res.json({ package: db.prepare('SELECT * FROM packages WHERE id=?').get(info.lastInsertRowid) });
@@ -507,6 +519,8 @@ module.exports = function (deps) {
     if (!Number.isFinite(amount) || amount <= 0) return res.status(400).json({ error: 'قيمة الباقة يجب أن تكون أكبر من صفر' });
     if (!Number.isFinite(bonusVal) || bonusVal < 0) return res.status(400).json({ error: 'البونص لا يمكن أن يكون سالباً' });
     if (!Number.isFinite(commission) || commission < 0) return res.status(400).json({ error: 'العمولة لا يمكن أن تكون سالبة' });
+    // [SEC-FIX-AMOUNTBOUND-01] راجع DECISIONS.md — أعلى الملف.
+    if (amount > MAX_FINANCIAL_AMOUNT || bonusVal > MAX_FINANCIAL_AMOUNT) return res.status(400).json({ error: `القيمة كبيرة جداً، الحد الأقصى ${MAX_FINANCIAL_AMOUNT} د.أ` });
     db.prepare('UPDATE packages SET name=?, amount=?, bonus=?, commission_per_order=?, is_active=? WHERE id=?')
       .run(name, amount, bonusVal, commission, isActive, id);
     logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'تعديل باقة', targetType: 'package', targetId: id, details: { name, amount, bonus: bonusVal, commission, is_active: isActive } });
