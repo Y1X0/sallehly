@@ -8,7 +8,32 @@
 // أيضاً؛ الخاصية الجوهرية للسلامة (لا يفشل الاستدعاء الأصلي أبداً) هي المُثبَتة.
 
 const { test, expect } = require('@playwright/test');
+const http = require('http');
 const { alertError, shouldSend, lastSentAt } = require('../services/error-alert');
+
+// نفس نمط freshRequire بـtests/email-prod-safety.spec.js: يستورد الوحدة طازجة
+// بمتغيرات بيئة مختلفة (تفريغ الكاش أولاً)، ويعيد كل شيء لحالته الطبيعية بعدها.
+// config/env.js يُحسَب مرة واحدة عند أول require (نفس ملاحظة email-prod-safety.spec.js
+// بالضبط) — يجب تفريغ كاشه أيضاً، وإلا يبقى error-alert.js يقرأ RESEND_API_KEY/
+// ALERT_EMAIL القديمين المُخزَّنين بالكاش (غالباً فارغين ببيئة الاختبار)
+// بغض النظر عن متغيرات البيئة الجديدة المضبوطة هنا.
+function freshRequire(modulePath, envOverrides) {
+  const resolved = require.resolve(modulePath);
+  delete require.cache[resolved];
+  delete require.cache[require.resolve('../config/env')];
+  const prev = {};
+  for (const [k, v] of Object.entries(envOverrides)) {
+    prev[k] = process.env[k];
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  const mod = require(modulePath);
+  for (const [k, v] of Object.entries(prev)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  return mod;
+}
 
 test.describe('[MON-FIX-01] alertError — سلامة بلا إعداد', () => {
   test('يرجع false بهدوء بلا استثناء عندما لا RESEND_API_KEY ولا ALERT_EMAIL مضبوطَين', async () => {
@@ -47,5 +72,59 @@ test.describe('[SEC-FIX-ERRORALERTMAP-01] تنظيف مفاتيح lastSentAt م�
     expect(shouldSend(freshKey)).toBe(true);
     expect(lastSentAt.has(freshKey)).toBe(true);
     expect(shouldSend(freshKey)).toBe(false); // ما زال ضمن الكبح، لم يُحذف
+  });
+});
+
+// [SEC-FIX-ERRORALERTTIMEOUT-01] راجع DECISIONS.md — resend.emails.send() هنا
+// كان بلا أي مهلة، بعكس sendOtpEmail (services/email.js). خادم Resend حقيقي
+// معلَّق (لا يرد أبداً) كان يعلّق alertError() نفسها للأبد — خطير تحديداً
+// لأن process.on('uncaughtException') بـserver.js ينتظر (await) اكتمالها
+// صراحة قبل gracefulShutdown(). خادم HTTP حقيقي محلي لا يرد أبداً (نفس أسلوب
+// tests/email-prod-safety.spec.js's SEC-FIX-EMAILCANCEL-01)، مع RESEND_BASE_URL
+// (مدعوم من حزمة resend نفسها) موجَّه إليه — يحاكي بالضبط "خادم Resend حيّ
+// معلَّق فعلياً" بلا الحاجة لتعديل services/error-alert.js لإتاحة baseUrl مخصَّص.
+test.describe('[SEC-FIX-ERRORALERTTIMEOUT-01] alertError لا تعلّق أبداً حتى مع خادم Resend معلَّق فعلياً', () => {
+  test('خادم Resend حيّ لا يرد أبداً: alertError تُرجع false خلال المهلة المحدَّدة، لا تعلّق للأبد', async () => {
+    let serverSawClose = false;
+    const server = http.createServer((req) => {
+      // لا يردّ أبداً — يحاكي خادم Resend معلَّق بلا استجابة ولا إغلاق.
+      req.on('close', () => { serverSawClose = true; });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = server.address().port;
+
+    try {
+      const { alertError: freshAlertError } = freshRequire('../services/error-alert', {
+        RESEND_API_KEY: 're_fake_key_for_alert_timeout_test',
+        ALERT_EMAIL: 'alerts@example.com',
+        RESEND_BASE_URL: `http://127.0.0.1:${port}`,
+        ERROR_ALERT_TIMEOUT_MS: '300',
+      });
+
+      const start = Date.now();
+      const result = await freshAlertError(
+        'unit-test-' + Date.now() + Math.random(),
+        new Error('خطأ تجريبي يحاكي uncaughtException')
+      );
+      const elapsed = Date.now() - start;
+
+      // الإثبات الجوهري: لا تعليق أبدي — ترجع false بوضوح خلال حد زمني
+      // ضيّق (حد فضفاض يكفي لتفادي هشاشة توقيت CI مع بقائه بعيداً عن "معلَّق للأبد").
+      expect(result).toBe(false);
+      expect(elapsed).toBeLessThan(3000);
+
+      // إثبات إضافي (نفس نمط SEC-FIX-EMAILCANCEL-01): الخادم نفسه يرى الاتصال
+      // يُغلَق من طرف العميل — الإلغاء حقيقي على مستوى الشبكة، لا مجرد تجاهل
+      // الوعد بجافاسكربت بينما الطلب يبقى معلَّقاً بالخلفية.
+      await new Promise((r) => setTimeout(r, 800));
+      expect(serverSawClose, 'الخادم لم يرَ الاتصال يُغلَق — الطلب بقي معلَّقاً بالخلفية رغم انتهاء المهلة').toBe(true);
+
+      delete require.cache[require.resolve('../services/error-alert')];
+      delete require.cache[require.resolve('../services/email')];
+      delete require.cache[require.resolve('../config/env')];
+      require('../config/env');
+    } finally {
+      server.close();
+    }
   });
 });

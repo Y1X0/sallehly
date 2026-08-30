@@ -160,4 +160,72 @@ test.describe.serial('إبطال الجلسات (token_version) وتناسق req
 
     socket.close();
   });
+
+  // [SEC-FIX-RESETTOKENVER-01] راجع DECISIONS.md — POST /auth/reset-password
+  // (نسيت كلمة السر) كان يعدّل password_hash فقط بلا لمس token_version، بعكس
+  // /me/password المجاور أعلاه الذي يزيده صراحة. أي JWT صادر قبل إعادة
+  // التعيين (نسخة مسروقة — بالضبط السيناريو الذي يدفع مستخدماً لتصفير كلمة
+  // سره أصلاً) كان يبقى صالحاً بالكامل حتى انتهاء صلاحيته الطبيعية (7 أيام).
+  test('POST /auth/reset-password — يُبطل فوراً أي توكن صادر قبل إعادة التعيين (نسخة مسروقة)', async ({ request }) => {
+    const customer = await registerAndVerify(request, 'customer', { name: 'عميل استرجاع كلمة سر', city: CITY });
+    const stolenToken = customer.token;
+
+    // التوكن المسروق يعمل فعلاً قبل إعادة التعيين
+    const before = await request.get('/api/me', { headers: authHeader(stolenToken) });
+    expect(before.status()).toBe(200);
+
+    const forgotRes = await request.post('/api/auth/forgot-password', { form: { email: customer.email } });
+    expect(forgotRes.status()).toBe(200);
+    const otp = getPendingOtp(customer.email);
+
+    const resetRes = await request.post('/api/auth/reset-password', {
+      form: { email: customer.email, otp, new_password: 'RecoveredPass789' },
+    });
+    expect(resetRes.status()).toBe(200);
+    expect((await resetRes.json()).ok).toBe(true);
+
+    // نفس التوكن (المسروق) بالضبط — كان صالحاً قبل قليل، يجب أن يُرفض الآن فوراً
+    const after = await request.get('/api/me', { headers: authHeader(stolenToken) });
+    expect(after.status()).toBe(401);
+
+    // الحساب نفسه يبقى قابلاً لتسجيل الدخول طبيعياً بكلمة السر الجديدة
+    const loginRes = await request.post('/api/auth/login', {
+      form: { email: customer.email, password: 'RecoveredPass789' },
+    });
+    expect(loginRes.status()).toBe(200);
+  });
+
+  test('POST /auth/reset-password — يقطع فوراً اتصال Socket.IO الحي بهذا الحساب (نفس نمط toggle أعلاه)', async ({ request, baseURL }) => {
+    const customer = await registerAndVerify(request, 'customer', { name: 'عميل سوكت استرجاع', city: CITY });
+
+    const socket = ioClient(baseURL, {
+      auth: { token: customer.token },
+      transports: ['websocket'],
+      reconnection: false,
+    });
+
+    await new Promise((resolve, reject) => {
+      socket.on('connect', resolve);
+      socket.on('connect_error', reject);
+      setTimeout(() => reject(new Error('انتهت مهلة الاتصال بالسوكت')), 8000);
+    });
+
+    const disconnected = new Promise((resolve) => {
+      socket.on('disconnect', (reason) => resolve(reason));
+      setTimeout(() => resolve(null), 8000);
+    });
+
+    const forgotRes = await request.post('/api/auth/forgot-password', { form: { email: customer.email } });
+    expect(forgotRes.status()).toBe(200);
+    const otp = getPendingOtp(customer.email);
+    const resetRes = await request.post('/api/auth/reset-password', {
+      form: { email: customer.email, otp, new_password: 'RecoveredPass789' },
+    });
+    expect(resetRes.status()).toBe(200);
+
+    const reason = await disconnected;
+    expect(reason).toBe('io server disconnect');
+
+    socket.close();
+  });
 });
