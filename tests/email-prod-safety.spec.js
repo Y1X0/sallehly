@@ -73,3 +73,38 @@ test.describe('[PERF-HARDEN-03] services/email.js — لا نجاح وهمي ب�
     require('../config/env');
   });
 });
+
+// [SEC-FIX-EMAILTIMEOUT-01] راجع DECISIONS.md — resend.emails.send() بلا أي
+// مهلة، فانقطاع/تعليق بطرف Resend كان يعلّق /auth/forgot-password أو
+// /auth/register بأكمله للأبد (كلاهما ينتظر sendOtpEmail قبل أي رد). محاكاة
+// خادم Resend حيّ معلَّق فعلياً تتطلّب خادم HTTP وهمي حقيقي — خارج نطاق هذا
+// الإصلاح؛ الاختبار هنا يثبت الآلية الفعلية المُستخدَمة (withTimeout) مباشرة:
+// وعد لا يُحل أبداً (يحاكي طلب شبكة معلَّق حقيقياً) يجب أن يُرفَض خلال الحد
+// الزمني المحدَّد، لا أن يعلّق منتظِره للأبد.
+test.describe('[SEC-FIX-EMAILTIMEOUT-01] withTimeout يمنع تعليقاً أبدياً لوعد لا يُحل أبداً', () => {
+  test('وعد لا يُحل أبداً (يحاكي اتصال Resend معلَّق) يُرفَض خلال الحد الزمني المحدَّد، لا أن يعلّق للأبد', async () => {
+    const { withTimeout } = require('../services/email');
+    const neverResolves = new Promise(() => {}); // يحاكي fetch بلا مهلة، معلَّق حرفياً للأبد
+
+    const start = Date.now();
+    let threw = false;
+    try {
+      await withTimeout(neverResolves, 300, 'test timeout');
+    } catch (e) {
+      threw = true;
+      expect(e.message).toBe('test timeout');
+    }
+    const elapsed = Date.now() - start;
+
+    expect(threw).toBe(true);
+    // يثبت أنه رُفض فعلاً بسبب المهلة (~300ms) لا بسبب طول عشوائي — حد فضفاض
+    // يكفي لتفادي هشاشة توقيت بيئة CI مع بقائه بعيداً كل البعد عن "معلَّق للأبد".
+    expect(elapsed).toBeLessThan(2000);
+  });
+
+  test('وعد ينجح بسرعة قبل المهلة: withTimeout يُرجع نتيجته الفعلية بلا أي رفض', async () => {
+    const { withTimeout } = require('../services/email');
+    const result = await withTimeout(Promise.resolve('ok'), 5000, 'should not fire');
+    expect(result).toBe('ok');
+  });
+});

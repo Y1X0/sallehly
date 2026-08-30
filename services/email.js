@@ -16,6 +16,22 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+// [SEC-FIX-EMAILTIMEOUT-01] راجع DECISIONS.md — resend.emails.send() يعتمد
+// داخلياً على fetch المدمَج بـNode (undici)، الذي بلا أي مهلة افتراضية
+// إطلاقاً. انقطاع أو تعليق بطرف Resend (لا رد، لا إغلاق اتصال) كان يعلّق
+// await resend.emails.send() للأبد — وبالتالي /auth/forgot-password و
+// /auth/register بأكملهما (كلاهما ينتظر sendOtpEmail قبل أي رد) — يبقى
+// العميل بانتظار رد لن يصل إطلاقاً، بلا حتى 500 واضح يقدر يعيد المحاولة
+// بعده. مصدّرة بشكل مستقل لأنها القابلة للاختبار فعلياً هنا (محاكاة Resend
+// حيّ معلَّق بلا استجابة تتطلّب خادم وهمي حقيقي، خارج نطاق هذا الإصلاح).
+function withTimeout(promise, ms, timeoutMessage) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(timeoutMessage || `timed out after ${ms}ms`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
 async function sendOtpEmail(toEmail, otp, name) {
   if (!resend) {
     // [PERF-HARDEN-03] هذا البديل (طباعة الكود على console بدل إرسال إيميل
@@ -34,7 +50,8 @@ async function sendOtpEmail(toEmail, otp, name) {
     return false;
   }
   try {
-    await resend.emails.send({
+    // [SEC-FIX-EMAILTIMEOUT-01] راجع DECISIONS.md وتعليق withTimeout أعلاه.
+    await withTimeout(resend.emails.send({
       from: RESEND_FROM,
       to: toEmail,
       subject: 'كود التحقق — صلّحلي',
@@ -54,7 +71,7 @@ async function sendOtpEmail(toEmail, otp, name) {
           <p style="color:#888;font-size:12px;text-align:center;">إذا لم تطلب هذا الكود، تجاهل هذا الإيميل.</p>
         </div>
       `
-    });
+    }), 15000, 'resend send timeout');
     return true;
   } catch (e) {
     console.error('Resend error:', e.message);
@@ -62,4 +79,4 @@ async function sendOtpEmail(toEmail, otp, name) {
   }
 }
 
-module.exports = { sendOtpEmail };
+module.exports = { sendOtpEmail, withTimeout };
