@@ -7,6 +7,7 @@ module.exports = function (deps) {
   const { auth, requireRole } = deps.middleware;
   const { clean, notify } = deps.utils;
   const { sendPush } = deps.services;
+  const { supportLimiter } = deps.limiters;
   const router = express.Router();
 
   // [NOTIF-PHASE2B-1] نسخة دائمة (جدول notifications) لكل الأدمنية — مستقلة
@@ -16,7 +17,9 @@ module.exports = function (deps) {
     return db.prepare("SELECT id FROM users WHERE role='admin'").all().map(a => a.id);
   }
 
-  router.post('/support', auth, (req, res) => {
+  // [SEC-FIX-SUPPORTSPAM-01] راجع DECISIONS.md — أول نقطة إنشاء بهذا الملف
+  // بلا أي حد طلبات سابقاً، رغم أن كل نداء ناجح ينبّه كل الأدمنية.
+  router.post('/support', auth, supportLimiter, (req, res) => {
     const { type, title, body } = req.body || {};
     if (clean(title).length < 3 || clean(body).length < 10 || clean(title).length > 120 || clean(body).length > 2000) return res.status(400).json({ error: 'اكتب عنوان وتفاصيل واضحة للدعم', code: 'SUPPORT_INVALID_FIELDS' });
     const allowedTypes = [
@@ -106,7 +109,8 @@ module.exports = function (deps) {
   // ── شكاوى العملاء — للأدمن فقط ──
   // [FIX-07] الجدول الحقيقي بقاعدة البيانات أعمدته: user_id, subject(NOT NULL), body(NOT NULL), status
   // (وليس customer_id/technician_id كما كان الكود يفترض خطأً — كان هذا يسبب فشل 500 على كل شكوى).
-  router.post('/complaints', auth, requireRole('customer'), (req, res) => {
+  // [SEC-FIX-SUPPORTSPAM-01] راجع DECISIONS.md.
+  router.post('/complaints', auth, requireRole('customer'), supportLimiter, (req, res) => {
     // [SEC-FIX-SOCKETCRASH-01] راجع DECISIONS.md — request_id كان يصل خاماً
     // من req.body (راوت JSON عادي، بلا multer إطلاقاً) بلا أي تحويل نوع.
     // مصفوفة/كائن كـrequest_id يجعل better-sqlite3 يرمي RangeError متزامناً
@@ -231,7 +235,8 @@ module.exports = function (deps) {
     res.json({ ticket, messages });
   });
 
-  router.post('/support/:id/messages', auth, (req, res) => {
+  // [SEC-FIX-SUPPORTSPAM-01] راجع DECISIONS.md.
+  router.post('/support/:id/messages', auth, supportLimiter, (req, res) => {
     const ticket = db.prepare('SELECT * FROM support_tickets WHERE id=?').get(req.params.id);
 
     if (!ticket) return res.status(404).json({ error: 'التذكرة غير موجودة', code: 'SUPPORT_TICKET_NOT_FOUND' });

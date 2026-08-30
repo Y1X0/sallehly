@@ -212,6 +212,7 @@ test.describe('[Rate Limits] قيم حدود الإنتاج لم تتغيّر ب
       messageLimiter: { max: 30, windowMs: 60 * 1000 },
       offerLimiter: { max: 20, windowMs: 15 * 60 * 1000 },
       requestLimiter: { max: 10, windowMs: 60 * 60 * 1000 },
+      supportLimiter: { max: 15, windowMs: 15 * 60 * 1000 },
     };
     for (const [name, { max, windowMs }] of Object.entries(expected)) {
       const block = src.slice(src.indexOf(`const ${name} = rateLimit({`));

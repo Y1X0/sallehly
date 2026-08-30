@@ -78,7 +78,8 @@ const deps = {
     passwordResetLimiter: security.passwordResetLimiter,
     messageLimiter: security.messageLimiter,
     offerLimiter: security.offerLimiter,
-    requestLimiter: security.requestLimiter
+    requestLimiter: security.requestLimiter,
+    supportLimiter: security.supportLimiter
   },
   constants: { COOKIE_OPTS: env.COOKIE_OPTS, BASE: env.BASE },
   path, fs

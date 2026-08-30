@@ -140,7 +140,7 @@ module.exports = function (deps) {
   const { auth, requireRole, upload, uploadAudio } = deps.middleware;
   const { clean, getMessages, markChatRead, logAudit, canAccessRequestChat } = deps.utils;
   const { sendPush } = deps.services;
-  const { messageLimiter } = deps.limiters;
+  const { messageLimiter, supportLimiter } = deps.limiters;
   const router = express.Router();
 
   // [FIX-UGC-01] الطرف الآخر بمحادثة طلب معيّن، بنفس منطق تنبيه الرسائل تماماً.
@@ -302,7 +302,10 @@ module.exports = function (deps) {
   });
 
   // [FIX-UGC-01] الإبلاغ عن رسالة مسيئة (Google Play UGC policy)
-  router.post('/requests/:id/report-message', auth, (req, res) => {
+  // [SEC-FIX-SUPPORTSPAM-01] راجع DECISIONS.md — كان بلا أي حد طلبات، وبلا
+  // فحص تكرار (نفس المستخدم يقدر يُبلّغ نفس الرسالة عشرات المرات، كل بلاغ
+  // يُنشئ صفاً جديداً ويُطلق حدث Socket.IO منفصل لغرفة الأدمن).
+  router.post('/requests/:id/report-message', auth, supportLimiter, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     // [SEC-FIX-CHATSCOPE-01] راجع DECISIONS.md — كان يسمح لأي فني قدّم عرضاً
@@ -314,6 +317,14 @@ module.exports = function (deps) {
     const reason = clean(req.body.reason);
     if (!reason || reason.length < 2) return res.status(400).json({ error: 'الرجاء اختيار سبب البلاغ', code: 'REPORT_REASON_REQUIRED' });
     if (reason.length > 200) return res.status(400).json({ error: 'سبب البلاغ طويل جداً', code: 'REPORT_REASON_TOO_LONG' });
+    // [SEC-FIX-SUPPORTSPAM-01] فحص تكرار: نفس المستخدم لا يقدر يُبلّغ نفس
+    // الرسالة (أو نفس الطلب عموماً لو messageId فارغ) مرتين. messageId يمكن
+    // أن يكون NULL شرعياً (بلاغ عام على الطلب لا رسالة بعينها)، فـ`=?`
+    // العادي لا يطابق NULL بـSQL — `IS` صريحة بدل `=` تتعامل مع الحالتين معاً.
+    const existingReport = db.prepare(
+      'SELECT id FROM message_reports WHERE request_id=? AND reporter_id=? AND message_id IS ?'
+    ).get(r.id, req.user.id, messageId);
+    if (existingReport) return res.status(409).json({ error: 'أبلغت عن هذا بالفعل، الإدارة تراجع بلاغك', code: 'REPORT_ALREADY_SUBMITTED' });
     let messageBody = null;
     let reportedUserId = null;
     if (messageId) {

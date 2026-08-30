@@ -94,6 +94,9 @@ test.describe.serial('الشكاوى', () => {
       form: { request_id: String(requestId), body: 'الفني تأخر كثيراً عن الموعد المتفق عليه' },
     });
     expect(res.status()).toBe(200);
+    // [SEC-FIX-SUPPORTSPAM-01] يثبت أن supportLimiter مربوط فعلياً على هذا
+    // المسار — نفس نمط requestLimiter بـtests/requests.spec.js.
+    expect(res.headers()['ratelimit-limit']).toBeTruthy();
     const body = await res.json();
     expect(body.complaint.status).toBe('open');
     expect(body.complaint.subject).toContain('كهربائي');
@@ -170,6 +173,8 @@ test.describe.serial('تذاكر الدعم الفني', () => {
       form: { type: 'مشكلة حساب', title: 'مشكلة بتسجيل الدخول', body: 'لا أستطيع الدخول لحسابي منذ الصباح' },
     });
     expect(res.status()).toBe(200);
+    // [SEC-FIX-SUPPORTSPAM-01] يثبت أن supportLimiter مربوط فعلياً على هذا المسار.
+    expect(res.headers()['ratelimit-limit']).toBeTruthy();
     const body = await res.json();
     expect(body.ticket.status).toBe('open');
     ticketId = body.ticket.id;
@@ -204,6 +209,8 @@ test.describe.serial('تذاكر الدعم الفني', () => {
       form: { body: 'هل من تحديث بخصوص مشكلتي؟' },
     });
     expect(res.status()).toBe(200);
+    // [SEC-FIX-SUPPORTSPAM-01] يثبت أن supportLimiter مربوط فعلياً على هذا المسار.
+    expect(res.headers()['ratelimit-limit']).toBeTruthy();
   });
 
   test('GET /support/:id/messages — مستخدم آخر غير صاحب التذكرة يُرفض', async ({ request }) => {

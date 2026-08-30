@@ -595,3 +595,63 @@ test.describe('[SEC-FIX-INVISIBLECHARS-01] إدراج حروف Unicode غير م
     expect(body.error).toContain('هاتف');
   });
 });
+
+test.describe('[SEC-FIX-SUPPORTSPAM-01] بلاغ الرسالة (report-message) محدود المعدّل، ولا يقدر نفس المستخدم يكرره', () => {
+  let customer;
+  let technician;
+  let acceptedRequest;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار بلاغات الرسائل', city: CITY } });
+    technician = await registerAndVerify(request, {
+      role: 'technician',
+      extra: { name: 'فني اختبار بلاغات الرسائل', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة' },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]) } },
+    });
+
+    const createRes = await request.post('/api/requests', {
+      headers: authHeader(customer.token),
+      multipart: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب لاختبار بلاغات الرسائل المتكررة' },
+    });
+    acceptedRequest = (await createRes.json()).request;
+
+    await request.post(`/api/requests/${acceptedRequest.id}/offer`, {
+      headers: authHeader(technician.token),
+      form: { offer_price: '10', duration: 'خلال ساعة' },
+    });
+    const offersRes = await request.get(`/api/requests/${acceptedRequest.id}/offers`, { headers: authHeader(customer.token) });
+    const offerId = (await offersRes.json()).offers[0].id;
+    await request.post(`/api/offers/${offerId}/decision`, { headers: authHeader(customer.token), form: { decision: 'accepted' } });
+
+    await request.dispose();
+  });
+
+  test('POST /requests/:id/report-message — supportLimiter مربوط فعلياً على هذا المسار', async ({ request }) => {
+    const res = await request.post(`/api/requests/${acceptedRequest.id}/report-message`, {
+      headers: authHeader(customer.token),
+      form: { reason: 'محتوى غير لائق' },
+    });
+    expect(res.status()).toBe(200);
+    expect(res.headers()['ratelimit-limit']).toBeTruthy();
+  });
+
+  // [SEC-FIX-SUPPORTSPAM-01] راجع DECISIONS.md — نفس المستخدم كان يقدر يُبلّغ
+  // نفس الرسالة (أو نفس الطلب عموماً بلا messageId) عشرات المرات، كل بلاغ
+  // يُنشئ صفاً جديداً ويُطلق حدث Socket.IO منفصل لغرفة الأدمن.
+  test('POST /requests/:id/report-message — نفس المستخدم لا يقدر يُبلّغ نفس الطلب مرتين بلا messageId', async ({ request }) => {
+    const first = await request.post(`/api/requests/${acceptedRequest.id}/report-message`, {
+      headers: authHeader(technician.token),
+      form: { reason: 'سبب أول' },
+    });
+    expect(first.status()).toBe(200);
+
+    const second = await request.post(`/api/requests/${acceptedRequest.id}/report-message`, {
+      headers: authHeader(technician.token),
+      form: { reason: 'سبب ثانٍ لنفس الطلب' },
+    });
+    expect(second.status()).toBe(409);
+    const body = await second.json();
+    expect(body.code).toBe('REPORT_ALREADY_SUBMITTED');
+  });
+});
