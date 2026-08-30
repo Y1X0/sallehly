@@ -250,3 +250,126 @@ test.describe('[DB] تراجع كامل عند فشل معاملة إكمال ا
     }
   });
 });
+
+// [DATA-INTEGRITY-02] راجع DECISIONS.md وconfig/migrate.js
+// (migrateTableAddForeignKeys). يحاكي هذا الاختبار الترحيل الحقيقي على قاعدة
+// إنتاج قائمة فعلياً: قاعدة جديدة تُهاجَر أولاً بشكل طبيعي (كل الجداول الثمانية
+// تحصل على FK مباشرة من CREATE TABLE)، ثم تُعاد كتابة الجداول يدوياً بالشكل
+// القديم (بلا أي FOREIGN KEY، تماماً كحالة الإنتاج الحقيقية قبل هذا الإصلاح)
+// مع بيانات حقيقية مُدرَجة، ثم يُعاد تشغيل migrate() مرة ثانية — يجب أن يضيف
+// FK هذه المرة، وأن يحافظ على كل صف موجود مسبقاً بلا أي فقدان.
+test.describe('[DATA-INTEGRITY-02] إضافة FOREIGN KEY للجداول الثمانية على قاعدة موجودة مسبقاً', () => {
+  const OLD_SCHEMA = {
+    messages: `CREATE TABLE messages(id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL, sender_id INTEGER NOT NULL, body TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+    chat_violations: `CREATE TABLE chat_violations(id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL, user_id INTEGER NOT NULL, body TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, status TEXT NOT NULL DEFAULT 'مفتوح')`,
+    chat_reads: `CREATE TABLE chat_reads(request_id INTEGER NOT NULL, user_id INTEGER NOT NULL, last_read_message_id INTEGER DEFAULT 0, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY(request_id,user_id))`,
+    message_reports: `CREATE TABLE message_reports(id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL, message_id INTEGER, reporter_id INTEGER NOT NULL, reported_user_id INTEGER, reason TEXT NOT NULL, message_body TEXT, status TEXT DEFAULT 'قيد المراجعة', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+    user_blocks: `CREATE TABLE user_blocks(id INTEGER PRIMARY KEY AUTOINCREMENT, blocker_id INTEGER NOT NULL, blocked_id INTEGER NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, UNIQUE(blocker_id, blocked_id))`,
+    ratings: `CREATE TABLE ratings(id INTEGER PRIMARY KEY AUTOINCREMENT, request_id INTEGER NOT NULL UNIQUE, technician_id INTEGER NOT NULL, customer_id INTEGER NOT NULL, stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5), comment TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+    ledger: `CREATE TABLE ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, amount REAL NOT NULL, balance_after REAL NOT NULL, note TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+    complaints: `CREATE TABLE complaints(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, request_id INTEGER, subject TEXT NOT NULL, body TEXT NOT NULL, status TEXT DEFAULT 'open', created_at TEXT DEFAULT CURRENT_TIMESTAMP)`,
+  };
+
+  test('قاعدة قائمة مسبقاً بلا FK على الجداول الثمانية: migrate() يضيفها، ويحافظ على كل صف موجود، ويرفض صفوفاً يتيمة بعدها', () => {
+    const tmpPath = path.join(os.tmpdir(), `sallehly-fk-migration-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    const db = new Database(tmpPath);
+    try {
+      // خطوة 1: ترحيل طبيعي أولي — ينشئ users/requests/... (بما فيها الثمانية
+      // بصيغتها الجديدة مباشرة، بما أن القاعدة جديدة بالكامل هنا).
+      migrate(db);
+
+      const customerId = db.prepare("INSERT INTO users(role,name,email,phone,password_hash,city) VALUES('customer',?,?,?,?,?)")
+        .run('عميل ترحيل FK', 'fkmig-customer@example.com', '0791234567', 'x', CITY).lastInsertRowid;
+      const technicianId = db.prepare("INSERT INTO users(role,name,email,phone,password_hash,city) VALUES('technician',?,?,?,?,?)")
+        .run('فني ترحيل FK', 'fkmig-tech@example.com', '0791234568', 'x', CITY).lastInsertRowid;
+      const requestId = db.prepare("INSERT INTO requests(customer_id,technician_id,service,city,description,status) VALUES(?,?,?,?,?,?)")
+        .run(customerId, technicianId, SERVICE, CITY, 'طلب اختبار ترحيل FK', 'مكتمل').lastInsertRowid;
+      const messageId = db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)')
+        .run(requestId, customerId, 'رسالة قبل الترحيل').lastInsertRowid;
+
+      // خطوة 2: إعادة كتابة الجداول الثمانية يدوياً بالشكل القديم (بلا FK)
+      // مع نقل نفس البيانات المُدرَجة أعلاه — يحاكي بالضبط حالة قاعدة إنتاج
+      // حقيقية لم تُرحَّل بعد.
+      for (const table of Object.keys(OLD_SCHEMA)) {
+        const cols = db.prepare(`SELECT * FROM ${table} LIMIT 1`).columns().map((c) => c.name);
+        const rows = db.prepare(`SELECT * FROM ${table}`).all();
+        db.exec(`DROP TABLE ${table}`);
+        db.exec(OLD_SCHEMA[table]);
+        const colList = cols.join(',');
+        const placeholders = cols.map(() => '?').join(',');
+        const ins = db.prepare(`INSERT INTO ${table} (${colList}) VALUES(${placeholders})`);
+        for (const row of rows) ins.run(cols.map((c) => row[c]));
+      }
+
+      for (const table of Object.keys(OLD_SCHEMA)) {
+        expect(db.pragma(`foreign_key_list(${table})`), `${table} يجب أن يبدأ بلا FK بهذا الاختبار`).toHaveLength(0);
+      }
+
+      // خطوة 3: الترحيل الحقيقي قيد الاختبار — إعادة تشغيل migrate() على
+      // نفس القاعدة (بالضبط كإعادة نشر على قاعدة إنتاج قائمة).
+      expect(() => migrate(db)).not.toThrow();
+
+      for (const table of Object.keys(OLD_SCHEMA)) {
+        expect(db.pragma(`foreign_key_list(${table})`).length, `${table} يجب أن يحمل FK بعد الترحيل`).toBeGreaterThan(0);
+      }
+
+      // البيانات المُدرَجة قبل الترحيل ما زالت موجودة بلا أي فقدان
+      const preservedMessage = db.prepare('SELECT * FROM messages WHERE id=?').get(messageId);
+      expect(preservedMessage).toBeTruthy();
+      expect(preservedMessage.body).toBe('رسالة قبل الترحيل');
+      expect(preservedMessage.request_id).toBe(Number(requestId));
+
+      // sqlite_sequence استمر بشكل صحيح — إدراج جديد يأخذ id أعلى من أي موجود
+      const newMessageId = db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)')
+        .run(requestId, customerId, 'رسالة بعد الترحيل').lastInsertRowid;
+      expect(Number(newMessageId)).toBeGreaterThan(Number(messageId));
+
+      // FK يُطبَّق فعلياً الآن — صف يتيم (request_id غير موجود) يُرفَض
+      expect(() => {
+        db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(999999, customerId, 'رسالة يتيمة');
+      }).toThrow(/FOREIGN KEY constraint failed/);
+
+      // إعادة تشغيل migrate() ثالث مرة — idempotent، لا يعيد بناء ما هو مُهاجَر أصلاً
+      expect(() => migrate(db)).not.toThrow();
+      const stillThere = db.prepare('SELECT id FROM messages WHERE id=?').get(messageId);
+      expect(stillThere).toBeTruthy();
+    } finally {
+      db.close();
+      fs.rmSync(tmpPath, { force: true });
+      fs.rmSync(`${tmpPath}-wal`, { force: true });
+      fs.rmSync(`${tmpPath}-shm`, { force: true });
+    }
+  });
+
+  test('صف يتيم فعلي بجدول قديم: الترحيل يتراجع بأمان (rollback)، الجدول يبقى بلا FK، بلا فقدان بيانات، وبلا إسقاط migrate()', () => {
+    const tmpPath = path.join(os.tmpdir(), `sallehly-fk-migration-orphan-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    const db = new Database(tmpPath);
+    try {
+      migrate(db);
+
+      // إعادة كتابة chat_violations فقط بالشكل القديم، مع صف يتيم عمداً
+      // (request_id يشير لطلب غير موجود إطلاقاً) — يحاكي بيانات فاسدة نظرياً
+      // موجودة مسبقاً على قاعدة إنتاج، لم تُكتشَف بعد.
+      db.exec('DROP TABLE chat_violations');
+      db.exec(OLD_SCHEMA.chat_violations);
+      db.prepare("INSERT INTO chat_violations(request_id,user_id,body,reason) VALUES(?,?,?,?)")
+        .run(999999, 1, 'محتوى مخالفة', 'سبب');
+
+      // الترحيل الكامل لا يجب أن يرمي استثناءً غير مُلتقَط أبداً (يُسجَّل
+      // ويُتخطّى داخلياً، لا يُسقط الإقلاع بأكمله بسبب جدول واحد فاسد).
+      expect(() => migrate(db)).not.toThrow();
+
+      // الجدول المتأثر يبقى بلا FK (لم يُهاجَر) — تراجع تلقائي كامل
+      expect(db.pragma('foreign_key_list(chat_violations)')).toHaveLength(0);
+      // الصف اليتيم نفسه لا يزال موجوداً بلا أي فقدان (لم يُحذف بمنتصف عملية فاشلة)
+      const orphanRow = db.prepare('SELECT * FROM chat_violations WHERE request_id=?').get(999999);
+      expect(orphanRow).toBeTruthy();
+      expect(orphanRow.reason).toBe('سبب');
+    } finally {
+      db.close();
+      fs.rmSync(tmpPath, { force: true });
+      fs.rmSync(`${tmpPath}-wal`, { force: true });
+      fs.rmSync(`${tmpPath}-shm`, { force: true });
+    }
+  });
+});

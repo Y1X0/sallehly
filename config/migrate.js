@@ -108,12 +108,20 @@ CREATE TABLE IF NOT EXISTS offers(
   FOREIGN KEY(request_id) REFERENCES requests(id),
   FOREIGN KEY(technician_id) REFERENCES users(id)
 );
+-- [DATA-INTEGRITY-02] راجع DECISIONS.md — الجداول الثمانية أدناه (messages
+-- حتى complaints) تحمل الآن FOREIGN KEY صريحة على كل عمود يشير لـ
+-- users/requests/messages. هذا يخدم فقط تنصيباً جديداً بالكامل (لا صف
+-- موجود بعد) — قاعدة بيانات قائمة فعلياً على هذا الجدول تتجاهل هذا التعريف
+-- تماماً بفضل IF NOT EXISTS، وتُرحَّل بدالة migrateTableAddForeignKeys
+-- أدناه (إعادة بناء آمنة، لا ALTER — SQLite لا يدعم إضافة قيد FK لجدول قائم).
 CREATE TABLE IF NOT EXISTS messages(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id INTEGER NOT NULL,
   sender_id INTEGER NOT NULL,
   body TEXT NOT NULL,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(request_id) REFERENCES requests(id),
+  FOREIGN KEY(sender_id) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS chat_violations(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -121,14 +129,19 @@ CREATE TABLE IF NOT EXISTS chat_violations(
   user_id INTEGER NOT NULL,
   body TEXT NOT NULL,
   reason TEXT NOT NULL,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  status TEXT NOT NULL DEFAULT 'مفتوح',
+  FOREIGN KEY(request_id) REFERENCES requests(id),
+  FOREIGN KEY(user_id) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS chat_reads(
   request_id INTEGER NOT NULL,
   user_id INTEGER NOT NULL,
   last_read_message_id INTEGER DEFAULT 0,
   updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY(request_id,user_id)
+  PRIMARY KEY(request_id,user_id),
+  FOREIGN KEY(request_id) REFERENCES requests(id),
+  FOREIGN KEY(user_id) REFERENCES users(id)
 );
 -- [FIX-UGC-01] الإبلاغ عن رسالة مسيئة (Google Play User Generated Content policy)
 CREATE TABLE IF NOT EXISTS message_reports(
@@ -140,7 +153,11 @@ CREATE TABLE IF NOT EXISTS message_reports(
   reason TEXT NOT NULL,
   message_body TEXT,
   status TEXT DEFAULT 'قيد المراجعة',
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(request_id) REFERENCES requests(id),
+  FOREIGN KEY(message_id) REFERENCES messages(id),
+  FOREIGN KEY(reporter_id) REFERENCES users(id),
+  FOREIGN KEY(reported_user_id) REFERENCES users(id)
 );
 -- [FIX-UGC-01] حظر مستخدم لمستخدم آخر — يمنع التراسل بالاتجاهين بمجرد وجود
 -- سجل حظر من أي طرف (راجع الفحص بـ routes/chat.routes.js).
@@ -149,7 +166,9 @@ CREATE TABLE IF NOT EXISTS user_blocks(
   blocker_id INTEGER NOT NULL,
   blocked_id INTEGER NOT NULL,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(blocker_id, blocked_id)
+  UNIQUE(blocker_id, blocked_id),
+  FOREIGN KEY(blocker_id) REFERENCES users(id),
+  FOREIGN KEY(blocked_id) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS ratings(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -158,7 +177,10 @@ CREATE TABLE IF NOT EXISTS ratings(
   customer_id INTEGER NOT NULL,
   stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5),
   comment TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(request_id) REFERENCES requests(id),
+  FOREIGN KEY(technician_id) REFERENCES users(id),
+  FOREIGN KEY(customer_id) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS ledger(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,7 +189,8 @@ CREATE TABLE IF NOT EXISTS ledger(
   amount REAL NOT NULL,
   balance_after REAL NOT NULL,
   note TEXT,
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(user_id) REFERENCES users(id)
 );
 CREATE TABLE IF NOT EXISTS complaints(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -176,7 +199,9 @@ CREATE TABLE IF NOT EXISTS complaints(
   subject TEXT NOT NULL,
   body TEXT NOT NULL,
   status TEXT DEFAULT 'open',
-  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(user_id) REFERENCES users(id),
+  FOREIGN KEY(request_id) REFERENCES requests(id)
 );
 CREATE TABLE IF NOT EXISTS support_tickets(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -324,6 +349,161 @@ try { db.prepare('ALTER TABLE users ADD COLUMN deleted_at TEXT').run(); } catch 
 // COLUMN القياسي بـ SQLite) — سطر المراجعة بأسفل يتعامل معها بـfallback صريح
 // للتوافق مع أي طلب شحن قديم قُدِّم قبل هذا الإصلاح.
 try { db.prepare('ALTER TABLE topups ADD COLUMN commission_per_order REAL').run(); } catch (e) {}
+
+// [DATA-INTEGRITY-02] راجع DECISIONS.md — الجداول الثمانية أدناه (messages،
+// chat_violations، chat_reads، message_reports، user_blocks، ratings،
+// ledger، complaints) كانت تشير لـusers/requests/messages بمعرّف رقمي بلا
+// أي FOREIGN KEY مُصرَّح، فلا شيء كان يمنع صفاً يتيماً لو حُذف الصف المُشار
+// إليه مستقبلاً. SQLite لا يدعم ALTER TABLE ADD CONSTRAINT — الطريقة
+// الوحيدة لإضافة قيد FK لجدول قائم فعلياً هي إعادة بناء كامل: تسمية الجدول
+// القديم مؤقتاً، إنشاء الجديد (نفس الأعمدة بالضبط + FK)، نسخ الصفوف، حذف
+// القديم. هذا يُنفَّذ داخل db.transaction() واحدة لكل جدول — لو فشل أي جزء
+// (خصوصاً INSERT الأخير، الذي يفشل تلقائياً لو وُجد صف يتيم فعلي بما أن
+// foreign_keys=ON افتراضياً بـbetter-sqlite3، تحقَّق مباشرة) يتراجع كل شيء
+// تلقائياً (rollback) والجدول القديم يبقى تماماً كما كان — لا خطر تلف أو
+// حالة منتصفة أبداً، مهما حدث.
+//
+// idempotent فعلياً بلا أي عمود/جدول إضافي لتتبّع الحالة: فحص
+// `PRAGMA foreign_key_list(table)` قبل أي محاولة — تنصيب جديد بالكامل يحصل
+// على FK مباشرة من CREATE TABLE أعلاه فتكون القائمة غير فارغة فوراً
+// (تخطٍّ تلقائي)، وقاعدة بيانات مُرحَّلة مسبقاً (تشغيلة سابقة لهذا الكود)
+// لن تُعاد هجرتها مرة ثانية. يُنفَّذ بعد كل ALTER ADD COLUMN المذكورة أعلاه
+// (تحديداً بعد إضافة chat_violations.status) عمداً — أعمدة الجدول القديم
+// يجب أن تكون مكتملة أولاً حتى يطابق INSERT الصريح أدناه كل عمود موجود
+// فعلياً؛ ويُنفَّذ قبل أي CREATE INDEX يخص هذه الجداول تحديداً (أدناه
+// مباشرة) لأن حذف الجدول القديم يحذف فهارسه معه — تلك الفهارس تُعاد
+// إنشاؤها فوراً بعدها بفضل IF NOT EXISTS الموجودة أصلاً بكل واحدة.
+function migrateTableAddForeignKeys(db, table, createSql, columns) {
+  try {
+    const existingFks = db.pragma(`foreign_key_list(${table})`);
+    if (existingFks.length > 0) return; // مُهاجَر مسبقاً أو تنصيب جديد بالفعل
+
+    const tmpTable = `${table}_pre_fk_migration`;
+    const colList = columns.join(',');
+    const rebuild = db.transaction(() => {
+      db.exec(`ALTER TABLE ${table} RENAME TO ${tmpTable}`);
+      db.exec(createSql);
+      db.exec(`INSERT INTO ${table} (${colList}) SELECT ${colList} FROM ${tmpTable}`);
+      db.exec(`DROP TABLE ${tmpTable}`);
+    });
+    rebuild();
+    console.log(`[DATA-INTEGRITY-02] ${table}: أُضيفت قيود FOREIGN KEY بنجاح`);
+  } catch (e) {
+    // لا تُسقط الإقلاع أبداً — الجدول يبقى بحالته القديمة (بلا FK) بفضل
+    // rollback التلقائي، تماماً كأن هذا السطر لم يُنفَّذ إطلاقاً هذه المرة.
+    console.error(`[DATA-INTEGRITY-02] فشل ترحيل ${table} — الجدول بقي كما كان (لا بيانات ضائعة، تراجع تلقائي):`, e.message);
+  }
+}
+
+migrateTableAddForeignKeys(db, 'messages',
+  `CREATE TABLE messages(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    sender_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(request_id) REFERENCES requests(id),
+    FOREIGN KEY(sender_id) REFERENCES users(id)
+  )`,
+  ['id', 'request_id', 'sender_id', 'body', 'created_at']);
+
+migrateTableAddForeignKeys(db, 'chat_violations',
+  `CREATE TABLE chat_violations(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    body TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    status TEXT NOT NULL DEFAULT 'مفتوح',
+    FOREIGN KEY(request_id) REFERENCES requests(id),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  )`,
+  ['id', 'request_id', 'user_id', 'body', 'reason', 'created_at', 'status']);
+
+migrateTableAddForeignKeys(db, 'chat_reads',
+  `CREATE TABLE chat_reads(
+    request_id INTEGER NOT NULL,
+    user_id INTEGER NOT NULL,
+    last_read_message_id INTEGER DEFAULT 0,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(request_id,user_id),
+    FOREIGN KEY(request_id) REFERENCES requests(id),
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  )`,
+  ['request_id', 'user_id', 'last_read_message_id', 'updated_at']);
+
+migrateTableAddForeignKeys(db, 'message_reports',
+  `CREATE TABLE message_reports(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL,
+    message_id INTEGER,
+    reporter_id INTEGER NOT NULL,
+    reported_user_id INTEGER,
+    reason TEXT NOT NULL,
+    message_body TEXT,
+    status TEXT DEFAULT 'قيد المراجعة',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(request_id) REFERENCES requests(id),
+    FOREIGN KEY(message_id) REFERENCES messages(id),
+    FOREIGN KEY(reporter_id) REFERENCES users(id),
+    FOREIGN KEY(reported_user_id) REFERENCES users(id)
+  )`,
+  ['id', 'request_id', 'message_id', 'reporter_id', 'reported_user_id', 'reason', 'message_body', 'status', 'created_at']);
+
+migrateTableAddForeignKeys(db, 'user_blocks',
+  `CREATE TABLE user_blocks(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    blocker_id INTEGER NOT NULL,
+    blocked_id INTEGER NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(blocker_id, blocked_id),
+    FOREIGN KEY(blocker_id) REFERENCES users(id),
+    FOREIGN KEY(blocked_id) REFERENCES users(id)
+  )`,
+  ['id', 'blocker_id', 'blocked_id', 'created_at']);
+
+migrateTableAddForeignKeys(db, 'ratings',
+  `CREATE TABLE ratings(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL UNIQUE,
+    technician_id INTEGER NOT NULL,
+    customer_id INTEGER NOT NULL,
+    stars INTEGER NOT NULL CHECK(stars BETWEEN 1 AND 5),
+    comment TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(request_id) REFERENCES requests(id),
+    FOREIGN KEY(technician_id) REFERENCES users(id),
+    FOREIGN KEY(customer_id) REFERENCES users(id)
+  )`,
+  ['id', 'request_id', 'technician_id', 'customer_id', 'stars', 'comment', 'created_at']);
+
+migrateTableAddForeignKeys(db, 'ledger',
+  `CREATE TABLE ledger(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    type TEXT NOT NULL,
+    amount REAL NOT NULL,
+    balance_after REAL NOT NULL,
+    note TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  )`,
+  ['id', 'user_id', 'type', 'amount', 'balance_after', 'note', 'created_at']);
+
+migrateTableAddForeignKeys(db, 'complaints',
+  `CREATE TABLE complaints(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    request_id INTEGER,
+    subject TEXT NOT NULL,
+    body TEXT NOT NULL,
+    status TEXT DEFAULT 'open',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    FOREIGN KEY(request_id) REFERENCES requests(id)
+  )`,
+  ['id', 'user_id', 'request_id', 'subject', 'body', 'status', 'created_at']);
 
 // [FIX-CLEANUP-01] كان هنا سابقاً تعريف ثانٍ لجدول complaints بأعمدة مختلفة
 // (customer_id/technician_id بدل user_id/subject/status). بفضل IF NOT EXISTS
