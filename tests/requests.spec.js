@@ -402,30 +402,55 @@ test.describe('[SEC-FIX-COORDZERO-01] إحداثية 0 الشرعية لا تُ�
   });
 });
 
-test.describe('[SEC-FIX-NANTECHID-01] technician_id غير رقمي يُرفَض بوضوح، لا يتحوّل NULL بصمت', () => {
+// [FIX-DEADFIELD-02] راجع DECISIONS.md — إنشاء طلب موجَّه مباشرة لفني معيّن
+// (technician_id بجسم POST /requests) أُزيل بالكامل: لا شاشة بالتطبيق كانت
+// تستخدمه، فبقي ميزة خاملة تفتح سطح هجوم بلا فائدة (كان يمنع فنيين آخرين من
+// تقديم عروض على "طلب موجَّه"، وحده الذي يقرر أي مستخدم يرسل هذا الحقل خاماً
+// بالطلب). technician_id بالجدول يبقى NULL دائماً عند الإنشاء الآن — يُضبَط
+// فقط لاحقاً عند قبول عرض فعلي.
+test.describe('[FIX-DEADFIELD-02] technician_id بجسم POST /requests أُزيل — لا أثر له إطلاقاً الآن', () => {
   let customer;
+  let anotherTech;
 
   test.beforeAll(async ({ playwright }) => {
     const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
-    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار معرّف فني', city: CITY } });
+    customer = await registerAndVerify(request, { role: 'customer', extra: { name: 'عميل اختبار إزالة معرّف الفني', city: CITY } });
+    anotherTech = await registerAndVerify(request, {
+      role: 'technician',
+      extra: {
+        name: 'فني اختبار إزالة معرّف الفني', city: CITY, national_number: uniqueNationalNumber(),
+        services: SERVICE, areas: 'القويسمة',
+      },
+      multipart: { avatar: { name: 'a.png', mimeType: 'image/png', buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) } },
+    });
     await request.dispose();
   });
 
-  // [SEC-FIX-NANTECHID-01] راجع DECISIONS.md — `req.body.technician_id ? Number(...) : null`
-  // كانت تحوّل نصاً غير رقمي (truthy) لـNaN، ثم `if (requestedTechId)` يتخطى
-  // فحص وجود الفني (NaN falsy)، وbetter-sqlite3 يخزّن NaN كـNULL بصمت — طلب
-  // موجَّه فعلياً لمعرّف فني خاطئ كان يُقبَل بهدوء كطلب عام، لا يُرفَض أبداً.
-  test('POST /api/requests — technician_id نص غير رقمي يُرفَض بـ400 بدل أن يتحوّل NULL بصمت', async ({ request }) => {
+  test('POST /api/requests — technician_id (رقمي صحيح يشير لفني حقيقي) بجسم الطلب يُتجاهَل بالكامل، لا أثر له', async ({ request }) => {
     const res = await request.post('/api/requests', {
       headers: { Authorization: `Bearer ${customer.token}` },
-      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ لاختبار معرّف فني خاطئ', technician_id: 'abc' },
+      data: {
+        service: SERVICE, city: CITY, area: 'القويسمة',
+        description: 'وصف تجريبي كافٍ لاختبار إزالة ميزة الفني الموجَّه',
+        technician_id: anotherTech.user.id,
+      },
     });
-    expect(res.status()).toBe(400);
+    expect(res.status()).toBe(200);
     const body = await res.json();
-    expect(body.code).toBe('REQUEST_INVALID_TECHNICIAN_ID');
+    expect(body.request.technician_id).toBeNull();
   });
 
-  test('POST /api/requests — بلا technician_id إطلاقاً: تبقى NULL كسابقاً (لا تراجع)', async ({ request }) => {
+  test('POST /api/requests — technician_id بأي قيمة غير صالحة (نص عشوائي) لا يُسبّب أي خطأ، يُتجاهَل بصمت مثل أي حقل غير معروف آخر', async ({ request }) => {
+    const res = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ بمعرّف فني غير صالح تماماً', technician_id: 'abc' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.request.technician_id).toBeNull();
+  });
+
+  test('POST /api/requests — بلا technician_id إطلاقاً: يبقى NULL كسابقاً (لا تراجع)', async ({ request }) => {
     const res = await request.post('/api/requests', {
       headers: { Authorization: `Bearer ${customer.token}` },
       data: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ بلا معرّف فني إطلاقاً' },
@@ -433,5 +458,25 @@ test.describe('[SEC-FIX-NANTECHID-01] technician_id غير رقمي يُرفَض
     expect(res.status()).toBe(200);
     const body = await res.json();
     expect(body.request.technician_id).toBeNull();
+  });
+
+  // [FIX-DEADFIELD-02] راجع DECISIONS.md وoffers.routes.js — فرع
+  // "REQUEST_DIRECT_TO_OTHER_TECHNICIAN" أُزيل من POST /requests/:id/offer.
+  // بما أن الميزة نفسها أُزيلت (لا طريقة لإنشاء طلب موجَّه أصلاً)، لا يوجد
+  // مسار API يعيد إنتاج هذا الفرع اليوم — هذا الاختبار يثبت الأثر العملي
+  // المباشر: أي فني مؤهَّل (خدمة مطابقة) يقدر يقدّم عرضاً بلا أي قيد "توجيه"
+  // متبقٍّ على أي طلب عادي.
+  test('POST /requests/:id/offer — أي فني مؤهَّل يقدر يقدّم عرضاً بلا أي قيد "طلب موجَّه" متبقٍّ', async ({ request }) => {
+    const createRes = await request.post('/api/requests', {
+      headers: { Authorization: `Bearer ${customer.token}` },
+      multipart: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'وصف تجريبي كافٍ لاختبار عدم وجود قيد توجيه متبقٍّ' },
+    });
+    const requestId = (await createRes.json()).request.id;
+
+    const offerRes = await request.post(`/api/requests/${requestId}/offer`, {
+      headers: { Authorization: `Bearer ${anotherTech.token}` },
+      form: { offer_price: '20', duration: 'فوري' },
+    });
+    expect(offerRes.status()).toBe(200);
   });
 });

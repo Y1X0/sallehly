@@ -47,15 +47,6 @@ module.exports = function (deps) {
     // بالضبط كـundefined — فحص وجود صريح بدل الاعتماد على truthiness.
     const lat = (req.body.lat !== undefined && req.body.lat !== null && req.body.lat !== '') ? Number(req.body.lat) : null;
     const lng = (req.body.lng !== undefined && req.body.lng !== null && req.body.lng !== '') ? Number(req.body.lng) : null;
-    // [SEC-FIX-NANTECHID-01] راجع DECISIONS.md — نفس المشكلة أدناه لكن بشكل
-    // مختلف: `technician_id` غير رقمي (مثلاً نص عشوائي) كان يمر فحص truthiness
-    // (نص غير فارغ) فيتحوّل لـNaN بـNumber()، ثم `if (requestedTechId)` أسفل
-    // يتجاهله (NaN falsy) فيتخطى فحص وجود الفني تماماً، ويُخزَّن NULL بصمت
-    // (better-sqlite3 يحوّل NaN لـNULL بلا أي خطأ) — طلب المستخدم الموجَّه فعلياً
-    // لفني معيّن يتحوّل لطلب عام بلا أي تنبيه أن الفني المطلوب لم يُعالَج أصلاً.
-    const rawTechId = req.body.technician_id;
-    const requestedTechId = (rawTechId !== undefined && rawTechId !== null && rawTechId !== '') ? Number(rawTechId) : null;
-    if (requestedTechId !== null && isNaN(requestedTechId)) return res.status(400).json({ error: 'معرّف الفني غير صحيح', code: 'REQUEST_INVALID_TECHNICIAN_ID' });
     const problemImage = req.file ? '/uploads/requests/' + req.file.filename : '';
     if (!clean(service) || !clean(city) || clean(description).length < 10) return res.status(400).json({ error: 'أكمل بيانات الطلب: الخدمة، المحافظة، ووصف لا يقل عن 10 أحرف', code: 'REQUEST_INVALID_FIELDS' });
     if (clean(description).length > 1000) return res.status(400).json({ error: 'الوصف طويل جداً، الحد الأقصى 1000 حرف', code: 'REQUEST_DESCRIPTION_TOO_LONG' });
@@ -65,12 +56,13 @@ module.exports = function (deps) {
     if (lat !== null && (isNaN(lat) || lat < -90 || lat > 90)) return res.status(400).json({ error: 'إحداثيات غير صحيحة', code: 'REQUEST_INVALID_COORDINATES' });
     if (lng !== null && (isNaN(lng) || lng < -180 || lng > 180)) return res.status(400).json({ error: 'إحداثيات غير صحيحة', code: 'REQUEST_INVALID_COORDINATES' });
     if (clean(preferred_time || '').length > 100) return res.status(400).json({ error: 'وقت التفضيل طويل جداً', code: 'REQUEST_PREFERRED_TIME_TOO_LONG' });
-    if (requestedTechId) {
-      const tech = db.prepare("SELECT id FROM users WHERE id=? AND role='technician' AND is_active=1").get(requestedTechId);
-      if (!tech) return res.status(400).json({ error: 'الفني غير متاح أو لم تتم موافقته من الإدارة', code: 'REQUEST_TECHNICIAN_UNAVAILABLE' });
-    }
+    // [FIX-DEADFIELD-02] راجع DECISIONS.md — إنشاء طلب موجَّه مباشرة لفني معيّن
+    // (technician_id بجسم الطلب) أُزيل بالكامل: لا شاشة بالتطبيق تستخدمه، وكان
+    // يبقى ميزة خاملة تفتح سطح هجوم بلا فائدة فعلية. technician_id بجدول
+    // requests يبقى NULL دائماً عند الإنشاء، ولا يُضبَط إلا لاحقاً عند قبول عرض
+    // فعلي (routes/offers.routes.js) — نفس آلية التعيين الوحيدة الشرعية اليوم.
     const info = db.prepare('INSERT INTO requests(customer_id,technician_id,service,city,area,lat,lng,description,preferred_time,problem_image_url,status) VALUES(?,?,?,?,?,?,?,?,?,?,?)')
-      .run(req.user.id, requestedTechId, clean(service), clean(city), clean(area), lat, lng, clean(description), clean(preferred_time), problemImage, 'بانتظار العروض');
+      .run(req.user.id, null, clean(service), clean(city), clean(area), lat, lng, clean(description), clean(preferred_time), problemImage, 'بانتظار العروض');
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(info.lastInsertRowid);
     // [SEC-FIX-03] Targeted emit: only relevant users & admins
     safeEmit(request.id, 'request-status-updated', { request });

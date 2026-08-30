@@ -14,7 +14,12 @@ module.exports = function (deps) {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
     if (!['بانتظار العروض', 'وصلت عروض'].includes(r.status)) return res.status(400).json({ error: 'هذا الطلب لم يعد يستقبل عروضاً', code: 'REQUEST_NOT_ACCEPTING_OFFERS' });
-    if (r.technician_id && Number(r.technician_id) !== Number(req.user.id)) return res.status(403).json({ error: 'هذا الطلب مباشر لفني آخر', code: 'REQUEST_DIRECT_TO_OTHER_TECHNICIAN' });
+    // [FIX-DEADFIELD-02] راجع DECISIONS.md — فرع "طلب موجَّه مباشرة لفني آخر"
+    // أُزيل: كان يعتمد على requests.technician_id المضبوط عند الإنشاء (ميزة
+    // خاملة أُزيلت أيضاً بـrequests.routes.js) — بما أن الحالة هنا محصورة أصلاً
+    // بـ'بانتظار العروض'/'وصلت عروض' (السطر أعلاه)، وtechnician_id لا يُضبَط
+    // إلا عند قبول عرض (يُخرج الطلب من هاتين الحالتين تلقائياً)، هذا الفرع لم
+    // يعد قابلاً للتحقق إطلاقاً (r.technician_id مضمون NULL بهذه النقطة دوماً).
     const active = db.prepare("SELECT id, service FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') AND id<>? ORDER BY id DESC LIMIT 1").get(req.user.id, r.id);
     if (active) return res.status(409).json({ error: `لا يمكنك إرسال عرض جديد قبل إنهاء طلبك الحالي رقم ${active.id} - ${active.service}`, code: 'OFFER_ACTIVE_REQUEST_EXISTS', params: { id: active.id, service: active.service } });
     const tech = db.prepare('SELECT id,balance,free_offers_used,active_commission,services FROM users WHERE id=? AND role=\'technician\'').get(req.user.id);

@@ -88,7 +88,7 @@ test.describe('[SEC-FIX-STATUSFLOW-01] لا إكمال (أو تقدّم حالة
     expect(rateRes.status()).toBe(400);
   });
 
-  test('طلب موجَّه مباشرة لفني (technician_id عبر إنشاء الطلب) لم يقدّم عرضاً إطلاقاً: لا يمكن إكماله، ولا يُخصَم من رصيده أو حصته المجانية', async ({ request }) => {
+  test('طلب له technician_id مضبوط بلا أي عرض مقبول فعلياً: لا يمكن إكماله، ولا يُخصَم من رصيد الفني أو حصته المجانية', async ({ request }) => {
     const customer = await registerAndVerify(request, 'customer', { name: 'عميل تجربة الاستغلال الثاني', city: CITY });
     const technician = await registerAndVerify(request, 'technician', {
       name: 'فني لم يوافق على شيء', city: CITY, national_number: uniqueNationalNumber(), services: SERVICE, areas: 'القويسمة',
@@ -102,19 +102,26 @@ test.describe('[SEC-FIX-STATUSFLOW-01] لا إكمال (أو تقدّم حالة
       setupDb.close();
     }
 
-    // [استغلال محتمَل] العميل يستهدف الفني مباشرة عبر technician_id عند
-    // الإنشاء — حقل حقيقي بالـAPI (راجع routes/requests.routes.js) لكن غير
-    // مستخدَم من تطبيق العميل الحقيقي إطلاقاً. الفني لم يُقدِّم أي عرض بعد.
     const createRes = await request.post('/api/requests', {
       headers: authHeader(customer.token),
-      form: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب موجَّه مباشرة بلا موافقة الفني', technician_id: String(technician.user.id) },
+      form: { service: SERVICE, city: CITY, area: 'القويسمة', description: 'طلب موجَّه مباشرة بلا موافقة الفني' },
     });
     expect(createRes.ok()).toBeTruthy();
-    const body = await createRes.json();
-    expect(body.request.technician_id).toBe(technician.user.id);
-    expect(body.request.status).toBe('بانتظار العروض'); // لا يُقفز مباشرة لأي حالة موافقة
+    const requestId = (await createRes.json()).request.id;
 
-    const requestId = body.request.id;
+    // [استغلال محتمَل، طبقة دفاع ثانية] راجع DECISIONS.md [FIX-DEADFIELD-02] —
+    // POST /requests لم يعد يقبل technician_id عند الإنشاء إطلاقاً (الميزة
+    // أُزيلت بالكامل، لا مسار API ينتجها بعد اليوم). هذا الاختبار يبقى قائماً
+    // عمداً كطبقة دفاع مستقلة: حتى لو صار technician_id مضبوطاً بأي طريقة
+    // أخرى مستقبلاً (خطأ ترحيل بيانات، مسار جديد لم يُراجَع بعد) بلا عرض مقبول
+    // فعلياً، ضمانة SEC-FIX-STATUSFLOW-01 (لا إكمال بلا عرض مقبول حقيقي، لا
+    // مجرد technician_id مضبوط) يجب أن تبقى سارية بلا اعتماد على مصدر الحقل.
+    const setupDb2 = openTestDb();
+    try {
+      setupDb2.prepare('UPDATE requests SET technician_id=? WHERE id=?').run(technician.user.id, requestId);
+    } finally {
+      setupDb2.close();
+    }
 
     // محاولة الاستغلال الكاملة: إكمال فوري بلا أي عرض قُدِّم أو قُبِل.
     const forceCompleteRes = await request.post(`/api/requests/${requestId}/status`, {
