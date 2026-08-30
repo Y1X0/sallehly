@@ -11,11 +11,35 @@
 // لا يرمي استثناءً أبداً للمستدعي (نفس فلسفة uploadBackupOffsite بـ
 // services/offsite-backup.js) — فشل إرسال التنبيه نفسه لا يجوز أن يُسقط أو
 // حتى يُبطئ المسار الذي استدعاه أصلاً.
+//
+// [SEC-FIX-ERRORALERTTIMEOUT-01] راجع DECISIONS.md — تحديث لتوثيق سابق: كان
+// موثَّقاً بـSEC-FIX-EMAILCANCEL-01 أن resend.emails.send() هنا "لا يحجب
+// استجابة أي طلب مستخدم" فلا حاجة لمهلة — هذا صحيح لمستدعي middleware/security.js
+// (apiErrorHandler، fire-and-forget فعلاً) لكنه **غير صحيح** لمستدعي server.js
+// الآخر: معالج process.on('uncaughtException') ينتظر (await) اكتمال alertError()
+// صراحة قبل gracefulShutdown() (بنيّة واضحة: العملية قد تخرج خلال أجزاء من
+// الثانية، fire-and-forget هناك تحديداً قد يعني عدم اكتمال طلب الشبكة إطلاقاً).
+// بلا مهلة هنا، انقطاع/تعليق بطرف Resend بالضبط لحظة uncaughtException حقيقي
+// (حالة العملية غير موثوقة أصلاً) كان يعلّق alertError() للأبد، فيؤخّر
+// gracefulShutdown() (وبالتالي إعادة تشغيل العملية من منصة النشر) بلا أي حد
+// زمني — بالضبط أثناء اللحظة التي يكون التعافي السريع فيها أهم ما يكون.
+// withTimeout (15 ثانية، نفس مهلة OTP) تضمن أن alertError() نفسها لا تعلّق
+// أبداً، بغض النظر عن أي مستدعٍ.
 
 const { Resend } = require('resend');
 const { RESEND_API_KEY, RESEND_FROM, ALERT_EMAIL, IS_PROD } = require('../config/env');
+// [SEC-FIX-ERRORALERTTIMEOUT-01] راجع DECISIONS.md — withTimeout مصدَّرة من
+// services/email.js أصلاً (SEC-FIX-EMAILTIMEOUT-01/SEC-FIX-EMAILCANCEL-01)،
+// يُعاد استخدامها هنا حرفياً بدل تكرار نفس آلية Promise.race+AbortController.
+const { withTimeout } = require('./email');
 
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
+// نفس مهلة OTP بالضبط (services/email.js) — رسالة تنبيه خفيفة، لا سبب لمهلة
+// مختلفة. قابلة للتجاوز عبر ERROR_ALERT_TIMEOUT_MS (نفس نمط PERF_LOG_SLOW_MS
+// بـmiddleware/perf-monitor.js) فقط لتمكين اختبار السلوك الفعلي بمهلة قصيرة
+// بلا انتظار 15 ثانية حقيقية بكل تشغيلة اختبارات — الإنتاج لا يضبط هذا المتغيّر
+// إطلاقاً فيبقى على 15000 دائماً.
+const ALERT_SEND_TIMEOUT_MS = Number(process.env.ERROR_ALERT_TIMEOUT_MS) || 15000;
 const COOLDOWN_MS = 15 * 60 * 1000;
 const lastSentAt = new Map();
 
@@ -50,8 +74,12 @@ async function alertError(context, err) {
   const key = `${context}:${message}`.slice(0, 300);
   if (!shouldSend(key)) return false;
 
+  // [SEC-FIX-ERRORALERTTIMEOUT-01] راجع DECISIONS.md وتعليق أعلى الملف —
+  // نفس نمط sendOtpEmail (services/email.js) حرفياً: AbortController حقيقي
+  // + withTimeout، بدل resend.emails.send() خام بلا أي مهلة.
+  const controller = new AbortController();
   try {
-    await resend.emails.send({
+    await withTimeout(resend.emails.send({
       from: RESEND_FROM,
       to: ALERT_EMAIL,
       subject: `⚠️ صلّحلي — خطأ بالسيرفر: ${context}`,
@@ -64,7 +92,7 @@ async function alertError(context, err) {
           <p style="color:#888;font-size:12px;">لن يُرسَل تنبيه آخر لنفس الخطأ خلال ١٥ دقيقة.</p>
         </div>
       `
-    });
+    }, { signal: controller.signal }), ALERT_SEND_TIMEOUT_MS, 'error alert send timeout', () => controller.abort());
     return true;
   } catch (e) {
     console.error('[MON-FIX-01] فشل إرسال تنبيه الخطأ نفسه:', e.message);

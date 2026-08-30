@@ -261,8 +261,23 @@ module.exports = function (deps) {
       const d = JSON.parse(pending.data);
       if (d.type !== 'reset') return res.status(400).json({ error: 'طلب غير صحيح', code: 'RESET_INVALID_REQUEST_TYPE' });
       const hash = await bcrypt.hash(newPassword, 12);
-      db.prepare('UPDATE users SET password_hash=? WHERE id=?').run(hash, d.userId);
+      // [SEC-FIX-RESETTOKENVER-01] راجع DECISIONS.md — بعكس /me/password
+      // (SEC-FIX-09، يزيد token_version+1)، هذا المسار كان يعدّل password_hash
+      // فقط بلا لمس token_version إطلاقاً. أي JWT صادر قبل إعادة التعيين (مثلاً
+      // نسخة مسروقة كانت السبب الفعلي في لجوء صاحب الحساب لـ"نسيت كلمة السر"
+      // أصلاً) يبقى صالحاً بالكامل حتى انتهاء صلاحيته الطبيعية (7 أيام)، رغم
+      // تغيّر كلمة السر — يُبطل بالضبط الهدف الأمني الذي صُمِّم هذا التدفّق
+      // لتحقيقه (استرجاع التحكّم بحساب قد يكون تعرّض لاختراق). token_version+1
+      // هنا يُبطل أي توكن قائم فوراً؛ لا حاجة لإصدار توكن جديد (بعكس
+      // /me/password) لأن هذا المسار غير مصادَق أصلاً — المستخدم سيسجّل دخولاً
+      // جديداً بكلمة سره الجديدة كما تقول رسالة النجاح "يمكنك الدخول الآن".
+      db.prepare('UPDATE users SET password_hash=?, token_version=token_version+1 WHERE id=?').run(hash, d.userId);
       db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
+      // token_version+1 وحدها لا تقطع أي اتصال Socket.IO حي فوراً (يُعاد
+      // التحقق فقط عند اتصال جديد — راجع نطاق متروك عمداً بـ
+      // SEC-FIX-CHATSCOPE-03) — نفس نمط toggle/role/DELETE (routes/admin.routes.js)
+      // وDELETE /me المجاور تماماً بهذا الملف: قطع صريح لأي جلسة حيّة الآن.
+      try { io.in(`user-${d.userId}`).disconnectSockets(true); } catch (e2) {}
       res.json({ ok: true, message: 'تم تغيير كلمة السر بنجاح. يمكنك الدخول الآن.' });
     } catch (e) {
       res.status(500).json({ error: 'تعذر تحديث كلمة السر', code: 'RESET_UPDATE_FAILED' });
