@@ -536,6 +536,19 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_ledger_request ON ledger(reques
 // كتابته)، بنفس فلسفة عدم لمس أي عمود تاريخي موجود مسبقاً بهذا الملف.
 try { db.prepare('ALTER TABLE requests ADD COLUMN commission_refunded_at TEXT').run(); } catch (e) {}
 
+// [FEAT-COMPLAINTOUTCOME-01] راجع DECISIONS.md — POST /complaints/:id/status
+// كان يسمح بـstatus='resolved'/'rejected' بلا أي وصف لما حدث فعلياً؛ "شكوى
+// مُعلَّمة كمحلولة بلا أي إجراء مرفَق سجل كاذب" (قرار صاحب المنتج). عمودان
+// قابلان لـNULL — نفس نمط ALTER TABLE ADD COLUMN المُستخدَم بكل هذا الملف.
+// outcome enum ثابت (لا نص حر) يشمل 'no_action' كقيمة أولى-درجة صريحة —
+// شكوى غير مؤسَّسة تُغلَق بصدق ("رُوجعت، لا إجراء") بدل الضغط نحو استرداد
+// غير مستحق فقط لإغلاق التذكرة (قرار صاحب المنتج صراحة). NULL لكل الصفوف
+// القديمة المغلقة مسبقاً قبل هذا الإصلاح — لا محاولة استرجاع تاريخي هنا
+// (بعكس FEAT-REFUND-01 أعلاه)، لأن لا حقل موجود مسبقاً يحمل هذه المعلومة
+// إطلاقاً لأي صف قديم؛ عرضها كـ"لا يوجد سجل" أصدق من أي تخمين.
+try { db.prepare('ALTER TABLE complaints ADD COLUMN outcome TEXT').run(); } catch (e) {}
+try { db.prepare('ALTER TABLE complaints ADD COLUMN outcome_note TEXT').run(); } catch (e) {}
+
 // [FEAT-REFUND-01] ترحيل صفوف تاريخية — فقط نوع 'خصم عمولة طلب' قابل
 // للاسترجاع فعلياً من بيانات موجودة: ملاحظته (note) مُولَّدة آلياً بالكامل
 // (لا نص مستخدم مطلقاً — راجع routes/requests.routes.js) وتتبع قالباً

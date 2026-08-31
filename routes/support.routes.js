@@ -5,7 +5,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io } = deps.realtime;
   const { auth, requireRole } = deps.middleware;
-  const { clean, notify } = deps.utils;
+  const { clean, notify, logAudit } = deps.utils;
   const { sendPush } = deps.services;
   const { supportLimiter } = deps.limiters;
   const router = express.Router();
@@ -175,6 +175,22 @@ module.exports = function (deps) {
     res.json({ complaints });
   });
 
+  // [FEAT-COMPLAINTOUTCOME-01] راجع DECISIONS.md — إغلاق شكوى ('resolved' أو
+  // 'rejected') يتطلّب الآن إجراءً موصوفاً صراحة، لا مجرد قلب status. outcome
+  // enum ثابت يشمل 'no_action' كخيار أول-درجة شرعي (شكوى غير مؤسَّسة — "رُوجعت
+  // ولم يُتَّخذ إجراء" سجل صادق، بعكس الضغط نحو استرداد غير مستحق فقط لإغلاق
+  // التذكرة). الحالتان غير المُغلِقتان ('open'/'in_review') تبقيان بلا أي
+  // متطلَّب إضافي — لا تغيير سلوكي عليهما.
+  const COMPLAINT_CLOSING_STATUSES = ['resolved', 'rejected'];
+  const COMPLAINT_OUTCOMES = ['no_action', 'refund', 'compensation', 'request_cancelled', 'other'];
+  const complaintOutcomeLabels = {
+    no_action: 'لا إجراء (شكوى غير مؤسَّسة)',
+    refund: 'استرداد عمولة',
+    compensation: 'تعويض (تعديل رصيد)',
+    request_cancelled: 'إلغاء الطلب',
+    other: 'إجراء آخر'
+  };
+
   // ── تحديث حالة الشكوى (أدمن فقط) — يستخدم عمود status الموجود أصلاً بالجدول ──
   router.post('/complaints/:id/status', auth, requireRole('admin'), (req, res) => {
     const id = parseInt(req.params.id, 10);
@@ -184,9 +200,40 @@ module.exports = function (deps) {
     if (!allowed.includes(status)) return res.status(400).json({ error: 'حالة غير صحيحة', code: 'STATUS_INVALID' });
     const existing = db.prepare('SELECT id FROM complaints WHERE id=?').get(id);
     if (!existing) return res.status(404).json({ error: 'الشكوى غير موجودة', code: 'COMPLAINT_NOT_FOUND' });
-    db.prepare('UPDATE complaints SET status=? WHERE id=?').run(status, id);
+
+    // [FEAT-COMPLAINTOUTCOME-01] outcome/outcome_note إلزاميان فقط عند
+    // الإغلاق. إعادة فتح شكوى مغلقة سابقاً (status تعود لـ'open'/'in_review')
+    // تصفّرهما عمداً — سجل إجراء قديم لشكوى أُعيد فتحها للتحقيق لم يعد صحيحاً.
+    let outcome = null;
+    let outcomeNote = null;
+    if (COMPLAINT_CLOSING_STATUSES.includes(status)) {
+      outcome = clean(req.body.outcome || '');
+      if (!COMPLAINT_OUTCOMES.includes(outcome)) {
+        return res.status(400).json({
+          error: 'يجب تحديد الإجراء المتّخذ فعلياً لإغلاق الشكوى (بما فيها "لا إجراء" لو كانت غير مؤسَّسة)',
+          code: 'COMPLAINT_OUTCOME_REQUIRED'
+        });
+      }
+      outcomeNote = clean(req.body.outcome_note || '');
+      if (!outcomeNote || outcomeNote.length < 3) {
+        return res.status(400).json({ error: 'وصف الإجراء المتّخذ إلزامي (3 أحرف على الأقل)', code: 'COMPLAINT_OUTCOME_NOTE_REQUIRED' });
+      }
+      if (outcomeNote.length > 500) {
+        return res.status(400).json({ error: 'وصف الإجراء طويل جداً، الحد الأقصى 500 حرف', code: 'COMPLAINT_OUTCOME_NOTE_TOO_LONG' });
+      }
+    }
+
+    db.prepare('UPDATE complaints SET status=?, outcome=?, outcome_note=? WHERE id=?').run(status, outcome, outcomeNote, id);
     const complaint = db.prepare('SELECT * FROM complaints WHERE id=?').get(id);
     io.to('admin-room').emit('complaint-status-updated', { complaint });
+
+    if (COMPLAINT_CLOSING_STATUSES.includes(status)) {
+      logAudit({
+        adminId: req.user.id, actorName: req.user.name,
+        action: 'إغلاق شكوى', targetType: 'complaint', targetId: id,
+        details: { status, outcome, outcome_note: outcomeNote }
+      });
+    }
 
     // [NOTIF-PHASE2B-1] نسخة دائمة لصاحب الشكوى — complaintId ضمن data فقط
     // (لا عمود مخصّص له بجدول notifications، بنفس منطق الإنشاء أعلاه).
