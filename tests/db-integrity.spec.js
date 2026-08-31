@@ -291,10 +291,18 @@ test.describe('[DATA-INTEGRITY-02] إضافة FOREIGN KEY للجداول الث�
       // مع نقل نفس البيانات المُدرَجة أعلاه — يحاكي بالضبط حالة قاعدة إنتاج
       // حقيقية لم تُرحَّل بعد.
       for (const table of Object.keys(OLD_SCHEMA)) {
-        const cols = db.prepare(`SELECT * FROM ${table} LIMIT 1`).columns().map((c) => c.name);
+        const liveCols = db.prepare(`SELECT * FROM ${table} LIMIT 1`).columns().map((c) => c.name);
         const rows = db.prepare(`SELECT * FROM ${table}`).all();
         db.exec(`DROP TABLE ${table}`);
         db.exec(OLD_SCHEMA[table]);
+        // [FEAT-REFUND-01] راجع DECISIONS.md — OLD_SCHEMA يحاكي شكل الجدول
+        // *قبل* DATA-INTEGRITY-02 (بلا FK)، وهو تاريخياً أقدم أيضاً من أي عمود
+        // أُضيف لاحقاً (مثل ledger.request_id) — فلا يحمله. تقاطع الأعمدة هنا
+        // يمنع محاولة إدراج عمود لا وجود له بالشكل القديم المُعاد إنشاؤه؛
+        // بلا هذا التقاطع، أي عمود جديد يُضاف مستقبلاً لأحد الجداول الثمانية
+        // بعد إقرار FK يكسر هذا الاختبار بنفس الطريقة تماماً.
+        const oldCols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+        const cols = liveCols.filter((c) => oldCols.includes(c));
         const colList = cols.join(',');
         const placeholders = cols.map(() => '?').join(',');
         const ins = db.prepare(`INSERT INTO ${table} (${colList}) VALUES(${placeholders})`);
@@ -365,6 +373,69 @@ test.describe('[DATA-INTEGRITY-02] إضافة FOREIGN KEY للجداول الث�
       const orphanRow = db.prepare('SELECT * FROM chat_violations WHERE request_id=?').get(999999);
       expect(orphanRow).toBeTruthy();
       expect(orphanRow.reason).toBe('سبب');
+    } finally {
+      db.close();
+      fs.rmSync(tmpPath, { force: true });
+      fs.rmSync(`${tmpPath}-wal`, { force: true });
+      fs.rmSync(`${tmpPath}-shm`, { force: true });
+    }
+  });
+});
+
+// [FEAT-REFUND-01] راجع DECISIONS.md — ledger لم يحمل قط عمود request_id.
+// يحاكي هذا الاختبار قاعدة إنتاج قائمة فعلياً بصفوف ledger قديمة (بلا
+// request_id، الشكل الذي كانت عليه قبل هذا الإصلاح) بأنواعها الأربعة
+// الحقيقية، ثم يُعيد تشغيل migrate() — يجب أن يربط فقط نوع 'خصم عمولة طلب'
+// القابل فعلياً للاسترجاع من نص note الثابت، ويترك كل شيء آخر NULL كما هو.
+test.describe('[FEAT-REFUND-01] ترحيل ledger.request_id من بيانات تاريخية', () => {
+  const OLD_LEDGER_SCHEMA = `CREATE TABLE ledger(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, type TEXT NOT NULL, amount REAL NOT NULL, balance_after REAL NOT NULL, note TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(user_id) REFERENCES users(id))`;
+
+  test('يربط فقط صفوف "خصم عمولة طلب" ذات note قابل للتحليل ويشير لطلب موجود فعلاً — كل شيء آخر يبقى NULL', () => {
+    const tmpPath = path.join(os.tmpdir(), `sallehly-ledger-request-id-backfill-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    const db = new Database(tmpPath);
+    try {
+      migrate(db);
+
+      const technicianId = db.prepare("INSERT INTO users(role,name,email,phone,password_hash,city) VALUES('technician',?,?,?,?,?)")
+        .run('فني ترحيل ledger', 'ledgermig-tech@example.com', '0791234570', 'x', CITY).lastInsertRowid;
+      const customerId = db.prepare("INSERT INTO users(role,name,email,phone,password_hash,city) VALUES('customer',?,?,?,?,?)")
+        .run('عميل ترحيل ledger', 'ledgermig-cust@example.com', '0791234571', 'x', CITY).lastInsertRowid;
+      const realRequestId = db.prepare("INSERT INTO requests(customer_id,technician_id,service,city,description,status,commission_charged) VALUES(?,?,?,?,?,?,?)")
+        .run(customerId, technicianId, SERVICE, CITY, 'طلب حقيقي لاختبار ترحيل ledger', 'مكتمل', 2).lastInsertRowid;
+
+      // إعادة كتابة ledger بالشكل القديم (بلا request_id) — يحاكي بيانات
+      // إنتاج حقيقية قبل هذا الإصلاح.
+      db.exec('DROP TABLE ledger');
+      db.exec(OLD_LEDGER_SCHEMA);
+      const insLedger = db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note) VALUES(?,?,?,?,?)');
+      const rowChargeReal = insLedger.run(technicianId, 'خصم عمولة طلب', -2, 98, `خصم عمولة الطلب رقم ${realRequestId}`).lastInsertRowid;
+      const rowChargeMissingRequest = insLedger.run(technicianId, 'خصم عمولة طلب', -2, 96, 'خصم عمولة الطلب رقم 999999999').lastInsertRowid;
+      const rowChargeUnparsable = insLedger.run(technicianId, 'خصم عمولة طلب', -2, 94, 'ملاحظة قديمة بصيغة غير متوقعة').lastInsertRowid;
+      const rowFreeRequest = insLedger.run(technicianId, 'طلب مجاني', 0, 94, 'تم احتساب الطلب ضمن أول طلبين مجانيين').lastInsertRowid;
+      // يحمل "رقم <N>" شكلياً مثل نوع خصم العمولة تماماً — يثبت أن الفلترة
+      // بالـtype لا بالنص هي ما يمنع هذا الصف من أن يُلتقَط بالخطأ.
+      const rowTopup = insLedger.run(technicianId, 'شحن رصيد', 20, 114, 'موافقة على طلب شحن رقم 5').lastInsertRowid;
+      const rowManualAdjust = insLedger.run(technicianId, 'تعديل يدوي من الإدارة', 10, 124, 'تعويض عام').lastInsertRowid;
+
+      expect(() => migrate(db)).not.toThrow();
+
+      const columns = db.prepare('PRAGMA table_info(ledger)').all().map((c) => c.name);
+      expect(columns).toContain('request_id');
+
+      const get = (id) => db.prepare('SELECT request_id FROM ledger WHERE id=?').get(id).request_id;
+      expect(get(rowChargeReal)).toBe(Number(realRequestId));
+      expect(get(rowChargeMissingRequest)).toBeNull();
+      expect(get(rowChargeUnparsable)).toBeNull();
+      expect(get(rowFreeRequest)).toBeNull();
+      expect(get(rowTopup)).toBeNull();
+      expect(get(rowManualAdjust)).toBeNull();
+
+      // تشغيل migrate() مرة ثانية — idempotent، لا يعيد معالجة صفوف مُرحَّلة
+      // مسبقاً ولا يرمي استثناءً، ولا يغيّر ما تُرك NULL عمداً.
+      expect(() => migrate(db)).not.toThrow();
+      expect(get(rowChargeReal)).toBe(Number(realRequestId));
+      expect(get(rowChargeMissingRequest)).toBeNull();
+      expect(get(rowFreeRequest)).toBeNull();
     } finally {
       db.close();
       fs.rmSync(tmpPath, { force: true });

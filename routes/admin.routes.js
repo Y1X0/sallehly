@@ -641,13 +641,14 @@ module.exports = function (deps) {
   // markChatRead — عرض الأدمن للمحادثة لا يجوز أن يغيّر مؤشر "تمت المشاهدة"
   // الخاص بالطرفين الفعليين.
   //
-  // عمداً بلا أي محاولة لربط قيود دفتر الأستاذ (ledger) بهذا الطلب: الجدول
-  // لا يحمل عمود request_id إطلاقاً (راجع config/migrate.js) — الرابط
-  // الوحيد المتاح نص حر بحقل note (مثال: "خصم عمولة الطلب رقم 42")، ومطابقة
-  // نصية عليه هشة وعرضة للانحراف الصامت (نفس فئة SEC-FIX-LIKEESCAPE-01 —
-  // "يبدو فلترة صحيحة لكنه ليس كذلك دائماً"). العمود الموثوق فعلاً لمعرفة
-  // "هل خُصمت عمولة على هذا الطلب تحديداً وكم" هو requests.commission_charged
-  // نفسه — موجود أصلاً ضمن SELECT * أدناه، لا حاجة لأي join إضافي هش.
+  // [FEAT-REFUND-01] راجع DECISIONS.md — ledger يحمل الآن عمود request_id
+  // فعلياً (لم يكن موجوداً وقت كتابة هذا المسار أول مرة، راجع config/migrate.js)،
+  // لكن هذا المسار عمداً لا يزال بلا أي join لقيود دفتر الأستاذ — خارج نطاق
+  // ما طُلب بهذه الجولة (البند #2 فقط: عرض الطلب/العروض/المحادثة). العمود
+  // الموثوق فعلاً لمعرفة "هل خُصمت عمولة على هذا الطلب تحديداً وكم" يبقى
+  // requests.commission_charged نفسه (موجود أصلاً ضمن SELECT * أدناه)، وحالة
+  // الاسترداد عبر commission_refunded_at الجديد أيضاً — كلاهما كافٍ لعرض
+  // بند "الاسترداد" بشاشة تفاصيل الطلب لاحقاً بلا أي join إضافي لو طُلب ذلك.
   router.get('/admin/requests/:id', auth, requireRole('admin'), (req, res) => {
     const id = parseInt(req.params.id, 10);
     if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
@@ -675,6 +676,76 @@ module.exports = function (deps) {
     const messages = getMessages(req.user, id);
 
     res.json({ request, offers, messages });
+  });
+
+  // [FEAT-REFUND-01] راجع DECISIONS.md — استرداد إداري حقيقي لعمولة طلب،
+  // البند #3 من أدوات حل النزاعات المعتمدة. قبل هذا المسار كانت "adjustUserBalance"
+  // أعلاه (POST /admin/users/:id/balance) الأداة الوحيدة المتاحة لتعويض فني —
+  // لكنها تكتب دائماً كـ'تعديل يدوي من الإدارة'، فلا فرق مرئي بين استرداد
+  // نزاع فعلي وأي تعديل رصيد عشوائي آخر. هذا المسار مخصَّص فقط لعكس عمولة
+  // مخصومة فعلياً على طلب بعينه: نوع ledger مختلف تماماً ('استرداد عمولة نزاع')
+  // ومرتبط بـrequest_id (العمود الجديد)، فيبقى قابلاً للتمييز والتتبّع للأبد
+  // عن أي تعديل يدوي عام.
+  //
+  // استرداد كامل فقط، لا مبلغ جزئي يُدخله الأدمن — "استرداد جزئي أسوأ من
+  // عدمه" (قرار صاحب المنتج). المبلغ المُستَرَد = commission_charged بالضبط،
+  // محسوب من الخادم لا من مدخل مستخدم، فلا احتمال لخطأ كتابة يعكس مبلغاً
+  // خاطئاً. commission_charged نفسه لا يُصفَّر أو يُعاد كتابته أبداً — يبقى
+  // السجل التاريخي لما خُصم فعلياً لحظة الإكمال؛ commission_refunded_at وحده
+  // يميّز الحالة، ويمنع استرداداً ثانياً لنفس الطلب.
+  //
+  // معاملة واحدة (db.transaction) لتحديث رصيد الفني وضبط commission_refunded_at
+  // وكتابة قيد ledger معاً — لا يمكن أن ينجح جزء ويفشل آخر (بالضبط طلب صاحب
+  // المنتج: "عكس commission_charged وإضافة الرصيد للفني معاملة واحدة").
+  router.post('/admin/requests/:id/refund-commission', auth, requireRole('admin'), (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    const r = db.prepare('SELECT * FROM requests WHERE id=?').get(id);
+    if (!r) return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!r.technician_id) return res.status(400).json({ error: 'لا يوجد فني مرتبط بهذا الطلب', code: 'REQUEST_NO_TECHNICIAN' });
+    if (r.commission_charged === null || r.commission_charged <= 0) {
+      return res.status(400).json({ error: 'لا توجد عمولة مخصومة على هذا الطلب لاستردادها', code: 'REQUEST_NO_COMMISSION_CHARGED' });
+    }
+    if (r.commission_refunded_at) return res.status(400).json({ error: 'تم استرداد عمولة هذا الطلب مسبقاً', code: 'REQUEST_ALREADY_REFUNDED' });
+    const reason = clean(req.body.reason || '');
+    if (!reason || reason.length < 3) return res.status(400).json({ error: 'سبب الاسترداد إلزامي (3 أحرف على الأقل)' });
+    if (reason.length > 300) return res.status(400).json({ error: 'السبب طويل جداً، الحد الأقصى 300 حرف' });
+
+    const tech = db.prepare('SELECT * FROM users WHERE id=?').get(r.technician_id);
+    if (!tech) return res.status(404).json({ error: 'الفني غير موجود' });
+    if (tech.deleted_at) return res.status(400).json({ error: 'لا يمكن استرداد عمولة لحساب فني محذوف', code: 'TECHNICIAN_DELETED' });
+
+    const amount = Number(r.commission_charged);
+    const after = Number((Number(tech.balance || 0) + amount).toFixed(2));
+
+    const doRefund = db.transaction(() => {
+      db.prepare('UPDATE users SET balance=? WHERE id=?').run(after, tech.id);
+      db.prepare('UPDATE requests SET commission_refunded_at=CURRENT_TIMESTAMP WHERE id=?').run(id);
+      db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note,request_id) VALUES(?,?,?,?,?,?)')
+        .run(tech.id, 'استرداد عمولة نزاع', amount, after, reason, id);
+    });
+    doRefund();
+
+    logAudit({
+      adminId: req.user.id, actorName: req.user.name,
+      action: 'استرداد عمولة طلب', targetType: 'request', targetId: id,
+      details: { technician_id: tech.id, amount, balance_after: after, reason }
+    });
+    io.to(`user-${tech.id}`).emit('balance-updated', { balance: after, status: 'admin-refunded' });
+
+    // نفس نمط FIX-NOTIF-GAP-01 أعلاه بالضبط (adjustUserBalance) — Push + سجلّ دائم.
+    if (tech.fcm_token) {
+      sendPush(tech.fcm_token, '💰 تم استرداد عمولة طلب لحسابك', reason, { type: 'topup' });
+    }
+    notify({
+      userId: tech.id,
+      type: 'wallet',
+      title: 'تم استرداد عمولة طلب لحسابك',
+      body: reason,
+      data: { refundedBy: 'admin', requestId: id }
+    });
+
+    res.json({ ok: true, request_id: id, technician_id: tech.id, amount, balance_after: after });
   });
 
   // ── سجل عمليات الأدمن (Audit Log) ──

@@ -292,13 +292,17 @@ module.exports = function (deps) {
         let charge = 0;
         if (tech.free_orders_used < 2) {
           db.prepare('UPDATE users SET free_orders_used=free_orders_used+1, completed_jobs=completed_jobs+1 WHERE id=?').run(tech.id);
-          db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note) VALUES(?,?,?,?,?)').run(tech.id, 'طلب مجاني', 0, tech.balance, 'تم احتساب الطلب ضمن أول طلبين مجانيين');
+          // [FEAT-REFUND-01] راجع DECISIONS.md — request_id يُمرَّر مباشرة من
+          // الكود، لا يُستنتَج لاحقاً من نص note (لا يحمله note هذا النوع أصلاً).
+          db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note,request_id) VALUES(?,?,?,?,?,?)').run(tech.id, 'طلب مجاني', 0, tech.balance, 'تم احتساب الطلب ضمن أول طلبين مجانيين', r.id);
         } else {
           charge = COMMISSION;
           if (tech.balance < charge) throw Object.assign(new Error('رصيد الفني غير كافٍ لإكمال الطلب. يجب شحن الرصيد أولاً.'), { status: 400, code: 'TECHNICIAN_BALANCE_INSUFFICIENT' });
           const after = Number((tech.balance - charge).toFixed(2));
           db.prepare('UPDATE users SET balance=?, completed_jobs=completed_jobs+1 WHERE id=?').run(after, tech.id);
-          db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note) VALUES(?,?,?,?,?)').run(tech.id, 'خصم عمولة طلب', -charge, after, `خصم عمولة الطلب رقم ${r.id}`);
+          // [FEAT-REFUND-01] راجع DECISIONS.md — request_id مباشرة من الكود
+          // أيضاً هنا (كان سابقاً مُستخرَجاً فقط من نص note بالترحيل التاريخي).
+          db.prepare('INSERT INTO ledger(user_id,type,amount,balance_after,note,request_id) VALUES(?,?,?,?,?,?)').run(tech.id, 'خصم عمولة طلب', -charge, after, `خصم عمولة الطلب رقم ${r.id}`, r.id);
         }
         db.prepare('UPDATE requests SET commission_charged=? WHERE id=?').run(charge, r.id);
         charged = charge;
