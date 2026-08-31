@@ -49,3 +49,32 @@ jobs:
           echo "API layer healthy (401 as expected)."
 
           echo "Smoke test passed: frontend serving, API routing + auth middleware alive."
+
+      - name: Verify sallehly.onrender.com is not directly reachable (trust proxy = 2 assumption)
+        run: |
+          set -e
+          # [SEC-FIX-TRUSTPROXY-CLOSED-01] راجع DECISIONS.md — app.js's
+          # `trust proxy = 2` يفترض أن كل طلب يمر بهوبين بالضبط (Cloudflare
+          # edge + بروكسي Render الداخلي). هذا الافتراض صحيح فقط طالما أصل
+          # Render الافتراضي (sallehly.onrender.com) غير قابل للوصول مباشرة
+          # متجاوزاً Cloudflare — لو صار قابلاً للوصول (تغيير إعداد Render،
+          # أو إضافته كنطاق مخصَّص بالخطأ...)، أي طلب عبره يحمل هوباً واحداً
+          # لا اثنين، فـ`req.ip` (الذي يعتمد عليه كل express-rate-limit
+          # بالمشروع) يصبح قابلاً للتزوير بالكامل عبر X-Forwarded-For مصطنعة.
+          # هذا الفحص كان غائباً تماماً حتى تحقُّق ميداني يدوي واحد أثبت
+          # الافتراض صحيحاً وقتها — بلا هذا، أي انحراف إعداد لاحق بـRender
+          # يعيد فتح هذه الثغرة بصمت تام، بلا أي إشارة بالكود أو بالسجلات.
+          #
+          # الفحص: /api/requests يرجع 401 فقط لو طلب فعلي وصل لـmiddleware
+          # المصادقة الحقيقي بتطبيقنا (نفس منطق فحص API_URL أعلاه بالضبط) —
+          # أي رد آخر (صفحة "not found" من Render نفسه، فشل اتصال، مهلة)
+          # يعني الأصل لا يزال غير قابل للوصول مباشرة كما هو مفترَض.
+          ONRENDER_API_URL="https://sallehly.onrender.com/api/requests"
+          ONRENDER_STATUS=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$ONRENDER_API_URL" || echo "000")
+
+          if [ "$ONRENDER_STATUS" = "401" ]; then
+            echo "::error::sallehly.onrender.com is directly reachable and serving the app ($ONRENDER_API_URL returned 401, meaning our own auth middleware answered). trust proxy = 2 in config/env.js assumes the Render origin is unreachable except through Cloudflare's 2-hop chain — a directly-reachable origin makes X-Forwarded-For forgeable, bypassing every express-rate-limit in the project. See DECISIONS.md: SEC-FIX-TRUSTPROXY-CLOSED-01."
+            exit 1
+          fi
+
+          echo "sallehly.onrender.com not serving the app directly (status: $ONRENDER_STATUS) — trust proxy = 2 assumption still holds."
