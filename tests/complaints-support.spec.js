@@ -137,13 +137,18 @@ test.describe.serial('الشكاوى', () => {
     expect(mine.customer_name).toBeTruthy();
   });
 
-  test('POST /complaints/:id/status — الأدمن يحدّث الحالة إلى resolved', async ({ request }) => {
+  // [FEAT-COMPLAINTOUTCOME-01] راجع DECISIONS.md — إغلاق شكوى (status='resolved'
+  // أو 'rejected') يتطلّب الآن outcome/outcome_note أيضاً، لا status وحدها.
+  test('POST /complaints/:id/status — الأدمن يحدّث الحالة إلى resolved مع outcome/outcome_note', async ({ request }) => {
     const res = await request.post(`/api/complaints/${complaintId}/status`, {
       headers: authHeader(adminToken),
-      form: { status: 'resolved' },
+      form: { status: 'resolved', outcome: 'compensation', outcome_note: 'تم تعويض العميل عن التأخير بتعديل رصيد يدوي' },
     });
     expect(res.status()).toBe(200);
-    expect((await res.json()).complaint.status).toBe('resolved');
+    const body = await res.json();
+    expect(body.complaint.status).toBe('resolved');
+    expect(body.complaint.outcome).toBe('compensation');
+    expect(body.complaint.outcome_note).toBe('تم تعويض العميل عن التأخير بتعديل رصيد يدوي');
   });
 
   test('POST /complaints/:id/status — يرفض حالة غير معروفة', async ({ request }) => {
@@ -152,6 +157,127 @@ test.describe.serial('الشكاوى', () => {
       form: { status: 'not_a_real_status' },
     });
     expect(res.status()).toBe(400);
+  });
+});
+
+// [FEAT-COMPLAINTOUTCOME-01] راجع DECISIONS.md — إغلاق شكوى (status='resolved'
+// أو 'rejected') يتطلّب outcome (enum ثابت يشمل 'no_action' كخيار شرعي أول-درجة)
+// وoutcome_note (وصف نصي إلزامي)؛ الحالتان غير المُغلِقتان ('open'/'in_review')
+// تبقيان بلا أي متطلَّب إضافي. كل اختبار يبني شكواه الخاصة (لا سلسلة serial
+// مشترَكة) لتجنّب أي تشابك حالة بين الحالات المختلفة المُختبَرة.
+test.describe('[FEAT-COMPLAINTOUTCOME-01] إغلاق الشكوى يتطلّب outcome/outcome_note', () => {
+  let customer;
+  let adminToken;
+
+  test.beforeAll(async ({ playwright }) => {
+    const request = await playwright.request.newContext({ baseURL: 'http://127.0.0.1:4001' });
+    customer = await registerAndVerify(request, 'customer', { name: 'عميل اختبار نتيجة الشكوى', city: CITY });
+    adminToken = await loginAdmin(request);
+    await request.dispose();
+  });
+
+  async function createComplaint(request, body) {
+    const res = await request.post('/api/complaints', {
+      headers: authHeader(customer.token),
+      form: { body },
+    });
+    expect(res.ok()).toBeTruthy();
+    return (await res.json()).complaint.id;
+  }
+
+  test('إغلاق بـstatus=resolved بلا outcome إطلاقاً: 400 COMPLAINT_OUTCOME_REQUIRED', async ({ request }) => {
+    const id = await createComplaint(request, 'شكوى لاختبار غياب outcome عند الإغلاق');
+    const res = await request.post(`/api/complaints/${id}/status`, {
+      headers: authHeader(adminToken),
+      form: { status: 'resolved' },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('COMPLAINT_OUTCOME_REQUIRED');
+  });
+
+  test('إغلاق بـstatus=rejected بقيمة outcome غير معروفة: 400 COMPLAINT_OUTCOME_REQUIRED', async ({ request }) => {
+    const id = await createComplaint(request, 'شكوى لاختبار قيمة outcome غير صحيحة');
+    const res = await request.post(`/api/complaints/${id}/status`, {
+      headers: authHeader(adminToken),
+      form: { status: 'rejected', outcome: 'قيمة_غير_موجودة', outcome_note: 'وصف كافٍ الطول' },
+    });
+    expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('COMPLAINT_OUTCOME_REQUIRED');
+  });
+
+  test('إغلاق بـoutcome صحيح لكن بلا outcome_note (أو قصير جداً): 400 COMPLAINT_OUTCOME_NOTE_REQUIRED', async ({ request }) => {
+    const id = await createComplaint(request, 'شكوى لاختبار غياب outcome_note');
+    const missing = await request.post(`/api/complaints/${id}/status`, {
+      headers: authHeader(adminToken),
+      form: { status: 'resolved', outcome: 'no_action' },
+    });
+    expect(missing.status()).toBe(400);
+    expect((await missing.json()).code).toBe('COMPLAINT_OUTCOME_NOTE_REQUIRED');
+
+    const tooShort = await request.post(`/api/complaints/${id}/status`, {
+      headers: authHeader(adminToken),
+      form: { status: 'resolved', outcome: 'no_action', outcome_note: 'قص' },
+    });
+    expect(tooShort.status()).toBe(400);
+    expect((await tooShort.json()).code).toBe('COMPLAINT_OUTCOME_NOTE_REQUIRED');
+  });
+
+  // [FEAT-COMPLAINTOUTCOME-01] الهدف الصريح المطلوب: 'no_action' خيار إغلاق
+  // شرعي بذاته — شكوى غير مؤسَّسة تُغلَق بصدق كـ"رُوجعت، لا إجراء" بدل أي
+  // ضغط نحو استرداد أو تعويض غير مستحق فقط لإغلاق التذكرة.
+  test('إغلاق برفض الشكوى بـoutcome=no_action ونص سبب حقيقي: ينجح، القيم تُخزَّن وتُرجَع كما هي', async ({ request }) => {
+    const id = await createComplaint(request, 'شكوى غير مؤسَّسة لاختبار no_action');
+    const res = await request.post(`/api/complaints/${id}/status`, {
+      headers: authHeader(adminToken),
+      form: { status: 'rejected', outcome: 'no_action', outcome_note: 'تمت مراجعة المحادثة والطلب — لا دليل على تقصير الفني، الشكوى غير مؤسَّسة' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.complaint.status).toBe('rejected');
+    expect(body.complaint.outcome).toBe('no_action');
+    expect(body.complaint.outcome_note).toBe('تمت مراجعة المحادثة والطلب — لا دليل على تقصير الفني، الشكوى غير مؤسَّسة');
+
+    // يظهر بنفس القيم عبر GET /complaints أيضاً — لا فرق بين ما يُرجعه POST وGET
+    const listRes = await request.get('/api/complaints', { headers: authHeader(adminToken) });
+    const listed = (await listRes.json()).complaints.find((c) => c.id === id);
+    expect(listed.outcome).toBe('no_action');
+  });
+
+  test('نقل الحالة إلى in_review أو open (غير مُغلِقة): لا يتطلّب outcome إطلاقاً — بلا تغيير سلوكي', async ({ request }) => {
+    const id = await createComplaint(request, 'شكوى لاختبار الحالات غير المُغلِقة');
+    const res = await request.post(`/api/complaints/${id}/status`, {
+      headers: authHeader(adminToken),
+      form: { status: 'in_review' },
+    });
+    expect(res.status()).toBe(200);
+    const body = await res.json();
+    expect(body.complaint.status).toBe('in_review');
+    expect(body.complaint.outcome).toBeNull();
+  });
+
+  // [FEAT-COMPLAINTOUTCOME-01] إعادة فتح شكوى مغلقة مسبقاً يجب أن يصفّر
+  // outcome/outcome_note القديمين — سجل إجراء شكوى أُعيد فتحها للتحقيق لم
+  // يعد صحيحاً، وإبقاؤه سيوحي زوراً بأن القرار ما زال نهائياً.
+  test('إعادة فتح شكوى مُغلَقة (resolved → open): outcome وoutcome_note القديمان يُصفَّران', async ({ request }) => {
+    const id = await createComplaint(request, 'شكوى لاختبار إعادة الفتح بعد الإغلاق');
+    const closeRes = await request.post(`/api/complaints/${id}/status`, {
+      headers: authHeader(adminToken),
+      form: { status: 'resolved', outcome: 'refund', outcome_note: 'تم استرداد عمولة الطلب المرتبط' },
+    });
+    expect(closeRes.status()).toBe(200);
+    expect((await closeRes.json()).complaint.outcome).toBe('refund');
+
+    const reopenRes = await request.post(`/api/complaints/${id}/status`, {
+      headers: authHeader(adminToken),
+      form: { status: 'open' },
+    });
+    expect(reopenRes.status()).toBe(200);
+    const reopenBody = await reopenRes.json();
+    expect(reopenBody.complaint.status).toBe('open');
+    expect(reopenBody.complaint.outcome).toBeNull();
+    expect(reopenBody.complaint.outcome_note).toBeNull();
   });
 });
 

@@ -505,6 +505,94 @@ migrateTableAddForeignKeys(db, 'complaints',
   )`,
   ['id', 'user_id', 'request_id', 'subject', 'body', 'status', 'created_at']);
 
+// [FEAT-REFUND-01] راجع DECISIONS.md وتعليق FEAT-ADMINREQUESTDETAIL-01 بـ
+// routes/admin.routes.js — ledger لم يحمل قط عمود يربطها بالطلب المسبِّب
+// لها، فكان مستحيلاً تتبّع أي قيد مالي لسبب حدوثه دون قراءة note كنص حر.
+// عمود بسيط قابل لـNULL بلا FOREIGN KEY (لا إعادة بناء جدول، بعكس الثمانية
+// أعلاه) — نفس نمط cancel_reason/cancelled_by/cancelled_at بـrequests
+// بالضبط: ALTER TABLE ADD COLUMN لعمود قابل لـNULL بلا DEFAULT محسوب هو
+// عملية meta-data فقط بـSQLite بصرف النظر عن حجم الجدول، لا تنسخ أو تعيد
+// كتابة أي صف — مُنفَّذ بعد استدعاءات migrateTableAddForeignKeys أعلاه
+// عمداً (لا قبلها) حتى لو أعاد أحدها بناء الجدول لأي سبب مستقبلي، هذا
+// العمود يُضاف بعد اكتمال ذلك دائماً.
+//
+// NULL له معنيان مختلفان تماماً حسب type، وهذا مقصود لا نقص موحَّد:
+// (1) "لا علاقة بطلب أصلاً" لنوعي 'شحن رصيد' و'تعديل يدوي من الإدارة' —
+// الأول مرتبط بطلب شحن (topups)، الثاني عام بلا سياق طلب إطلاقاً؛ يبقى
+// NULL للأبد بتصميم متعمَّد لكلا النوعين، وليس فجوة ترحيل.
+// (2) "كان يمكن ربطه لكن تعذّر استرجاعه من صفوف قديمة" لنوع 'طلب مجاني'
+// فقط تحديداً — راجع سبب ذلك بالترحيل أدناه.
+// الأسطر الجديدة (INSERT) بـrequests.routes.js تمرّر request_id مباشرة من
+// كود التطبيق نفسه من الآن فصاعداً لكلا نوعي 'طلب مجاني' و'خصم عمولة طلب' —
+// لا نص حر يُقرأ لاحقاً لاستنتاجه إطلاقاً لأي قيد جديد يُكتَب بعد هذا التعديل.
+try { db.prepare('ALTER TABLE ledger ADD COLUMN request_id INTEGER').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_ledger_request ON ledger(request_id)').run(); } catch (e) {}
+// [FEAT-REFUND-01] راجع DECISIONS.md — يميّز طلباً استُردَّت عمولته إدارياً
+// (POST /admin/requests/:id/refund-commission، routes/admin.routes.js) عن
+// طلب لم تُخصَم عليه عمولة قط بعد (commission_charged لا يزال NULL) أو
+// خُصمت ولم تُسترَد (commission_charged رقم، هذا العمود NULL). يمنع استرداداً
+// مزدوجاً على نفس الطلب — commission_charged نفسه يبقى بلا أي تعديل حتى بعد
+// الاسترداد (سجل تاريخي لما خُصم فعلياً لحظة الإكمال، لا يُصفَّر أو يُعاد
+// كتابته)، بنفس فلسفة عدم لمس أي عمود تاريخي موجود مسبقاً بهذا الملف.
+try { db.prepare('ALTER TABLE requests ADD COLUMN commission_refunded_at TEXT').run(); } catch (e) {}
+
+// [FEAT-COMPLAINTOUTCOME-01] راجع DECISIONS.md — POST /complaints/:id/status
+// كان يسمح بـstatus='resolved'/'rejected' بلا أي وصف لما حدث فعلياً؛ "شكوى
+// مُعلَّمة كمحلولة بلا أي إجراء مرفَق سجل كاذب" (قرار صاحب المنتج). عمودان
+// قابلان لـNULL — نفس نمط ALTER TABLE ADD COLUMN المُستخدَم بكل هذا الملف.
+// outcome enum ثابت (لا نص حر) يشمل 'no_action' كقيمة أولى-درجة صريحة —
+// شكوى غير مؤسَّسة تُغلَق بصدق ("رُوجعت، لا إجراء") بدل الضغط نحو استرداد
+// غير مستحق فقط لإغلاق التذكرة (قرار صاحب المنتج صراحة). NULL لكل الصفوف
+// القديمة المغلقة مسبقاً قبل هذا الإصلاح — لا محاولة استرجاع تاريخي هنا
+// (بعكس FEAT-REFUND-01 أعلاه)، لأن لا حقل موجود مسبقاً يحمل هذه المعلومة
+// إطلاقاً لأي صف قديم؛ عرضها كـ"لا يوجد سجل" أصدق من أي تخمين.
+try { db.prepare('ALTER TABLE complaints ADD COLUMN outcome TEXT').run(); } catch (e) {}
+try { db.prepare('ALTER TABLE complaints ADD COLUMN outcome_note TEXT').run(); } catch (e) {}
+
+// [FEAT-REFUND-01] ترحيل صفوف تاريخية — فقط نوع 'خصم عمولة طلب' قابل
+// للاسترجاع فعلياً من بيانات موجودة: ملاحظته (note) مُولَّدة آلياً بالكامل
+// (لا نص مستخدم مطلقاً — راجع routes/requests.routes.js) وتتبع قالباً
+// ثابتاً `خصم عمولة الطلب رقم ${r.id}` لم يتغيّر شكله إطلاقاً منذ إدخاله
+// أول مرة (تحقَّقنا من تاريخ الملف الكامل عبر git log -p — لا نخمّن).
+// نوع 'طلب مجاني' يبقى NULL عمداً لكل الصفوف القديمة — ملاحظته النصية عامة
+// بلا أي رقم طلب مضمَّن إطلاقاً ("تم احتساب الطلب ضمن أول طلبين مجانيين")،
+// ولا يوجد أي حقل آخر بالجدول يفكّ الغموض (فني واحد قد يُنجز عدة طلبات
+// مجانية متتالية بفارق ثوانٍ) — مطابقة بالتوقيت الأقرب كانت ستكون تخميناً
+// لا استرجاعاً، بالضبط ما طُلب تجنّبه صراحةً؛ تُترَك NULL بصراحة بدل تخمين.
+//
+// يتحقّق أيضاً أن صف الطلب المُستخرَج فعلياً موجود بجدول requests قبل
+// الكتابة (دفاعي بحت، احتياط ضد بيانات تالفة نظرياً) — لا يكتب أبداً
+// معرّفاً لا وجود له. الشرط WHERE request_id IS NULL يجعل هذا idempotent
+// فعلياً: تكرار الإقلاع لا يعيد المحاولة على صفوف رُحِّلت مسبقاً (أو تُركت
+// NULL بالفحص السابق لعدم مطابقة القالب). كل الترحيل داخل معاملة واحدة
+// (all-or-nothing — فشل أي جزء غير متوقَّع يُرجع كل الصفوف لحالتها قبل
+// المحاولة، لا حالة نصف-مكتملة أبداً)، ومُغلَّف بـtry/catch خارجي لا يُسقط
+// الإقلاع مهما حدث — نفس نمط ترحيل free_offers_used أعلاه بالضبط.
+try {
+  const unlinkedCharges = db.prepare(
+    "SELECT id, note FROM ledger WHERE type='خصم عمولة طلب' AND request_id IS NULL"
+  ).all();
+  const backfillOne = db.prepare('UPDATE ledger SET request_id=? WHERE id=?');
+  const requestExists = db.prepare('SELECT 1 FROM requests WHERE id=?');
+  let backfilled = 0;
+  const runBackfill = db.transaction(() => {
+    for (const row of unlinkedCharges) {
+      const match = /رقم\s+(\d+)\s*$/.exec(row.note || '');
+      if (!match) continue;
+      const requestId = Number(match[1]);
+      if (!requestExists.get(requestId)) continue;
+      backfillOne.run(requestId, row.id);
+      backfilled++;
+    }
+  });
+  runBackfill();
+  if (unlinkedCharges.length > 0) {
+    console.log(`[FEAT-REFUND-01] ترحيل ledger.request_id: ${backfilled}/${unlinkedCharges.length} صف "خصم عمولة طلب" رُبط بنجاح (الباقي تُرك NULL — قالب note غير مطابق أو الطلب المشار إليه غير موجود).`);
+  }
+} catch (e) {
+  console.error('[FEAT-REFUND-01] فشل ترحيل ledger.request_id — العمود موجود وتبقى الصفوف غير المُرحَّلة NULL كما كانت (تراجع تلقائي، لا بيانات تالفة)، سيُعاد المحاولة بالإقلاع القادم:', e.message);
+}
+
 // [FIX-CLEANUP-01] كان هنا سابقاً تعريف ثانٍ لجدول complaints بأعمدة مختلفة
 // (customer_id/technician_id بدل user_id/subject/status). بفضل IF NOT EXISTS
 // لم يكن له أي أثر فعلي إطلاقاً — الجدول الحقيقي المُستخدَم فعلياً بكل أرجاء
