@@ -5,7 +5,7 @@ module.exports = function (deps) {
   const { db, path } = deps;
   const { io, safeEmit } = deps.realtime;
   const { auth, requireRole, requireSuperAdmin } = deps.middleware;
-  const { clean, logAudit, anonymizeUser, notify } = deps.utils;
+  const { clean, logAudit, anonymizeUser, notify, getMessages } = deps.utils;
   const { createDbBackup, sendPush } = deps.services;
   const router = express.Router();
 
@@ -624,6 +624,57 @@ module.exports = function (deps) {
       details: { reason, previous_status: r.status }
     });
     res.json({ request });
+  });
+
+  // [FEAT-ADMINREQUESTDETAIL-01] راجع DECISIONS.md — لم يكن هناك أي endpoint
+  // يجمّع صورة كاملة لطلب واحد قبل هذا. أدمن يحاول الحكم بنزاع كان مضطراً
+  // يجمّع القطع يدوياً من شاشات منفصلة (قائمة الطلبات المسطَّحة، بروفايل
+  // العميل، بروفايل الفني) — ولا شاشة، ولا حتى endpoint، تعرض محادثة الطلب
+  // رغم أن canAccessRequestChat (utils/helpers.js) تسمح للأدمن بها صراحة
+  // منذ البداية. هذا المسار يجمع الثلاثة معاً: صف الطلب كاملاً (يشمل
+  // cancel_reason/cancelled_by/cancelled_at — مُسجَّلة أصلاً بقاعدة البيانات
+  // منذ POST /admin/requests/:id/cancel لكن لم تكن تُعرَض بأي مكان)، كل
+  // العروض المُقدَّمة عليه (لا المقبول فقط — تاريخ التفاوض كاملاً يهمّ عند
+  // الحكم بنزاع)، والمحادثة الكاملة (عبر getMessages المشتركة نفسها
+  // المستخدَمة بـGET /requests/:id/messages — لا نسخة SQL موازية، نفس درس
+  // SEC-FIX-CHATACCESS-CHOKEPOINT-01 بالضبط). عمداً بلا استدعاء
+  // markChatRead — عرض الأدمن للمحادثة لا يجوز أن يغيّر مؤشر "تمت المشاهدة"
+  // الخاص بالطرفين الفعليين.
+  //
+  // عمداً بلا أي محاولة لربط قيود دفتر الأستاذ (ledger) بهذا الطلب: الجدول
+  // لا يحمل عمود request_id إطلاقاً (راجع config/migrate.js) — الرابط
+  // الوحيد المتاح نص حر بحقل note (مثال: "خصم عمولة الطلب رقم 42")، ومطابقة
+  // نصية عليه هشة وعرضة للانحراف الصامت (نفس فئة SEC-FIX-LIKEESCAPE-01 —
+  // "يبدو فلترة صحيحة لكنه ليس كذلك دائماً"). العمود الموثوق فعلاً لمعرفة
+  // "هل خُصمت عمولة على هذا الطلب تحديداً وكم" هو requests.commission_charged
+  // نفسه — موجود أصلاً ضمن SELECT * أدناه، لا حاجة لأي join إضافي هش.
+  router.get('/admin/requests/:id', auth, requireRole('admin'), (req, res) => {
+    const id = parseInt(req.params.id, 10);
+    if (isNaN(id)) return res.status(400).json({ error: 'معرّف غير صحيح' });
+    const request = db.prepare(`
+      SELECT r.*,
+        c.name customer_name, c.phone customer_phone,
+        t.name technician_name, t.phone technician_phone,
+        cb.name cancelled_by_name
+      FROM requests r
+      JOIN users c ON c.id = r.customer_id
+      LEFT JOIN users t ON t.id = r.technician_id
+      LEFT JOIN users cb ON cb.id = r.cancelled_by
+      WHERE r.id = ?
+    `).get(id);
+    if (!request) return res.status(404).json({ error: 'الطلب غير موجود' });
+
+    const offers = db.prepare(`
+      SELECT o.*, u.name technician_name
+      FROM offers o
+      JOIN users u ON u.id = o.technician_id
+      WHERE o.request_id = ?
+      ORDER BY o.id
+    `).all(id);
+
+    const messages = getMessages(req.user, id);
+
+    res.json({ request, offers, messages });
   });
 
   // ── سجل عمليات الأدمن (Audit Log) ──
