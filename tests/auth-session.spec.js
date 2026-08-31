@@ -87,6 +87,42 @@ test.describe.serial('إبطال الجلسات (token_version) وتناسق req
     expect(newWorks.status()).toBe(200);
   });
 
+  // [SEC-FIX-MEPWSOCKET-01] راجع DECISIONS.md — POST /me/password كان يزيد
+  // token_version (يُبطل REST) لكن بلا قطع أي اتصال Socket.IO حي بهذا
+  // الحساب، بعكس كل مسار آخر يزيد token_version (logout، reset-password،
+  // admin toggle/role/DELETE). نفس نمط اختبار reset-password أدناه بالضبط.
+  test('POST /me/password — يقطع فوراً اتصال Socket.IO الحي بهذا الحساب (نفس نمط reset-password أعلاه)', async ({ request, baseURL }) => {
+    const customer = await registerAndVerify(request, 'customer', { name: 'عميل سوكت تغيير كلمة سر', city: CITY });
+
+    const socket = ioClient(baseURL, {
+      auth: { token: customer.token },
+      transports: ['websocket'],
+      reconnection: false,
+    });
+
+    await new Promise((resolve, reject) => {
+      socket.on('connect', resolve);
+      socket.on('connect_error', reject);
+      setTimeout(() => reject(new Error('انتهت مهلة الاتصال بالسوكت')), 8000);
+    });
+
+    const disconnected = new Promise((resolve) => {
+      socket.on('disconnect', (reason) => resolve(reason));
+      setTimeout(() => resolve(null), 8000);
+    });
+
+    const changeRes = await request.post('/api/me/password', {
+      headers: authHeader(customer.token),
+      data: { current_password: VALID_PASSWORD, new_password: 'NewSocketPass456' },
+    });
+    expect(changeRes.status()).toBe(200);
+
+    const reason = await disconnected;
+    expect(reason).toBe('io server disconnect');
+
+    socket.close();
+  });
+
   test('GET /me وغيرها — لا تُسرّب عمود token_version الداخلي إطلاقاً', async ({ request }) => {
     const customer = await registerAndVerify(request, 'customer', { name: 'عميل فحص التسريب', city: CITY });
     const res = await request.get('/api/me', { headers: authHeader(customer.token) });

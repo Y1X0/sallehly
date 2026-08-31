@@ -9,7 +9,8 @@
 
 const { test, expect } = require('@playwright/test');
 const http = require('http');
-const { alertError, shouldSend, lastSentAt } = require('../services/error-alert');
+const express = require('express');
+const { alertError, shouldSend, lastSentAt, computeDedupKey } = require('../services/error-alert');
 
 // نفس نمط freshRequire بـtests/email-prod-safety.spec.js: يستورد الوحدة طازجة
 // بمتغيرات بيئة مختلفة (تفريغ الكاش أولاً)، ويعيد كل شيء لحالته الطبيعية بعدها.
@@ -72,6 +73,75 @@ test.describe('[SEC-FIX-ERRORALERTMAP-01] تنظيف مفاتيح lastSentAt م�
     expect(shouldSend(freshKey)).toBe(true);
     expect(lastSentAt.has(freshKey)).toBe(true);
     expect(shouldSend(freshKey)).toBe(false); // ما زال ضمن الكبح، لم يُحذف
+  });
+});
+
+// [SEC-FIX-ALERTKEYDOS-01] راجع DECISIONS.md — مفتاح كبح التكرار كان مبنياً
+// من err.message مباشرة. لأخطاء JSON مشوَّه (body-parser)، Node يُضمِّن
+// مقتطفاً حرفياً من محتوى الطلب برسالة الخطأ — مهاجم غير مصادَق يقدر يغيّر
+// بايتات الجسم بكل طلب فيتجاوز الكبح كلياً. هذا الاختبار يبني نفس الخطأ
+// الحقيقي الذي ينتجه body-parser فعلاً (لا كائن Error مصطنَع يدوياً) عبر
+// تطبيق Express حقيقي مصغَّر، بحمولتين مختلفتين تماماً، ويثبت أن المفتاح
+// الناتج متطابق الآن — الكبح يعمل رغم اختلاف محتوى الطلب.
+async function triggerRealJsonSyntaxError(app, body) {
+  return new Promise((resolve) => {
+    const server = app.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      const req = http.request(
+        { port, host: '127.0.0.1', path: '/x', method: 'POST', headers: { 'Content-Type': 'application/json' } },
+        (res) => { res.on('data', () => {}); res.on('end', () => server.close(() => resolve())); }
+      );
+      req.end(body);
+    });
+  });
+}
+
+test.describe('[SEC-FIX-ALERTKEYDOS-01] مفتاح الكبح لا يتأثر بمحتوى الطلب — كبح فعلي، لا قابل للتجاوز', () => {
+  test('حمولتان JSON مشوَّهتان مختلفتان تماماً من نفس نقطة الفشل الحقيقية (body-parser) تُنتجان نفس المفتاح', async () => {
+    let capturedErrors = [];
+    const app = express();
+    app.use(express.json());
+    app.post('/x', (req, res) => res.json({ ok: true }));
+    // eslint-disable-next-line no-unused-vars
+    app.use((err, req, res, next) => {
+      capturedErrors.push(err);
+      res.status(400).json({ error: 'bad' });
+    });
+
+    await triggerRealJsonSyntaxError(app, '{"a":AAAA_ATTACKER_MARKER_ONE_XYZ}');
+    await triggerRealJsonSyntaxError(app, '{"a":BBBB_ATTACKER_MARKER_TWO_QRS}');
+
+    expect(capturedErrors).toHaveLength(2);
+    const [err1, err2] = capturedErrors;
+
+    // إثبات أن هذين خطأين حقيقيين مختلفَي الرسالة فعلاً (لا اختبار زائف).
+    expect(err1.message).not.toBe(err2.message);
+    expect(err1.message).toContain('AAAA');
+    expect(err2.message).toContain('BBBB');
+
+    // الإثبات الجوهري: نفس المفتاح رغم اختلاف الرسالة الكامل.
+    const key1 = computeDedupKey('API error', err1);
+    const key2 = computeDedupKey('API error', err2);
+    expect(key1).toBe(key2);
+
+    // وأثر ذلك فعلياً على shouldSend: الحمولة الثانية (خطأ "مختلف" ظاهرياً)
+    // مكبوحة الآن، لا مُنبَّهة كل مرة كما كان يحدث قبل الإصلاح.
+    const testKey = key1 + '-shouldsend-test-' + Date.now();
+    expect(shouldSend(testKey)).toBe(true);
+    expect(shouldSend(testKey)).toBe(false);
+  });
+
+  test('خطآن حقيقيان مختلفان فعلياً (context مختلف) يبقيان يُنتجان مفاتيح مختلفة — التمييز الحقيقي لم يُفقَد', () => {
+    const err = new Error('نفس نوع الخطأ');
+    const keyA = computeDedupKey('API error', err);
+    const keyB = computeDedupKey('uncaughtException', err);
+    expect(keyA).not.toBe(keyB);
+  });
+
+  test('نوعا خطأ مختلفان (TypeError مقابل SyntaxError) بنفس context يُنتجان مفاتيح مختلفة', () => {
+    const keyType = computeDedupKey('API error', new TypeError('x'));
+    const keySyntax = computeDedupKey('API error', new SyntaxError('x'));
+    expect(keyType).not.toBe(keySyntax);
   });
 });
 

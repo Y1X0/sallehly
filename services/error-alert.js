@@ -65,13 +65,37 @@ function shouldSend(key) {
   return true;
 }
 
+// [SEC-FIX-ALERTKEYDOS-01] راجع DECISIONS.md — كان مفتاح الكبح مبنياً من
+// `err.message` مباشرة. لأخطاء مثل SyntaxError الصادرة عن body-parser عند
+// JSON مشوَّه، Node يُضمِّن مقتطفاً حرفياً من محتوى الطلب نفسه برسالة الخطأ
+// ("Unexpected token 'X', "<حتى ~10 حرف من الجسم>"... is not valid JSON") —
+// أي مهاجم غير مصادَق يقدر يغيّر بايتات الجسم بكل طلب فيحصل على مفتاح جديد
+// كل مرة، فيتجاوز الكبح كلياً (لا حد أقصى فعلي، رغم وجود الآلية). الحل:
+// المفتاح الآن يعتمد على نوع الخطأ (`err.constructor.name`، لا يتأثر بمحتوى
+// الطلب) + أعلى ٣ أسطر من stack trace (يحدَّدها مسار تنفيذ كودنا/المكتبات،
+// لا محتوى الحمولة — نفس نقطة فشل حقيقية بكودنا تُنتج نفس الأسطر دائماً بصرف
+// النظر عن قيمة المُدخَل الذي أدّى إليها). هذا يحافظ على الهدف الأصلي
+// (أخطاء حقيقية مختلفة، بمسارات تنفيذ مختلفة، تُنبَّه بشكل مستقل) بينما يمنع
+// مهاجماً من توليد مفاتيح غير محدودة بمجرد تغيير محتوى نص لا علاقة له بمسار
+// الفشل الفعلي. `message`/`stack` الكاملان يبقيان بمحتوى الإيميل نفسه (لا
+// بالمفتاح) — لا فائدة مرجوّة من إخفائهما عن المشغِّل، فقط من استخدامهما
+// كمفتاح كبح.
+function computeDedupKey(context, err) {
+  const name = err instanceof Error ? err.constructor.name : 'Unknown';
+  const stack = err instanceof Error ? String(err.stack || '') : '';
+  // السطر الأول من stack هو رسالة الخطأ نفسها (تحتوي محتوى الطلب) — نتخطاها
+  // عمداً؛ نبدأ من ثاني سطر (أول إطار استدعاء فعلي).
+  const frames = stack.split('\n').slice(1, 4).join('|');
+  return `${context}:${name}:${frames}`.slice(0, 300);
+}
+
 // context: نص قصير يوضّح مصدر الخطأ (مثال: 'API error', 'uncaughtException')
 async function alertError(context, err) {
   if (!resend || !ALERT_EMAIL) return false;
 
   const message = err instanceof Error ? err.message : String(err);
   const stack = err instanceof Error ? err.stack : '';
-  const key = `${context}:${message}`.slice(0, 300);
+  const key = computeDedupKey(context, err);
   if (!shouldSend(key)) return false;
 
   // [SEC-FIX-ERRORALERTTIMEOUT-01] راجع DECISIONS.md وتعليق أعلى الملف —
@@ -103,4 +127,5 @@ async function alertError(context, err) {
 // shouldSend وlastSentAt مصدَّرتان فقط لتمكين اختبار مباشر لكبح التكرار
 // وتنظيف المفاتيح منتهية الصلاحية بلا انتظار حقيقي لـ15 دقيقة أو حاجة
 // لـRESEND_API_KEY حقيقي (نفس فلسفة تصدير withTimeout من services/email.js).
-module.exports = { alertError, shouldSend, lastSentAt };
+// computeDedupKey مصدَّرة لنفس السبب — [SEC-FIX-ALERTKEYDOS-01].
+module.exports = { alertError, shouldSend, lastSentAt, computeDedupKey };
