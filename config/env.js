@@ -71,12 +71,18 @@ if (IS_PROD && !process.env.DATA_DIR) {
 const COOKIE_OPTS = { httpOnly: true, sameSite: 'strict', secure: IS_PROD, maxAge: 7 * 24 * 60 * 60 * 1000 };
 
 // [SEC-FIX-06] CSRF Protection — Origin/Referer validation for state-changing requests
+// [SEC-FIX-TRUSTPROXY-CLOSED-01] راجع DECISIONS.md — sallehly.onrender.com
+// أُزيل من كلا القائمتين أدناه: تحقَّق ميدانياً أن أصل Render الافتراضي غير
+// قابل للوصول مباشرة (يرجع "not found")، فلا مسار عبره أصلاً؛ ولا أي عميل
+// حقيقي أو كود آخر بالمستودعين يشير إليه. أصل مسموح مُدرَج صراحة لكنه ميت
+// فعلياً يوحي بصلاحية مسار لا يعمل — إن أُعيد فتح الوصول المباشر لأي سبب
+// مستقبلاً، يجب إعادة إضافته هنا صراحة عندها، لا تركه مُدرَجاً "احتياطاً".
 const ALLOWED_ORIGINS = IS_PROD
-  ? ['https://sallehly.com', 'https://www.sallehly.com', 'https://sallehly.onrender.com']
+  ? ['https://sallehly.com', 'https://www.sallehly.com']
   : ['http://localhost:3000', 'http://127.0.0.1:3000'];
 
 const IO_CORS_ORIGINS = IS_PROD
-  ? ['https://sallehly.onrender.com', 'https://sallehly.com', 'https://www.sallehly.com']
+  ? ['https://sallehly.com', 'https://www.sallehly.com']
   : ['http://localhost:3000'];
 
 module.exports = {
