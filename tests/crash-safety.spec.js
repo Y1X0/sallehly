@@ -58,7 +58,16 @@ function buildMinimalAuthApp(db) {
       userPublic: (u) => u,
       anonymizeUser: () => {},
     },
-    constants: { COOKIE_OPTS: {}, BASE: __dirname },
+    constants: {
+      COOKIE_OPTS: {},
+      BASE: __dirname,
+      // [FEAT-DEDUP-01] راجع DECISIONS.md — لا مسار مُختبَر هنا يستخدمها
+      // فعلياً حالياً (فقط /auth/login، /auth/register، /auth/forgot-password)،
+      // لكنها مُضافة هنا لإبقاء بنية deps المصغَّرة متزامنة مع الحقيقية —
+      // أي راوت مستقبلي يُضاف لهذا الملف المصغَّر يجدها جاهزة بدل فشل صامت.
+      BLOCKING_REQUEST_STATUSES: ['بانتظار العروض', 'وصلت عروض', 'تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'],
+      BLOCKING_REQUEST_STATUSES_SQL: "'بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع'",
+    },
     limiters: {
       registerLimiter: (req, res, next) => next(),
       loginLimiter: (req, res, next) => next(),

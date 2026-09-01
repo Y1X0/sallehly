@@ -7,6 +7,7 @@ module.exports = function (deps) {
   const { auth, requireRole, requireSuperAdmin } = deps.middleware;
   const { clean, logAudit, anonymizeUser, notify, getMessages } = deps.utils;
   const { createDbBackup, sendPush } = deps.services;
+  const { BLOCKING_REQUEST_STATUSES_SQL, TECHNICIAN_ACTIVE_JOB_STATUSES_SQL } = deps.constants;
   const router = express.Router();
 
   // [SEC-FIX-AMOUNTBOUND-01] راجع DECISIONS.md — Number.isFinite وحدها ترفض
@@ -141,7 +142,7 @@ module.exports = function (deps) {
     // OR technician_id) يحمي العميل أيضاً لو كان هو من يُوقَف.
     if (newStatus === 0) {
       const activeRequest = db.prepare(
-        "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+        `SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN (${BLOCKING_REQUEST_STATUSES_SQL}) LIMIT 1`
       ).get(u.id, u.id);
       if (activeRequest) return res.status(409).json({ error: `لا يمكن إيقاف هذا الحساب — عنده طلب نشط رقم ${activeRequest.id}. أنهِ أو ألغِ الطلب أولاً.` });
       // [FIX-PENDINGOFFER-01] راجع DECISIONS.md — الفحص أعلاه يغطي requests.technician_id
@@ -328,8 +329,10 @@ module.exports = function (deps) {
       // فني → عميل: يجب تصفية أي تاريخ عمل حقيقي أولاً.
       if (Number(u.balance || 0) > 0) return res.status(409).json({ error: `لا يمكن التحويل — رصيده الحالي ${u.balance} د.أ. صفّر الرصيد أولاً.` });
       if (Number(u.completed_jobs || 0) > 0) return res.status(409).json({ error: 'لا يمكن التحويل — لديه أعمال مكتملة وتاريخ تقييمات حقيقي.' });
+      // [FEAT-DEDUP-01] راجع DECISIONS.md — نفس الفحص "هل الفني ملتزم بعمل
+      // نشط؟" المُستخدم بـoffers.routes.js (تقديم عرض جديد/قبول عرض).
       const activeAsTech = db.prepare(
-        "SELECT id FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+        `SELECT id FROM requests WHERE technician_id=? AND status IN (${TECHNICIAN_ACTIVE_JOB_STATUSES_SQL}) LIMIT 1`
       ).get(id);
       if (activeAsTech) return res.status(409).json({ error: `لا يمكن التحويل — لديه طلب نشط رقم ${activeAsTech.id} كفني.` });
       const pendingOffers = db.prepare("SELECT id FROM offers WHERE technician_id=? AND status='pending' LIMIT 1").get(id);
@@ -349,7 +352,7 @@ module.exports = function (deps) {
     } else {
       // عميل → فني: يحتاج نفس الحقول التي يتطلّبها التسجيل ككل فني بالضبط.
       const activeAsCustomer = db.prepare(
-        "SELECT id FROM requests WHERE customer_id=? AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+        `SELECT id FROM requests WHERE customer_id=? AND status IN (${BLOCKING_REQUEST_STATUSES_SQL}) LIMIT 1`
       ).get(id);
       if (activeAsCustomer) return res.status(409).json({ error: `لا يمكن التحويل — لديه طلب نشط رقم ${activeAsCustomer.id} كعميل. أنهِ أو ألغِ الطلب أولاً.` });
 
@@ -393,7 +396,7 @@ module.exports = function (deps) {
     // [SEC-FIX-ADMINTARGET-01] راجع DECISIONS.md وتعليق /toggle أعلاه — نفس الفحص.
     if (u.role === 'admin') return res.status(400).json({ error: 'لا يمكن حذف حساب إدارة آخر', code: 'ADMIN_CANNOT_TARGET_ADMIN' });
     const activeRequest = db.prepare(
-      "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+      `SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN (${BLOCKING_REQUEST_STATUSES_SQL}) LIMIT 1`
     ).get(id, id);
     if (activeRequest) return res.status(409).json({ error: `لا يمكن حذف هذا الحساب — عنده طلب نشط رقم ${activeRequest.id}. أنهِ أو ألغِ الطلب أولاً.` });
     // [FIX-PENDINGOFFER-01] راجع DECISIONS.md وتعليق /toggle أعلاه — نفس

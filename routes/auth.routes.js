@@ -26,7 +26,7 @@ module.exports = function (deps) {
   const { auth, upload, verifyImageMagicBytes } = deps.middleware;
   const { sign, sendOtpEmail } = deps.services;
   const { clean, userPublic, anonymizeUser } = deps.utils;
-  const { COOKIE_OPTS, BASE } = deps.constants;
+  const { COOKIE_OPTS, BASE, BLOCKING_REQUEST_STATUSES_SQL } = deps.constants;
   const { registerLimiter, loginLimiter, passwordResetLimiter } = deps.limiters;
   const router = express.Router();
 
@@ -413,7 +413,7 @@ module.exports = function (deps) {
       return res.status(401).json({ error: 'كلمة السر غير صحيحة', code: 'DELETE_ACCOUNT_WRONG_PASSWORD' });
     }
     const activeRequest = db.prepare(
-      "SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN ('بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1"
+      `SELECT id FROM requests WHERE (customer_id=? OR technician_id=?) AND status IN (${BLOCKING_REQUEST_STATUSES_SQL}) LIMIT 1`
     ).get(id, id);
     if (activeRequest) {
       return res.status(409).json({

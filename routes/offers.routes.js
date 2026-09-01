@@ -8,6 +8,7 @@ module.exports = function (deps) {
   const { clean, notify, maskCoordsUnlessConfirmedTechnician } = deps.utils;
   const { sendPush } = deps.services;
   const { offerLimiter } = deps.limiters;
+  const { TECHNICIAN_ACTIVE_JOB_STATUSES_SQL } = deps.constants;
   const router = express.Router();
 
   router.post('/requests/:id/offer', auth, requireRole('technician'), offerLimiter, (req, res) => {
@@ -20,7 +21,7 @@ module.exports = function (deps) {
     // بـ'بانتظار العروض'/'وصلت عروض' (السطر أعلاه)، وtechnician_id لا يُضبَط
     // إلا عند قبول عرض (يُخرج الطلب من هاتين الحالتين تلقائياً)، هذا الفرع لم
     // يعد قابلاً للتحقق إطلاقاً (r.technician_id مضمون NULL بهذه النقطة دوماً).
-    const active = db.prepare("SELECT id, service FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') AND id<>? ORDER BY id DESC LIMIT 1").get(req.user.id, r.id);
+    const active = db.prepare(`SELECT id, service FROM requests WHERE technician_id=? AND status IN (${TECHNICIAN_ACTIVE_JOB_STATUSES_SQL}) AND id<>? ORDER BY id DESC LIMIT 1`).get(req.user.id, r.id);
     if (active) return res.status(409).json({ error: `لا يمكنك إرسال عرض جديد قبل إنهاء طلبك الحالي رقم ${active.id} - ${active.service}`, code: 'OFFER_ACTIVE_REQUEST_EXISTS', params: { id: active.id, service: active.service } });
     const tech = db.prepare('SELECT id,balance,free_offers_used,active_commission,services FROM users WHERE id=? AND role=\'technician\'').get(req.user.id);
     // [SEC-FIX-19] لم يكن هناك أي تحقق هنا من تطابق خدمة الطلب مع خدمات الفني
@@ -174,7 +175,7 @@ module.exports = function (deps) {
       });
       applyRejection();
     } else {
-      const active = db.prepare("SELECT id FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1").get(offer.technician_id);
+      const active = db.prepare(`SELECT id FROM requests WHERE technician_id=? AND status IN (${TECHNICIAN_ACTIVE_JOB_STATUSES_SQL}) LIMIT 1`).get(offer.technician_id);
       if (active) return res.status(409).json({ error: 'الفني أصبح لديه طلب نشط حالياً، اختر عرضاً آخر', code: 'OFFER_TECHNICIAN_BUSY' });
       const applyAcceptance = db.transaction(() => {
         db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=?").run(offer.request_id);
