@@ -8,6 +8,7 @@ module.exports = function (deps) {
   const { clean, notify, maskCoordsUnlessConfirmedTechnician } = deps.utils;
   const { sendPush } = deps.services;
   const { offerLimiter } = deps.limiters;
+  const { TECHNICIAN_ACTIVE_JOB_STATUSES_SQL, FREE_TIER_QUOTA } = deps.constants;
   const router = express.Router();
 
   router.post('/requests/:id/offer', auth, requireRole('technician'), offerLimiter, (req, res) => {
@@ -20,7 +21,7 @@ module.exports = function (deps) {
     // بـ'بانتظار العروض'/'وصلت عروض' (السطر أعلاه)، وtechnician_id لا يُضبَط
     // إلا عند قبول عرض (يُخرج الطلب من هاتين الحالتين تلقائياً)، هذا الفرع لم
     // يعد قابلاً للتحقق إطلاقاً (r.technician_id مضمون NULL بهذه النقطة دوماً).
-    const active = db.prepare("SELECT id, service FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') AND id<>? ORDER BY id DESC LIMIT 1").get(req.user.id, r.id);
+    const active = db.prepare(`SELECT id, service FROM requests WHERE technician_id=? AND status IN (${TECHNICIAN_ACTIVE_JOB_STATUSES_SQL}) AND id<>? ORDER BY id DESC LIMIT 1`).get(req.user.id, r.id);
     if (active) return res.status(409).json({ error: `لا يمكنك إرسال عرض جديد قبل إنهاء طلبك الحالي رقم ${active.id} - ${active.service}`, code: 'OFFER_ACTIVE_REQUEST_EXISTS', params: { id: active.id, service: active.service } });
     const tech = db.prepare('SELECT id,balance,free_offers_used,active_commission,services FROM users WHERE id=? AND role=\'technician\'').get(req.user.id);
     // [SEC-FIX-19] لم يكن هناك أي تحقق هنا من تطابق خدمة الطلب مع خدمات الفني
@@ -38,7 +39,7 @@ module.exports = function (deps) {
     // عرض جديد فعلياً (أسفل هذا الراوت) — لا يتأثر إطلاقاً بسحب عرض لاحقاً
     // (DELETE /offers/:id)، بعكس الحساب القديم القابل للتلاعب بإعادة تقديم/سحب.
     const quotaUsed = Number(tech?.free_offers_used || 0);
-    if (!oldOffer && tech && quotaUsed >= 2 && Number(tech.balance || 0) < requiredBalance) {
+    if (!oldOffer && tech && quotaUsed >= FREE_TIER_QUOTA && Number(tech.balance || 0) < requiredBalance) {
       return res.status(402).json({
         code: 'INSUFFICIENT_BALANCE',
         params: {
@@ -46,6 +47,10 @@ module.exports = function (deps) {
           current_balance: Number(tech.balance || 0),
           free_quota_used: quotaUsed
         },
+        // [FEAT-DEDUP-01] راجع DECISIONS.md — "فرصتين" هنا صيغة المثنى
+        // العربي، صحيحة فقط لأن FREE_TIER_QUOTA===2 فعلياً. لا صيغة نحوية
+        // واحدة تتبدّل تلقائياً بتغيّر FREE_TIER_QUOTA (مفرد/مثنى/جمع عربي)
+        // — أي تعديل مستقبلي لقيمة الثابت يجب أن يُحدِّث هذا النص يدوياً معه.
         error: `رصيدك غير كافي. استخدمت أول فرصتين مجاناً، يجب شحن الرصيد قبل تقديم عرض جديد. الحد الأدنى المطلوب ${requiredBalance} د.أ`
       });
     }
@@ -174,7 +179,7 @@ module.exports = function (deps) {
       });
       applyRejection();
     } else {
-      const active = db.prepare("SELECT id FROM requests WHERE technician_id=? AND status IN ('تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع') LIMIT 1").get(offer.technician_id);
+      const active = db.prepare(`SELECT id FROM requests WHERE technician_id=? AND status IN (${TECHNICIAN_ACTIVE_JOB_STATUSES_SQL}) LIMIT 1`).get(offer.technician_id);
       if (active) return res.status(409).json({ error: 'الفني أصبح لديه طلب نشط حالياً، اختر عرضاً آخر', code: 'OFFER_TECHNICIAN_BUSY' });
       const applyAcceptance = db.transaction(() => {
         db.prepare("UPDATE offers SET status='rejected', updated_at=CURRENT_TIMESTAMP WHERE request_id=?").run(offer.request_id);

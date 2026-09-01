@@ -81,7 +81,16 @@ const deps = {
     requestLimiter: security.requestLimiter,
     supportLimiter: security.supportLimiter
   },
-  constants: { COOKIE_OPTS: env.COOKIE_OPTS, BASE: env.BASE },
+  constants: {
+    COOKIE_OPTS: env.COOKIE_OPTS,
+    BASE: env.BASE,
+    BLOCKING_REQUEST_STATUSES: env.BLOCKING_REQUEST_STATUSES,
+    BLOCKING_REQUEST_STATUSES_SQL: env.BLOCKING_REQUEST_STATUSES_SQL,
+    TECHNICIAN_ACTIVE_JOB_STATUSES: env.TECHNICIAN_ACTIVE_JOB_STATUSES,
+    TECHNICIAN_ACTIVE_JOB_STATUSES_SQL: env.TECHNICIAN_ACTIVE_JOB_STATUSES_SQL,
+    FREE_TIER_QUOTA: env.FREE_TIER_QUOTA,
+    OTP_MAX_ATTEMPTS: env.OTP_MAX_ATTEMPTS
+  },
   path, fs
 };
 

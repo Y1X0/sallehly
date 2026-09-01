@@ -19,6 +19,18 @@ function safeUploadName(file) {
 
 function clean(s) { return String(s || '').trim(); }
 
+// [FEAT-DEDUP-01] راجع DECISIONS.md — نمط رقم هاتف أردني محلي (07 + 8
+// أرقام = 10 أرقام إجمالاً)، كان مكرَّراً حرفياً بموضعين مستقلين
+// بـauth.routes.js (تسجيل، تعديل الملف الشخصي) بنفس الـregex ونفس نص/رمز
+// الخطأ بالضبط.
+const PHONE_REGEX = /^07\d{8}$/;
+
+// [FEAT-DEDUP-01] راجع DECISIONS.md — توليد كود OTP من 6 أرقام (100000-999999)
+// كان مكرَّراً حرفياً بموضعين مستقلين (تسجيل، إعادة تعيين كلمة السر) —
+// نفس الصيغة الحسابية بالضبط. دالة واحدة تضمن أن أي تغيير مستقبلي لطول
+// الكود (مثلاً لأسباب أمنية) يُحدَّث بمصدر واحد فقط.
+function generateOtp() { return String(Math.floor(100000 + Math.random() * 900000)); }
+
 function userPublic(u) {
   if (!u) return null;
   // [SEC-FIX-09] token_version تفصيل داخلي لآلية إبطال الجلسات، لا فائدة منه
@@ -59,4 +71,4 @@ function maskCoordsUnlessConfirmedTechnician(request, technicianId) {
   return { ...request, lat: null, lng: null };
 }
 
-module.exports = { escapeLike, hasSafeExt, safeUploadName, clean, userPublic, canAccessRequestChat, maskCoordsUnlessConfirmedTechnician };
+module.exports = { escapeLike, hasSafeExt, safeUploadName, clean, userPublic, canAccessRequestChat, maskCoordsUnlessConfirmedTechnician, PHONE_REGEX, generateOtp };

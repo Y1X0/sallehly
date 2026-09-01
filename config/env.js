@@ -70,6 +70,41 @@ if (IS_PROD && !process.env.DATA_DIR) {
 
 const COOKIE_OPTS = { httpOnly: true, sameSite: 'strict', secure: IS_PROD, maxAge: 7 * 24 * 60 * 60 * 1000 };
 
+// [FEAT-DEDUP-01] راجع DECISIONS.md — حالات الطلب "النشطة/الحاجزة" (العميل
+// أو الفني ما زال مرتبطاً بطلب لم يُغلَق بعد — لم يُكتمَل ولم يُلغَ) كانت
+// مكرَّرة حرفياً 4 مرات مستقلة (admin.routes.js×3، auth.routes.js×1). أي
+// حالة جديدة تُضاف لدورة حياة الطلب مستقبلاً كانت تحتاج تذكّر تحديث كل
+// موضع يدوياً بلا آلية تفرض التزامن. القيمة الجاهزة لـSQL مُحسَبة هنا مرة
+// واحدة (الحالات أسماء ثابتة بالكود لا مدخلات مستخدم، فلا خطر حقن
+// باستخدامها مباشرة داخل نص IN(...)).
+const BLOCKING_REQUEST_STATUSES = ['بانتظار العروض', 'وصلت عروض', 'تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'];
+const BLOCKING_REQUEST_STATUSES_SQL = BLOCKING_REQUEST_STATUSES.map(s => `'${s}'`).join(',');
+
+// [FEAT-DEDUP-01] راجع DECISIONS.md — قائمة فرعية: حالات "الفني مرتبط
+// بعمل نشط بالفعل" (بعد قبول عرض، حتى إنهاء/إلغاء الطلب) — لا تشمل
+// 'بانتظار العروض'/'وصلت عروض' لأن technician_id يبقى NULL طوال هاتين
+// الحالتين أصلاً (لا عرض قُبل بعد)، فلا معنى لإدراجهما بأي استعلام
+// technician_id=?. كانت مكرَّرة حرفياً 3 مرات (admin.routes.js×1،
+// offers.routes.js×2) بنفس المعنى تحديداً: "هل هذا الفني ملتزم أصلاً بعمل
+// آخر؟" — قبل السماح له بتقديم عرض جديد أو قبل قبول عرض له.
+const TECHNICIAN_ACTIVE_JOB_STATUSES = ['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'];
+const TECHNICIAN_ACTIVE_JOB_STATUSES_SQL = TECHNICIAN_ACTIVE_JOB_STATUSES.map(s => `'${s}'`).join(',');
+
+// [FEAT-DEDUP-01] راجع DECISIONS.md — عدد الفرص المجانية (طلبات مكتملة أو
+// عروض مُقدَّمة، عدّادان منفصلان تماماً — راجع FIX-OFFERQUOTA-01) قبل بدء
+// خصم العمولة الفعلية من رصيد الفني. كان الرقم "2" مكتوباً حرفياً بثلاث
+// مواضع مستقلة بمنطق العمل الفعلي (auth.routes.js، offers.routes.js،
+// requests.routes.js) — لا علاقة له بـpublic/app.js (ملف ثابت منفصل كلياً،
+// بلا نظام وحدات مشترك مع الخادم؛ يحمل ثابتاً مطابقاً خاصاً به لنفس السبب).
+const FREE_TIER_QUOTA = 2;
+
+// [FEAT-DEDUP-01] راجع DECISIONS.md — الحد الأقصى لمحاولات إدخال كود OTP
+// الخاطئ قبل حذف طلب التسجيل/إعادة التعيين المعلَّق بالكامل — كان الرقم
+// "5" مكرَّراً حرفياً 4 مرات مستقلة بـauth.routes.js (فحص الحد الأقصى
+// وحساب "المحاولات المتبقية"، بمساري تسجيل العضوية وإعادة تعيين كلمة السر
+// كلٌّ على حدة).
+const OTP_MAX_ATTEMPTS = 5;
+
 // [SEC-FIX-06] CSRF Protection — Origin/Referer validation for state-changing requests
 // [SEC-FIX-TRUSTPROXY-CLOSED-01] راجع DECISIONS.md — sallehly.onrender.com
 // أُزيل من كلا القائمتين أدناه: تحقَّق ميدانياً أن أصل Render الافتراضي غير
@@ -88,5 +123,8 @@ const IO_CORS_ORIGINS = IS_PROD
 module.exports = {
   BASE, PORT, IS_PROD, JWT_SECRET, RESEND_API_KEY, RESEND_FROM,
   DATA_DIR, UPLOAD_DIR, COOKIE_OPTS, ALLOWED_ORIGINS, IO_CORS_ORIGINS,
-  BACKUP_GITHUB_TOKEN, BACKUP_GITHUB_OWNER, BACKUP_GITHUB_REPO, ALERT_EMAIL
+  BACKUP_GITHUB_TOKEN, BACKUP_GITHUB_OWNER, BACKUP_GITHUB_REPO, ALERT_EMAIL,
+  BLOCKING_REQUEST_STATUSES, BLOCKING_REQUEST_STATUSES_SQL,
+  TECHNICIAN_ACTIVE_JOB_STATUSES, TECHNICIAN_ACTIVE_JOB_STATUSES_SQL,
+  FREE_TIER_QUOTA, OTP_MAX_ATTEMPTS
 };
