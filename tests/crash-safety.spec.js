@@ -57,6 +57,12 @@ function buildMinimalAuthApp(db) {
       clean: (s) => String(s || '').trim(),
       userPublic: (u) => u,
       anonymizeUser: () => {},
+      // [FEAT-DEDUP-01] راجع DECISIONS.md — POST /auth/register (المُختبَر
+      // أدناه) يفحص تنسيق الهاتف فعلياً قبل أي نداء db، فيحتاجها هذا الملف
+      // المصغَّر لتبقى نتيجة الاختبار صحيحة السبب (رفض DB لاحقاً، لا
+      // TypeError مبكّر بلا علاقة بالسيناريو المُختبَر).
+      PHONE_REGEX: /^07\d{8}$/,
+      generateOtp: () => String(Math.floor(100000 + Math.random() * 900000)),
     },
     constants: {
       COOKIE_OPTS: {},
@@ -70,6 +76,7 @@ function buildMinimalAuthApp(db) {
       TECHNICIAN_ACTIVE_JOB_STATUSES: ['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'],
       TECHNICIAN_ACTIVE_JOB_STATUSES_SQL: "'تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع'",
       FREE_TIER_QUOTA: 2,
+      OTP_MAX_ATTEMPTS: 5,
     },
     limiters: {
       registerLimiter: (req, res, next) => next(),

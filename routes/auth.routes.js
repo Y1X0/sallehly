@@ -25,8 +25,8 @@ module.exports = function (deps) {
   const { io } = deps.realtime;
   const { auth, upload, verifyImageMagicBytes } = deps.middleware;
   const { sign, sendOtpEmail } = deps.services;
-  const { clean, userPublic, anonymizeUser } = deps.utils;
-  const { COOKIE_OPTS, BASE, BLOCKING_REQUEST_STATUSES_SQL, FREE_TIER_QUOTA } = deps.constants;
+  const { clean, userPublic, anonymizeUser, PHONE_REGEX, generateOtp } = deps.utils;
+  const { COOKIE_OPTS, BASE, BLOCKING_REQUEST_STATUSES_SQL, FREE_TIER_QUOTA, OTP_MAX_ATTEMPTS } = deps.constants;
   const { registerLimiter, loginLimiter, passwordResetLimiter } = deps.limiters;
   const router = express.Router();
 
@@ -64,7 +64,7 @@ module.exports = function (deps) {
     if (role === 'technician' && !services) return res.status(400).json({ error: 'يجب اختيار خدمة واحدة على الأقل', code: 'REGISTER_TECH_SERVICES_REQUIRED' });
     if (!validator.isEmail(email)) return res.status(400).json({ error: 'البريد غير صحيح', code: 'EMAIL_INVALID' });
     if (email.length > 100) return res.status(400).json({ error: 'البريد الإلكتروني طويل جداً', code: 'REGISTER_EMAIL_TOO_LONG' });
-    if (!/^07\d{8}$/.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code: 'PHONE_INVALID_FORMAT' });
+    if (!PHONE_REGEX.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code: 'PHONE_INVALID_FORMAT' });
     if (password.length < 8) return res.status(400).json({ error: 'كلمة السر يجب أن تكون 8 أحرف على الأقل', code: 'PASSWORD_TOO_SHORT_8' });
     if (password.length > 72) return res.status(400).json({ error: 'كلمة السر طويلة جداً، الحد الأقصى 72 حرف', code: 'PASSWORD_TOO_LONG_72' });
     if (role === 'technician' && !/^\d{10}$/.test(national_number)) return res.status(400).json({ error: 'الرقم الوطني يجب أن يكون 10 أرقام', code: 'REGISTER_INVALID_NATIONAL_NUMBER' });
@@ -84,7 +84,7 @@ module.exports = function (deps) {
     // بمعالجة طلبات أخرى بينها — نفس النتيجة الأمنية والتكلفة الحسابية
     // تماماً (cost factor 12 بلا تغيير)، فقط بدون حجز العملية بأكملها.
     const hash = await bcrypt.hash(password, 12);
-    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    const otp = generateOtp();
     const otp_expires = Date.now() + 10 * 60 * 1000;
 
     db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
@@ -129,14 +129,14 @@ module.exports = function (deps) {
       return res.status(400).json({ error: 'انتهت صلاحية الكود، أعد التسجيل', code: 'OTP_EXPIRED_REGISTER' });
     }
 
-    if (pending.attempts >= 5) {
+    if (pending.attempts >= OTP_MAX_ATTEMPTS) {
       db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
       return res.status(400).json({ error: 'محاولات كثيرة، أعد التسجيل', code: 'OTP_TOO_MANY_ATTEMPTS_REGISTER' });
     }
 
     if (pending.otp !== otp) {
       db.prepare('UPDATE pending_users SET attempts=attempts+1 WHERE email=?').run(email);
-      const left = 5 - (pending.attempts + 1);
+      const left = OTP_MAX_ATTEMPTS - (pending.attempts + 1);
       return res.status(400).json({ error: `الكود غير صحيح. تبقى لك ${left} محاولات`, code: 'OTP_INCORRECT', params: { left } });
     }
 
@@ -212,7 +212,7 @@ module.exports = function (deps) {
       await new Promise(r => setTimeout(r, 350 + Math.floor(Math.random() * 200)));
       return res.json({ ok: true, message: 'إذا كان البريد مسجلاً لدينا، ستصلك رسالة التحقق خلال دقيقة' });
     }
-    const otp = String(Math.floor(100000 + Math.random() * 900000));
+    const otp = generateOtp();
     const otp_expires = Date.now() + 10 * 60 * 1000;
     db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
     db.prepare('INSERT INTO pending_users(email,otp,otp_expires,data,avatar_filename) VALUES(?,?,?,?,?)')
@@ -248,13 +248,13 @@ module.exports = function (deps) {
       db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
       return res.status(400).json({ error: 'انتهت صلاحية الكود، اطلب كوداً جديداً', code: 'RESET_OTP_EXPIRED' });
     }
-    if (pending.attempts >= 5) {
+    if (pending.attempts >= OTP_MAX_ATTEMPTS) {
       db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
       return res.status(400).json({ error: 'محاولات كثيرة، اطلب كوداً جديداً', code: 'RESET_TOO_MANY_ATTEMPTS' });
     }
     if (pending.otp !== otp) {
       db.prepare('UPDATE pending_users SET attempts=attempts+1 WHERE email=?').run(email);
-      const left = 5 - (pending.attempts + 1);
+      const left = OTP_MAX_ATTEMPTS - (pending.attempts + 1);
       return res.status(400).json({ error: `الكود غير صحيح. تبقى لك ${left} محاولات`, code: 'OTP_INCORRECT', params: { left } });
     }
     try {
@@ -332,7 +332,7 @@ module.exports = function (deps) {
     // الآن تُرفَض بوضوح بدل التجاهل الصامت أعلاه أو ترك الحساب بلا أي خدمة
     // (نفس متطلَّب التسجيل أعلاه: REGISTER_TECH_SERVICES_REQUIRED).
     if (req.user.role === 'technician' && services !== null && !services) return res.status(400).json({ error: 'يجب أن تحتفظ بخدمة واحدة على الأقل', code: 'PROFILE_SERVICES_REQUIRED' });
-    if (!/^07\d{8}$/.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code: 'PHONE_INVALID_FORMAT' });
+    if (!PHONE_REGEX.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code: 'PHONE_INVALID_FORMAT' });
     // معالجة الصورة الجديدة
     // [FIX-AVATAR-01] كان مقصوراً على الفنيين فقط — العميل لم يكن يقدر يضيف
     // أو يغيّر صورته الشخصية إطلاقاً من التطبيق، رغم أن التسجيل نفسه يسمح

@@ -98,6 +98,13 @@ const TECHNICIAN_ACTIVE_JOB_STATUSES_SQL = TECHNICIAN_ACTIVE_JOB_STATUSES.map(s 
 // بلا نظام وحدات مشترك مع الخادم؛ يحمل ثابتاً مطابقاً خاصاً به لنفس السبب).
 const FREE_TIER_QUOTA = 2;
 
+// [FEAT-DEDUP-01] راجع DECISIONS.md — الحد الأقصى لمحاولات إدخال كود OTP
+// الخاطئ قبل حذف طلب التسجيل/إعادة التعيين المعلَّق بالكامل — كان الرقم
+// "5" مكرَّراً حرفياً 4 مرات مستقلة بـauth.routes.js (فحص الحد الأقصى
+// وحساب "المحاولات المتبقية"، بمساري تسجيل العضوية وإعادة تعيين كلمة السر
+// كلٌّ على حدة).
+const OTP_MAX_ATTEMPTS = 5;
+
 // [SEC-FIX-06] CSRF Protection — Origin/Referer validation for state-changing requests
 // [SEC-FIX-TRUSTPROXY-CLOSED-01] راجع DECISIONS.md — sallehly.onrender.com
 // أُزيل من كلا القائمتين أدناه: تحقَّق ميدانياً أن أصل Render الافتراضي غير
@@ -119,5 +126,5 @@ module.exports = {
   BACKUP_GITHUB_TOKEN, BACKUP_GITHUB_OWNER, BACKUP_GITHUB_REPO, ALERT_EMAIL,
   BLOCKING_REQUEST_STATUSES, BLOCKING_REQUEST_STATUSES_SQL,
   TECHNICIAN_ACTIVE_JOB_STATUSES, TECHNICIAN_ACTIVE_JOB_STATUSES_SQL,
-  FREE_TIER_QUOTA
+  FREE_TIER_QUOTA, OTP_MAX_ATTEMPTS
 };
