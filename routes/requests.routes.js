@@ -8,6 +8,7 @@ module.exports = function (deps) {
   const { clean, calcRating, notify, maskCoordsUnlessConfirmedTechnician } = deps.utils;
   const { sendPush } = deps.services;
   const { requestLimiter } = deps.limiters;
+  const { TECHNICIAN_ACTIVE_JOB_STATUSES } = deps.constants;
   const router = express.Router();
 
   // [NOTIF-PHASE2B-2] نفس جمهور بث 'new-request-created' بالضبط (technicians-room،
@@ -194,7 +195,7 @@ module.exports = function (deps) {
     if (['مكتمل'].includes(r.status)) return res.status(400).json({ error: 'لا يمكن حذف طلب مكتمل من السجل', code: 'REQUEST_CANNOT_DELETE_COMPLETED' });
     // منع إلغاء الطلب بعد أن يقبل العميل عرض فني وتبدأ الإدارة الفعلية للطلب،
     // لحماية الفني من إلغاء مفاجئ بعد أن يكون قد بدأ التنفيذ أو هو في الطريق.
-    if (['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'].includes(r.status)) {
+    if (TECHNICIAN_ACTIVE_JOB_STATUSES.includes(r.status)) {
       return res.status(400).json({ error: 'لا يمكن إلغاء الطلب بعد قبول عرض الفني. تواصل مع الدعم الفني إذا واجهت مشكلة.', code: 'REQUEST_CANNOT_CANCEL_AFTER_OFFER_ACCEPTED' });
     }
     // [DATA-INTEGRITY-04] راجع DECISIONS.md — نفس نمط applyRejection/applyAcceptance
@@ -269,9 +270,9 @@ module.exports = function (deps) {
     // ملغي مستثناة عمداً من هذه الخريطة — فحوصها الخاصة (أسفل هذا الفحص) كانت
     // صحيحة أصلاً ولم تتغيّر.
     const LEGAL_PREDECESSORS = {
-      'قيد التنفيذ': ['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'],
-      'بانتظار تأكيد الدفع': ['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'],
-      'مكتمل': ['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع']
+      'قيد التنفيذ': TECHNICIAN_ACTIVE_JOB_STATUSES,
+      'بانتظار تأكيد الدفع': TECHNICIAN_ACTIVE_JOB_STATUSES,
+      'مكتمل': TECHNICIAN_ACTIVE_JOB_STATUSES
     };
     if (LEGAL_PREDECESSORS[status] && !LEGAL_PREDECESSORS[status].includes(r.status)) {
       return res.status(409).json({
@@ -280,7 +281,7 @@ module.exports = function (deps) {
       });
     }
     if (status === 'ملغي' && req.user.role !== 'admin' && req.user.id !== r.customer_id) return res.status(403).json({ error: 'إلغاء الطلب يكون من العميل أو الإدارة فقط', code: 'REQUEST_CANCEL_FORBIDDEN' });
-    if (status === 'ملغي' && req.user.role === 'customer' && ['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'].includes(r.status)) {
+    if (status === 'ملغي' && req.user.role === 'customer' && TECHNICIAN_ACTIVE_JOB_STATUSES.includes(r.status)) {
       return res.status(400).json({ error: 'لا يمكن إلغاء الطلب بعد قبول عرض الفني. تواصل مع الدعم الفني إذا واجهت مشكلة.', code: 'REQUEST_CANNOT_CANCEL_AFTER_OFFER_ACCEPTED' });
     }
     if (status === 'مكتمل' && req.user.role !== 'admin' && req.user.id !== r.customer_id) return res.status(403).json({ error: 'إكمال الطلب يكون من العميل فقط', code: 'REQUEST_COMPLETE_CUSTOMER_ONLY' });
