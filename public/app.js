@@ -1602,7 +1602,8 @@ const JORDAN_AREAS = {
   'المفرق':['المفرق','البادية الشمالية','رحاب','الخالدية','أم الجمال','بلعما','سما السرحان','منشية بني حسن']
 };
 function governorateOptions(selected='عمان'){
-  return Object.keys(JORDAN_AREAS).map(c=>`<option ${c===selected?'selected':''}>${c}</option>`).join('');
+  const cities=(state.meta&&state.meta.cities&&state.meta.cities.length)?state.meta.cities:Object.keys(JORDAN_AREAS);
+  return cities.map(c=>`<option ${c===selected?'selected':''}>${c}</option>`).join('');
 }
 function areaOptions(city='عمان', selected=''){
   return (JORDAN_AREAS[city]||[]).map(a=>`<option ${a===selected?'selected':''}>${a}</option>`).join('') + `<option value="أخرى">أخرى</option>`;
