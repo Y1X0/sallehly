@@ -26,7 +26,7 @@ module.exports = function (deps) {
   const { auth, upload, verifyImageMagicBytes } = deps.middleware;
   const { sign, sendOtpEmail } = deps.services;
   const { clean, userPublic, anonymizeUser } = deps.utils;
-  const { COOKIE_OPTS, BASE, BLOCKING_REQUEST_STATUSES_SQL } = deps.constants;
+  const { COOKIE_OPTS, BASE, BLOCKING_REQUEST_STATUSES_SQL, FREE_TIER_QUOTA } = deps.constants;
   const { registerLimiter, loginLimiter, passwordResetLimiter } = deps.limiters;
   const router = express.Router();
 
@@ -293,7 +293,7 @@ module.exports = function (deps) {
       // (لا يتأثر بسحب العروض) بدل الحساب الحي القديم القابل للتلاعب — نفس
       // اسم الحقل أُبقي للتوافق الرجعي مع أي طرف كان يقرأه سابقاً.
       user.free_offers_used = Number(user.free_offers_used || 0);
-      user.free_offers_remaining = Math.max(0, 2 - user.free_offers_used);
+      user.free_offers_remaining = Math.max(0, FREE_TIER_QUOTA - user.free_offers_used);
       user.free_quota_used = user.free_offers_used;
     }
     res.json({ user });

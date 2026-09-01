@@ -8,7 +8,7 @@ module.exports = function (deps) {
   const { clean, calcRating, notify, maskCoordsUnlessConfirmedTechnician } = deps.utils;
   const { sendPush } = deps.services;
   const { requestLimiter } = deps.limiters;
-  const { TECHNICIAN_ACTIVE_JOB_STATUSES } = deps.constants;
+  const { TECHNICIAN_ACTIVE_JOB_STATUSES, FREE_TIER_QUOTA } = deps.constants;
   const router = express.Router();
 
   // [NOTIF-PHASE2B-2] نفس جمهور بث 'new-request-created' بالضبط (technicians-room،
@@ -291,7 +291,7 @@ module.exports = function (deps) {
         const tech = db.prepare('SELECT * FROM users WHERE id=?').get(r.technician_id);
         const COMMISSION = Number(tech?.active_commission ?? 2);
         let charge = 0;
-        if (tech.free_orders_used < 2) {
+        if (tech.free_orders_used < FREE_TIER_QUOTA) {
           db.prepare('UPDATE users SET free_orders_used=free_orders_used+1, completed_jobs=completed_jobs+1 WHERE id=?').run(tech.id);
           // [FEAT-REFUND-01] راجع DECISIONS.md — request_id يُمرَّر مباشرة من
           // الكود، لا يُستنتَج لاحقاً من نص note (لا يحمله note هذا النوع أصلاً).

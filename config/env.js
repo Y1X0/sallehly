@@ -90,6 +90,14 @@ const BLOCKING_REQUEST_STATUSES_SQL = BLOCKING_REQUEST_STATUSES.map(s => `'${s}'
 const TECHNICIAN_ACTIVE_JOB_STATUSES = ['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'];
 const TECHNICIAN_ACTIVE_JOB_STATUSES_SQL = TECHNICIAN_ACTIVE_JOB_STATUSES.map(s => `'${s}'`).join(',');
 
+// [FEAT-DEDUP-01] راجع DECISIONS.md — عدد الفرص المجانية (طلبات مكتملة أو
+// عروض مُقدَّمة، عدّادان منفصلان تماماً — راجع FIX-OFFERQUOTA-01) قبل بدء
+// خصم العمولة الفعلية من رصيد الفني. كان الرقم "2" مكتوباً حرفياً بثلاث
+// مواضع مستقلة بمنطق العمل الفعلي (auth.routes.js، offers.routes.js،
+// requests.routes.js) — لا علاقة له بـpublic/app.js (ملف ثابت منفصل كلياً،
+// بلا نظام وحدات مشترك مع الخادم؛ يحمل ثابتاً مطابقاً خاصاً به لنفس السبب).
+const FREE_TIER_QUOTA = 2;
+
 // [SEC-FIX-06] CSRF Protection — Origin/Referer validation for state-changing requests
 // [SEC-FIX-TRUSTPROXY-CLOSED-01] راجع DECISIONS.md — sallehly.onrender.com
 // أُزيل من كلا القائمتين أدناه: تحقَّق ميدانياً أن أصل Render الافتراضي غير
@@ -110,5 +118,6 @@ module.exports = {
   DATA_DIR, UPLOAD_DIR, COOKIE_OPTS, ALLOWED_ORIGINS, IO_CORS_ORIGINS,
   BACKUP_GITHUB_TOKEN, BACKUP_GITHUB_OWNER, BACKUP_GITHUB_REPO, ALERT_EMAIL,
   BLOCKING_REQUEST_STATUSES, BLOCKING_REQUEST_STATUSES_SQL,
-  TECHNICIAN_ACTIVE_JOB_STATUSES, TECHNICIAN_ACTIVE_JOB_STATUSES_SQL
+  TECHNICIAN_ACTIVE_JOB_STATUSES, TECHNICIAN_ACTIVE_JOB_STATUSES_SQL,
+  FREE_TIER_QUOTA
 };

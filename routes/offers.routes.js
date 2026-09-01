@@ -8,7 +8,7 @@ module.exports = function (deps) {
   const { clean, notify, maskCoordsUnlessConfirmedTechnician } = deps.utils;
   const { sendPush } = deps.services;
   const { offerLimiter } = deps.limiters;
-  const { TECHNICIAN_ACTIVE_JOB_STATUSES_SQL } = deps.constants;
+  const { TECHNICIAN_ACTIVE_JOB_STATUSES_SQL, FREE_TIER_QUOTA } = deps.constants;
   const router = express.Router();
 
   router.post('/requests/:id/offer', auth, requireRole('technician'), offerLimiter, (req, res) => {
@@ -39,7 +39,7 @@ module.exports = function (deps) {
     // عرض جديد فعلياً (أسفل هذا الراوت) — لا يتأثر إطلاقاً بسحب عرض لاحقاً
     // (DELETE /offers/:id)، بعكس الحساب القديم القابل للتلاعب بإعادة تقديم/سحب.
     const quotaUsed = Number(tech?.free_offers_used || 0);
-    if (!oldOffer && tech && quotaUsed >= 2 && Number(tech.balance || 0) < requiredBalance) {
+    if (!oldOffer && tech && quotaUsed >= FREE_TIER_QUOTA && Number(tech.balance || 0) < requiredBalance) {
       return res.status(402).json({
         code: 'INSUFFICIENT_BALANCE',
         params: {
@@ -47,6 +47,10 @@ module.exports = function (deps) {
           current_balance: Number(tech.balance || 0),
           free_quota_used: quotaUsed
         },
+        // [FEAT-DEDUP-01] راجع DECISIONS.md — "فرصتين" هنا صيغة المثنى
+        // العربي، صحيحة فقط لأن FREE_TIER_QUOTA===2 فعلياً. لا صيغة نحوية
+        // واحدة تتبدّل تلقائياً بتغيّر FREE_TIER_QUOTA (مفرد/مثنى/جمع عربي)
+        // — أي تعديل مستقبلي لقيمة الثابت يجب أن يُحدِّث هذا النص يدوياً معه.
         error: `رصيدك غير كافي. استخدمت أول فرصتين مجاناً، يجب شحن الرصيد قبل تقديم عرض جديد. الحد الأدنى المطلوب ${requiredBalance} د.أ`
       });
     }

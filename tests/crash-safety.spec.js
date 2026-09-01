@@ -67,6 +67,9 @@ function buildMinimalAuthApp(db) {
       // أي راوت مستقبلي يُضاف لهذا الملف المصغَّر يجدها جاهزة بدل فشل صامت.
       BLOCKING_REQUEST_STATUSES: ['بانتظار العروض', 'وصلت عروض', 'تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'],
       BLOCKING_REQUEST_STATUSES_SQL: "'بانتظار العروض','وصلت عروض','تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع'",
+      TECHNICIAN_ACTIVE_JOB_STATUSES: ['تم اختيار عرض', 'قيد التنفيذ', 'بانتظار تأكيد الدفع'],
+      TECHNICIAN_ACTIVE_JOB_STATUSES_SQL: "'تم اختيار عرض','قيد التنفيذ','بانتظار تأكيد الدفع'",
+      FREE_TIER_QUOTA: 2,
     },
     limiters: {
       registerLimiter: (req, res, next) => next(),
