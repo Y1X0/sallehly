@@ -281,9 +281,18 @@ test.describe('[Malicious Input] مدخلات خبيثة لا تكسر الخا�
     }
   });
 
-  test('حمولة نصية ضخمة جداً (200 ألف حرف) بوصف الطلب تُرفض بـ400 بأمان (بلا تعليق أو 500)', async ({ request }) => {
+  test('حمولة نصية ضخمة جداً (5 آلاف حرف) بوصف الطلب تُرفض بـ400 بأمان (بلا تعليق أو 500)', async ({ request }) => {
+    // [FIX-BODYLIMIT-01] راجع DECISIONS.md — كانت هذه الحمولة 200 ألف حرف
+    // عربي، وهو نص يُشفَّر (urlencoded) لنحو 1.2 ميجابايت فعلياً (كل حرف عربي
+    // بايتان بـUTF-8، كل بايت غير ASCII يتحوّل لـ%XX أي 3 أحرف عند urlencode)
+    // — أكبر حتى من حد الجسم المضبوط الآن (1MB بعد FIX-BODYLIMIT-01، كان
+    // ضمنياً 100kb قبله). كان هذا الاختبار (بلا علم كاتبه، راجع DECISIONS.md)
+    // يصطدم فعلياً بحد حجم الجسم (PayloadTooLargeError) لا بفحص التحقق الصريح
+    // الذي يدّعيه تعليقه — 5 آلاف حرف (~30 كيلوبايت مُشفَّرة) تتجاوز حد الـ1000
+    // حرف بوضوح وتبقى بأمان تحت حد حجم الجسم، فيصل الطلب فعلياً لفحص التحقق
+    // المقصود بدل الاصطدام بحد حجم الجسم أولاً.
     const customer = await registerAndVerify(request, 'customer', { name: 'عميل نص ضخم', city: CITY });
-    const huge = 'أ'.repeat(200000);
+    const huge = 'أ'.repeat(5000);
     const res = await request.post('/api/requests', {
       headers: authHeader(customer.token),
       form: { service: SERVICE, description: huge, city: CITY, area: 'القويسمة' },
@@ -291,5 +300,7 @@ test.describe('[Malicious Input] مدخلات خبيثة لا تكسر الخا�
     });
     // حد الـ1000 حرف (routes/requests.routes.js) يرفضها بأمان قبل أي إدراج بقاعدة البيانات
     expect(res.status()).toBe(400);
+    const body = await res.json();
+    expect(body.code).toBe('REQUEST_DESCRIPTION_TOO_LONG');
   });
 });
