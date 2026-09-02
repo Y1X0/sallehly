@@ -2,7 +2,13 @@
 nixPkgs = ["nodejs_20", "python3", "gcc", "gnumake"]
 
 [phases.install]
-cmds = ["npm install"]
+# [FIX-NPMCI-01] راجع DECISIONS.md — `npm install` يسمح بتحديث
+# package-lock.json نفسه أثناء التثبيت (حل تعارضات إصدارات بصمت)، فلا
+# ضمان أن نفس نسخ الحزم المثبَّتة الآن ستبقى مثبَّتة بأي نشر لاحق — يشمل
+# ذلك الأصفار الدقيقة التي ثبَّتها تدقيق تبعيات سابق (SEC-FIX-DEPAUDIT-01).
+# `npm ci` يثبِّت حرفياً ما بملف القفل أو يفشل بوضوح، بلا أي حل تعارضات
+# صامت.
+cmds = ["npm ci"]
 
 [start]
 cmd = "node server.js"
