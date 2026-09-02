@@ -685,6 +685,11 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_service ON requests(se
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at)').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_users_active ON users(is_active)').run(); } catch (e) {}
 try { db.prepare('CREATE INDEX IF NOT EXISTS idx_users_verification ON users(verification_status)').run(); } catch (e) {}
+// [FEAT-RETENTION-01] راجع DECISIONS.md وconfig/db.js's cleanupOldChatMessages/
+// cleanupOldChatViolations — يخدمان بالضبط شرطَي WHERE المُستخدَمين بهاتين
+// الدالتين الدوريتين الجديدتين، نفس فلسفة idx_notifications_user_created أعلاه.
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_requests_status_updated ON requests(status, updated_at)').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_chat_violations_status_created ON chat_violations(status, created_at)').run(); } catch (e) {}
 // تمت إزالة سطر إعادة تفعيل الفنيين الموقوفين تلقائياً عند كل تشغيل للسيرفر.
 // كان هذا السطر يلغي قرار إيقاف أي فني من الإدارة (بسبب شكوى أو مخالفة) في كل مرة يعاد تشغيل السيرفر أو يتم نشر تحديث جديد.
 // إيقاف/تفعيل الفنيين أصبح بالكامل بيد الإدارة فقط عبر /api/admin/users/:id/toggle.
