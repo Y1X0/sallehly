@@ -26,8 +26,18 @@ function createApp(deps) {
   app.use(cookieParser());
   app.use(security.csrfCheck);
 
+  // [FIX-BODYLIMIT-01] راجع DECISIONS.md — express.urlencoded() كان بلا أي
+  // limit صريح، فيرث افتراضي body-parser (100kb) بينما express.json() أعلاه
+  // مضبوط صراحة على 1mb — نفس المستخدم يقدر يرسل جسماً أكبر بعشر مرات فقط
+  // لأن الراوت يتوقّع JSON بدل form-urlencoded، بلا أي فرق منطقي بين الحالتين.
+  // الأخطر: هذا لم يكن مجرد عدم اتساق نظري — طلب حقيقي (وصف طلب طويل جداً،
+  // tests/security-hardening.spec.js) كان يصطدم فعلياً بحد الـ100kb الضمني
+  // ويُرفَض بـPayloadTooLargeError قبل وصوله لفحص التحقق الصريح بالراوت (حد
+  // 1000 حرف بـrequests.routes.js)، فيمرّ عبر مسار "خطأ غير متوقَّع" بـ
+  // apiErrorHandler (تسجيل + تنبيه عبر alertError) بدل مسار تحقق نظيف متوقَّع
+  // بلا أي تنبيه — ضجيج تنبيهات كاذب لسيناريو مستخدم عادي تماماً.
   app.use(express.json({ limit: '1mb' }));
-  app.use(express.urlencoded({ extended: true }));
+  app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 
   // [SEC-FIX-UPLOADS-01] / [SEC-FIX-AUDIOAUTH-01] راجع DECISIONS.md —
   // avatars/payments/requests/audios (كل مجلدات public/uploads الأربعة
