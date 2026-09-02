@@ -7,6 +7,8 @@ const crypto = require('crypto');
 const multer = require('multer');
 const { UPLOAD_DIR } = require('../config/env');
 const { hasSafeExt, safeUploadName } = require('../utils/helpers');
+const { db } = require('../config/db');
+const { QuotaExceededError } = require('../utils/errors');
 
 // [FIX-CHATIMG-01] خريطة صريحة بدل شرط متداخل — الشرط القديم كان يُسقط أي
 // fieldname غير 'receipt'/'problem_image' على 'avatars' افتراضياً، وهذا كان
@@ -92,4 +94,36 @@ function verifyImageMagicBytes(req, res, next) {
   }
 }
 
-module.exports = { upload, uploadAudio, verifyImageMagicBytes };
+// [FEAT-UPLOADQUOTA-01] راجع DECISIONS.md — من قائمة [DEFERRED-AUDIT-10]
+// المؤجَّلة ("لا حصة تخزين (quota) على أي مستخدم — عميل واحد يقدر يملأ قرص
+// Render خلال دقائق برفع مستمر ضد نفسه"). سقف صلب على مجموع ما رفعه المستخدم
+// عبر حياة حسابه كلها (users.total_upload_bytes، عدّاد تراكمي لا يُخفَّض أبداً
+// حتى لو حُذف الملف لاحقاً) — ليس تتبّعاً حياً لمساحته الفعلية المشغولة الآن،
+// بل ضماناً رياضياً بسيطاً: مستحيل لأي حساب واحد أن يتسبَّب بأكثر من
+// TOTAL_UPLOAD_QUOTA_BYTES من الكتابة للقرص إجمالاً، بغض النظر عمّا يُنظَّف
+// لاحقاً (تعمّد التبسيط — راجع "نطاق متروك عمداً" بمُدخَل هذا الإصلاح
+// بـDECISIONS.md لسبب عدم بناء تتبّع "استخدام حي" يُخفَّض عند كل حذف). 100MB
+// سخية لاستخدام طبيعي (صورة شخصية + عدد من صور/تسجيلات الشات عبر شهور) بينما
+// تُبقي أسوأ سيناريو لحساب واحد عند ~10% فقط من القرص الكلي (1GB على Render).
+// تُشغَّل بعد multer (upload.single/uploadAudio.single) وبعد verifyImageMagicBytes
+// حيثما وُجدت — بهذا الترتيب فقط، ملف رُفض فعلاً (نوع/محتوى غير صالح) لا
+// يُحتسَب على حصة المستخدم إطلاقاً (Express يقفز مباشرة لمعالج الخطأ متجاوزاً
+// أي middleware لاحقة بالسلسلة). req.user يجب أن يكون مضبوطاً مسبقاً (auth
+// middleware) — لا تُستخدَم هذه بمسار التسجيل (لا حساب موجود بعد).
+const TOTAL_UPLOAD_QUOTA_BYTES = 100 * 1024 * 1024;
+
+function enforceUploadQuota(req, res, next) {
+  if (!req.file) return next();
+  try {
+    const row = db.prepare('SELECT total_upload_bytes FROM users WHERE id=?').get(req.user.id);
+    const currentTotal = (row && row.total_upload_bytes) || 0;
+    if (currentTotal + req.file.size > TOTAL_UPLOAD_QUOTA_BYTES) {
+      try { fs.unlinkSync(req.file.path); } catch (e) {}
+      return next(new QuotaExceededError());
+    }
+    db.prepare('UPDATE users SET total_upload_bytes = total_upload_bytes + ? WHERE id=?').run(req.file.size, req.user.id);
+    next();
+  } catch (e) { next(e); }
+}
+
+module.exports = { upload, uploadAudio, verifyImageMagicBytes, enforceUploadQuota, TOTAL_UPLOAD_QUOTA_BYTES };

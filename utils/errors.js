@@ -18,4 +18,16 @@ class ForbiddenError extends Error {
   }
 }
 
-module.exports = { ForbiddenError };
+// [FEAT-UPLOADQUOTA-01] راجع DECISIONS.md — نفس فلسفة ForbiddenError أعلاه
+// بالضبط: قرار متوقَّع ومقصود (تجاوز حصة التخزين)، لا خطأ غير متوقَّع، فيُترجَم
+// مباشرة لاستجابة نظيفة بدل المرور بمسار التسجيل/التنبيه العام.
+class QuotaExceededError extends Error {
+  constructor(message = 'تجاوزت الحد الأقصى المسموح لمساحة التخزين', code = 'STORAGE_QUOTA_EXCEEDED') {
+    super(message);
+    this.name = 'QuotaExceededError';
+    this.status = 413;
+    this.code = code;
+  }
+}
+
+module.exports = { ForbiddenError, QuotaExceededError };
