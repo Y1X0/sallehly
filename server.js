@@ -99,7 +99,19 @@ app.use('/api', require('./routes')(deps));
 // V21 friendly upload/API error handler
 app.use(security.apiErrorHandler);
 
-app.get('*', (req, res) => res.sendFile(path.join(env.BASE, 'public', 'index.html')));
+// [FIX-API404-01] راجع DECISIONS.md — أي مسار /api/* غير معروف كان يصل لهذا
+// المسار الشامل (لا route سابق طابقه ضمن routes/ أعلاه) ويحصل على index.html
+// بحالة 200 — عميل يتوقع JSON (تطبيق Flutter بنسخة قديمة يستدعي endpoint
+// أُزيل، أو خطأ إملائي بمسار) يحصل على HTML مضلِّل بدل 404 واضح بدل أن
+// يفشل بوضوح. لا يمس أي مسار آخر خارج /api — الغرض الأصلي من هذا المسار
+// الشامل (دعم توجيه صفحات public/ العميقة عند تحديث المتصفح مباشرة) يبقى
+// كما هو تماماً لكل شيء عدا /api.
+app.get('*', (req, res) => {
+  if (req.path.startsWith('/api/')) {
+    return res.status(404).json({ error: 'المسار غير موجود', code: 'API_ROUTE_NOT_FOUND' });
+  }
+  res.sendFile(path.join(env.BASE, 'public', 'index.html'));
+});
 
 server.listen(env.PORT, () => console.log(`صلّحلي يعمل على http://localhost:${env.PORT}`));
 
