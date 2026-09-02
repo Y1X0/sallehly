@@ -202,6 +202,55 @@ function cleanupOldNotifications() {
 }
 if (IS_PROD) setInterval(cleanupOldNotifications, 24 * 60 * 60 * 1000).unref();
 
+// [FEAT-RETENTION-01] راجع DECISIONS.md وبند `[DEFERRED-AUDIT-10]` ("لا تنظيف
+// دوري لأي جدول عدا notifications/pending_users — messages/audit_logs/
+// chat_violations تنمو للأبد"). مدد الاحتفاظ الثلاث أدناه قرار منتج صريح من
+// صاحب المنتج (لا افتراض هندسي) — راجع DECISIONS.md لتفاصيل كل مدة وسببها.
+const CHAT_MESSAGE_RETENTION_DAYS = 7;
+const AUDIT_LOG_RETENTION_DAYS = 180;
+const CHAT_VIOLATION_RETENTION_DAYS = 730;
+
+// رسائل الشات تُحذَف فقط لطلب انتهى فعلاً (مكتمل أو ملغي) ومضى على انتهائه
+// (requests.updated_at، يُضبَط عند كل تغيير حالة — راجع routes/requests.routes.js)
+// أكثر من أسبوع — لا مقارنة مباشرة على created_at الرسالة نفسها، فطلب لا يزال
+// نشطاً (مهما طالت مدته) لا تُلمَس رسائله إطلاقاً بغض النظر عن عمرها.
+function cleanupOldChatMessages() {
+  try {
+    db.prepare(`
+      DELETE FROM messages WHERE request_id IN (
+        SELECT id FROM requests
+        WHERE status IN ('مكتمل','ملغي')
+          AND updated_at < datetime('now','-${CHAT_MESSAGE_RETENTION_DAYS} days')
+      )
+    `).run();
+  } catch (e) { console.error('cleanup old chat messages failed:', e.message); }
+}
+if (IS_PROD) setInterval(cleanupOldChatMessages, 24 * 60 * 60 * 1000).unref();
+
+// سجل تدقيق إجراءات الأدمن — نفس نمط cleanupOldNotifications بالضبط
+// (idx_audit_logs_created موجود أصلاً، راجع config/migrate.js).
+function cleanupOldAuditLogs() {
+  try {
+    db.prepare(`DELETE FROM audit_logs WHERE created_at < datetime('now','-${AUDIT_LOG_RETENTION_DAYS} days')`).run();
+  } catch (e) { console.error('cleanup old audit logs failed:', e.message); }
+}
+if (IS_PROD) setInterval(cleanupOldAuditLogs, 24 * 60 * 60 * 1000).unref();
+
+// مخالفات الشات (routes/chat.routes.js، routes/admin.routes.js's
+// moderation.violationsCount) — تُستثنى المخالفات "مفتوحة" (لم يراجعها الأدمن
+// بعد) من الحذف بغض النظر عن عمرها، مهما طال — لا يجوز حذف حالة تأديبية لم
+// يُبتّ فيها بعد.
+function cleanupOldChatViolations() {
+  try {
+    db.prepare(`
+      DELETE FROM chat_violations
+      WHERE created_at < datetime('now','-${CHAT_VIOLATION_RETENTION_DAYS} days')
+        AND status != 'مفتوح'
+    `).run();
+  } catch (e) { console.error('cleanup old chat violations failed:', e.message); }
+}
+if (IS_PROD) setInterval(cleanupOldChatViolations, 24 * 60 * 60 * 1000).unref();
+
 
 migrate(db);
 
@@ -228,6 +277,11 @@ if (IS_PROD) {
   setTimeout(() => { cleanupOrphanUploads().catch(e => console.error('cleanup uploads failed:', e.message)); }, UPLOAD_CLEANUP_STAGGER_MS).unref();
   cleanupExpiredPendingUsers();
   cleanupOldNotifications();
+  // [FEAT-RETENTION-01] نفس منطق SCHED-FIX-BOOTRUN-01 أعلاه بالضبط — تشغيلة
+  // فورية عند الإقلاع بالإضافة للفاصل الزمني المتكرر، لا بديلاً عنه.
+  cleanupOldChatMessages();
+  cleanupOldAuditLogs();
+  cleanupOldChatViolations();
 }
 
 // [FIX-CHATIMG-01] إصلاح تلقائي لمرة واحدة عند الإقلاع: أي صورة شات أُرسلت قبل
