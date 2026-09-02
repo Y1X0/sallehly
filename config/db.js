@@ -81,6 +81,18 @@ async function createDbBackup() {
 }
 if (IS_PROD) setInterval(() => { createDbBackup().catch(e => console.error('backup failed:', e.message)); }, 6 * 60 * 60 * 1000).unref();
 
+// [SCHED-FIX-CRONSTAGGER-01] راجع DECISIONS.md — هذه والنسخ الاحتياطي أعلاه
+// كانتا مسجَّلتين بنفس فاصل الـ6 ساعات، وكلتاهما تُشغَّلان فوراً عند الإقلاع
+// (راجع SCHED-FIX-BOOTRUN-01 أسفل الملف) — أي أنهما تنطلقان معاً باللحظة
+// نفسها عند كل إقلاع، ثم كل 6 ساعات للأبد، بلا أي تباعد متعمَّد، فتتنافسان
+// على I/O القرص نفسه (نسخ .sqlite كامل + قراءة/فحص/حذف عبر 4 مجلدات رفع
+// بنفس الوقت). التأخير هنا (نصف ساعة) يُطبَّق على كل من التشغيلة الفورية عند
+// الإقلاع وعلى طور setInterval نفسه معاً، حتى يبقى التباعد بينهما ثابتاً
+// للأبد لا لمرة واحدة فقط — وليس نصف الدورة (3 ساعات) حتى لا يُبطئ ضمان
+// SCHED-FIX-BOOTRUN-01 الأصلي (تشغيلة مضمونة قريبة من الإقلاع حتى على دورة
+// نشر أسرع من الفاصل الزمني).
+const UPLOAD_CLEANUP_STAGGER_MS = 30 * 60 * 1000;
+
 // تنظيف دوري للملفات المرفوعة غير المستخدمة (orphan files) في public/uploads.
 // لا تحذف أي شيء له مرجع في قاعدة البيانات؛ تحذف فقط الملفات التي لم يعد لها أي استخدام
 // (مثل صور إيصالات دفع مرفوضة قديمة، أو ملفات تسجيل توقفت في منتصف الطريق)
@@ -159,7 +171,9 @@ async function cleanupOrphanUploads() {
     }
   } catch (e) { console.error('cleanup uploads failed:', e.message); }
 }
-if (IS_PROD) setInterval(() => { cleanupOrphanUploads().catch(e => console.error('cleanup uploads failed:', e.message)); }, 6 * 60 * 60 * 1000).unref();
+if (IS_PROD) setTimeout(() => {
+  setInterval(() => { cleanupOrphanUploads().catch(e => console.error('cleanup uploads failed:', e.message)); }, 6 * 60 * 60 * 1000).unref();
+}, UPLOAD_CLEANUP_STAGGER_MS).unref();
 
 // تنظيف دوري لطلبات التسجيل التي انتهت صلاحية كود التحقق (OTP) خاصتها ولم يكمل
 // صاحبها التحقق ولا عاد إليها، بدل أن تبقى محفوظة في قاعدة البيانات إلى الأبد.
@@ -207,7 +221,11 @@ migrate(db);
 // setInterval أعلاه، لا داعي لتأخير باقي إقلاع الوحدة بانتظارهما.
 if (IS_PROD) {
   createDbBackup().catch(e => console.error('backup failed:', e.message));
-  cleanupOrphanUploads().catch(e => console.error('cleanup uploads failed:', e.message));
+  // [SCHED-FIX-CRONSTAGGER-01] راجع DECISIONS.md — نفس التباعد (30 دقيقة)
+  // المطبَّق على طور setInterval أعلاه، مطبَّق هنا أيضاً على التشغيلة الفورية
+  // عند الإقلاع — وإلا تظل التشغيلتان الأوليان تتصادمان رغم تباعد الدورات
+  // اللاحقة.
+  setTimeout(() => { cleanupOrphanUploads().catch(e => console.error('cleanup uploads failed:', e.message)); }, UPLOAD_CLEANUP_STAGGER_MS).unref();
   cleanupExpiredPendingUsers();
   cleanupOldNotifications();
 }

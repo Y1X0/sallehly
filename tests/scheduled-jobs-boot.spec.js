@@ -114,3 +114,57 @@ test.describe('[SCHED-FIX-BOOTRUN-01] المهام الدورية تُنفَّذ
     }
   });
 });
+
+// [SCHED-FIX-CRONSTAGGER-01] راجع DECISIONS.md — النسخ الاحتياطي وتنظيف
+// الرفوعات اليتيمة كانا مسجَّلين بنفس فاصل الـ6 ساعات، وكلاهما يُشغَّل فوراً
+// عند الإقلاع (SCHED-FIX-BOOTRUN-01 أعلاه) — فيصطدمان بنفس اللحظة، للأبد.
+// هذا الاختبار يثبت الجانب السلبي مباشرة: لا يمكن انتظار 30 دقيقة فعلية
+// بالاختبار، لكن يمكن إثبات أن تنظيف الرفوعات **لا يُنفَّذ فوراً** عند
+// الإقلاع كما كان قبل الإصلاح — ملف يتيم يبقى موجوداً بعد الإقلاع مباشرة
+// رغم أنه هدف مضمون للحذف لو نُفِّذت الدالة بنفس لحظة الإقلاع.
+test.describe('[SCHED-FIX-CRONSTAGGER-01] تنظيف الرفوعات اليتيمة لا يصطدم بالنسخ الاحتياطي عند الإقلاع', () => {
+  test('عند الإقلاع بالإنتاج: النسخ الاحتياطي يظهر فوراً، لكن تنظيف الرفوعات اليتيمة مؤجَّل ولا يُنفَّذ بنفس اللحظة', async () => {
+    const tmpDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sallehly-sched-stagger-test-'));
+
+    const first = freshRequireDb({ NODE_ENV: 'test', DATA_DIR: tmpDataDir });
+    first.db.close();
+
+    // ملف يتيم بمجلد avatars/ لا مرجع له بقاعدة البيانات، وعمره أكثر من يوم —
+    // هدف مضمون لـcleanupOrphanUploads() لو نُفِّذت.
+    const avatarsDir = path.join(tmpDataDir, 'uploads', 'avatars');
+    fs.mkdirSync(avatarsDir, { recursive: true });
+    const orphanFile = path.join(avatarsDir, 'orphan-test.png');
+    fs.writeFileSync(orphanFile, 'x');
+    const twoDaysAgoSec = (Date.now() - 2 * 24 * 60 * 60 * 1000) / 1000;
+    fs.utimesSync(orphanFile, twoDaysAgoSec, twoDaysAgoSec);
+
+    const second = freshRequireDb({
+      NODE_ENV: 'production',
+      DATA_DIR: tmpDataDir,
+      JWT_SECRET: 'test_only_prod_env_secret_1234567890ABCDEFGH',
+    });
+
+    try {
+      const backupDir = path.join(tmpDataDir, 'backups');
+      const backupAppeared = await waitUntil(async () => {
+        if (!fs.existsSync(backupDir)) return false;
+        const files = await fs.promises.readdir(backupDir);
+        return files.some((f) => f.startsWith('sallehly-') && f.endsWith('.sqlite'));
+      });
+      expect(backupAppeared, 'لم يظهر أي ملف نسخة احتياطية خلال المهلة — createDbBackup() لم تُنفَّذ عند الإقلاع').toBe(true);
+
+      // مهلة قصيرة إضافية بعد ظهور النسخة الاحتياطية — كافية لأي عملية
+      // متزامنة اللحظة كانت لتُنهي حذف الملف اليتيم لو لم يكن مؤجَّلاً.
+      await new Promise((r) => setTimeout(r, 500));
+      expect(
+        fs.existsSync(orphanFile),
+        'تنظيف الرفوعات اليتيمة نُفِّذ فوراً عند الإقلاع بدل أن يكون مؤجَّلاً — التباعد عن النسخ الاحتياطي غير فعّال'
+      ).toBe(true);
+    } finally {
+      second.db.close();
+      restoreRealEnv();
+      require('../config/env');
+      fs.rmSync(tmpDataDir, { recursive: true, force: true });
+    }
+  });
+});
