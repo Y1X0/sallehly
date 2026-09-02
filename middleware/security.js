@@ -5,7 +5,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { IS_PROD, ALLOWED_ORIGINS } = require('../config/env');
 const { alertError } = require('../services/error-alert');
-const { ForbiddenError } = require('../utils/errors');
+const { ForbiddenError, QuotaExceededError } = require('../utils/errors');
 
 // [PERF-HARDEN-01] كان max=20 ثابتاً بلا استثناء بيئة الاختبار — الوحيد بين
 // كل الحدود الخمسة بهذا الملف بلا نمط IS_PROD الموجود بباقيها. بما أن هذا
@@ -161,7 +161,9 @@ function apiErrorHandler(err, req, res, next) {
     // أدناه (نفس معاملة أخطاء التحقق حجم/نوع الملف تحديداً)، وقبل أي شيء آخر
     // حتى لا يسقط بصمت على استجابة 400/500 عامة غير مقصودة (بالضبط الفارق
     // بين "نصف إصلاح" و"إصلاح كامل" لأي حارس صلاحية يرمي بدل أن يُعيد قيمة).
-    if (err instanceof ForbiddenError) {
+    // [FEAT-UPLOADQUOTA-01] راجع DECISIONS.md — نفس معاملة ForbiddenError
+    // أعلاه بالضبط: قرار متوقَّع ومقصود (تجاوز حصة التخزين)، لا خطأ غير متوقَّع.
+    if (err instanceof ForbiddenError || err instanceof QuotaExceededError) {
       return res.status(err.status).json({ error: err.message, code: err.code });
     }
     const msg = err.message || 'حدث خطأ في الخادم';

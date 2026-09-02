@@ -48,6 +48,9 @@ function buildMinimalAuthApp(db) {
       // (upload.single مزيَّفة أعلاه، لا تكتب أي req.file) — تمرير مباشر بلا
       // أي تحقق، تماماً مثل باقي middleware المزيَّفة هنا.
       verifyImageMagicBytes: (req, res, next) => next(),
+      // [FEAT-UPLOADQUOTA-01] نفس السبب أعلاه بالضبط — لا req.file حقيقي هنا،
+      // فتمرير مباشر بلا أي فحص حصة.
+      enforceUploadQuota: (req, res, next) => next(),
     },
     services: {
       sign: () => 'fake-token',

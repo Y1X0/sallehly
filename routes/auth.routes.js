@@ -23,7 +23,7 @@ const { JWT_SECRET } = require('../config/env');
 module.exports = function (deps) {
   const { db } = deps;
   const { io } = deps.realtime;
-  const { auth, upload, verifyImageMagicBytes } = deps.middleware;
+  const { auth, upload, verifyImageMagicBytes, enforceUploadQuota } = deps.middleware;
   const { sign, sendOtpEmail } = deps.services;
   const { clean, userPublic, anonymizeUser, PHONE_REGEX, generateOtp } = deps.utils;
   const { COOKIE_OPTS, BASE, BLOCKING_REQUEST_STATUSES_SQL, FREE_TIER_QUOTA, OTP_MAX_ATTEMPTS } = deps.constants;
@@ -299,7 +299,7 @@ module.exports = function (deps) {
     res.json({ user });
   });
 
-  router.post('/me/profile', auth, upload.single('avatar'), verifyImageMagicBytes, (req, res) => {
+  router.post('/me/profile', auth, upload.single('avatar'), verifyImageMagicBytes, enforceUploadQuota, (req, res) => {
     // [FIX-UPLOAD-01] أي ملف وصل عبر multer ولم يُستخدم فعلياً (رُفض بسبب
     // فشل تحقق آخر، أو لأن الدور ليس "فني") يُحذف فوراً من القرص عند انتهاء
     // الطلب — بغض النظر عن أي مسار Return تم أخذه. هذا يمنع بقاء ملفات

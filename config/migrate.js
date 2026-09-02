@@ -341,6 +341,14 @@ try { db.prepare("ALTER TABLE chat_violations ADD COLUMN status TEXT NOT NULL DE
 // موقوف عادي (is_active=0 لوحده لا يفرّق بين "موقوف مؤقتاً" و"محذوف نهائياً").
 try { db.prepare('ALTER TABLE users ADD COLUMN deleted_at TEXT').run(); } catch (e) {}
 
+// [FEAT-UPLOADQUOTA-01] راجع DECISIONS.md — عدّاد تراكمي (لا يُخفَّض أبداً،
+// حتى لو حُذف الملف لاحقاً بتنظيف دوري أو استبدال صورة) لمجموع بايتات الملفات
+// التي رفعها هذا المستخدم عبر حياة الحساب كلها. الهدف سقف صلب على أقصى ما
+// يقدر مستخدم واحد أن "يكتبه" للقرص إجمالاً، لا تتبّع حي لمساحته الفعلية
+// المشغولة الآن (تعمّد التبسيط — راجع middleware/upload.js's enforceUploadQuota
+// ونطاق هذا البند بـDECISIONS.md).
+try { db.prepare('ALTER TABLE users ADD COLUMN total_upload_bytes INTEGER NOT NULL DEFAULT 0').run(); } catch (e) {}
+
 // [FIX-COMMISSIONSNAPSHOT-01] راجع DECISIONS.md — قبل هذا الإصلاح، عمولة كل
 // شحن رصيد كانت تُقرأ حيّة من packages.commission_per_order وقت مراجعة الأدمن
 // (POST /admin/topups/:id/review)، لا وقت تقديم الطلب. لو عدّل الأدمن عمولة
