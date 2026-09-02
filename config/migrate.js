@@ -6,6 +6,7 @@
 // full rationale. hashSync() signature/behavior unchanged; only used here at
 // startup (admin/reviewer/demo-account seeding), never on the request path.
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const { IS_PROD } = require('./env');
 
 function migrate(db) {
@@ -699,22 +700,59 @@ const isTestEnv = process.env.NODE_ENV === 'test';
 const resolvedAdminEmail = process.env.ADMIN_EMAIL || (isTestEnv ? 'admin-test@example.com' : null);
 const resolvedAdminPassword = process.env.ADMIN_PASSWORD || (isTestEnv ? 'AdminTestPass123' : null);
 
+// [FIX-ADMINENVRESET-01] راجع DECISIONS.md — قبل هذا الإصلاح، كل إقلاع
+// (يعني كل إعادة نشر بالإنتاج، حدث شائع جداً بدورة نشر نشطة) كان يعيد كتابة
+// email/password_hash من .env بلا شرط، حتى لو الأدمن غيّر كلمة سره فعلياً
+// من داخل التطبيق (مسار مقصود وسليم) بعد آخر إقلاع — يعود صامتاً للقيمة
+// القديمة بمتغيرات البيئة، بلا أي تنبيه. النية الأصلية للكود («غيّر .env ثم
+// أعد التشغيل») هي آلية استرجاع صريحة عند فقدان الوصول، لا إعادة ضبط دورية.
+// الحل: بصمة (fingerprint) لقيمتَي .env المُطبَّقتين آخر مرة، مخزَّنة على
+// صف الأدمن نفسه. email/password_hash يُعادان الكتابة فقط لو تغيّرت قيم
+// .env فعلياً عن آخر بصمة مسجَّلة (يعني: المُشغِّل غيّر .env عمداً) — لا
+// لمجرد إعادة تشغيل عادية. is_active/is_super_admin يبقيان يُفرَضان بكل
+// إقلاع بلا شرط كما كانا (نفس منطق FIX-SUPERADMIN-01 الأصلي، لا علاقة له
+// بمشكلة كلمة السر). أول إقلاع بعد نشر هذا الإصلاح (بلا بصمة مخزَّنة بعد)
+// يُسجِّل البصمة الحالية فقط دون لمس كلمة السر الحية — يحافظ على أي تغيير
+// يدوي سابق بدل فرض إعادة ضبط إضافية غير متوقَّعة عند الترقية.
+try {
+  db.prepare('ALTER TABLE users ADD COLUMN env_admin_fingerprint TEXT').run();
+} catch (e) {}
+
 if (resolvedAdminEmail && resolvedAdminPassword) {
   const adminEmail = String(resolvedAdminEmail).trim().toLowerCase();
   const adminPass = bcrypt.hashSync(String(resolvedAdminPassword), 12);
-  const existingAdmin = db.prepare('SELECT id FROM users WHERE role=?').get('admin');
+  const envFingerprint = crypto.createHash('sha256')
+    .update(adminEmail + ' ' + String(resolvedAdminPassword)).digest('hex');
+  const existingAdmin = db.prepare('SELECT id, env_admin_fingerprint FROM users WHERE role=?').get('admin');
   if (existingAdmin) {
     // [FIX-SUPERADMIN-01] يبقى الحساب المُهيَّأ من .env super admin دائماً حتى
     // لو تصفّرت is_super_admin بأي طريقة يدوية — نفس منطق فرض is_active=1 هنا تماماً.
-    db.prepare('UPDATE users SET email=?, password_hash=?, is_active=1, is_super_admin=1 WHERE id=?')
-      .run(adminEmail, adminPass, existingAdmin.id);
-    console.log('Admin account updated' + (isTestEnv ? ' (test defaults)' : ' from .env'));
+    if (existingAdmin.env_admin_fingerprint === envFingerprint) {
+      // .env لم يتغيّر منذ آخر مزامنة — لا نلمس email/password_hash الحيَّين
+      // (قد يكونا تغيّرا فعلاً من داخل التطبيق)، نفرض فقط الصلاحيات كالمعتاد.
+      db.prepare('UPDATE users SET is_active=1, is_super_admin=1 WHERE id=?').run(existingAdmin.id);
+      console.log('Admin account role enforced (env credentials unchanged, live password preserved)');
+    } else if (existingAdmin.env_admin_fingerprint == null) {
+      // أول إقلاع بعد نشر هذا الإصلاح — لا بصمة مسجَّلة بعد على حساب موجود
+      // أصلاً. نسجّل البصمة الحالية فقط لبدء التتبّع من الآن، بلا لمس
+      // email/password_hash الحيَّين — تفادياً لإعادة ضبط غير متوقَّعة عند
+      // الترقية لحساب قد يكون كلمة سره تغيّرت فعلاً منذ آخر مزامنة قديمة.
+      db.prepare('UPDATE users SET is_active=1, is_super_admin=1, env_admin_fingerprint=? WHERE id=?')
+        .run(envFingerprint, existingAdmin.id);
+      console.log('Admin env fingerprint baseline recorded (live password preserved, not reset)');
+    } else {
+      // .env تغيّر فعلاً عن آخر مزامنة معروفة — تغيير متعمَّد من المُشغِّل،
+      // نطبّق القيمة الجديدة ونسجّل بصمتها.
+      db.prepare('UPDATE users SET email=?, password_hash=?, is_active=1, is_super_admin=1, env_admin_fingerprint=? WHERE id=?')
+        .run(adminEmail, adminPass, envFingerprint, existingAdmin.id);
+      console.log('Admin account updated' + (isTestEnv ? ' (test defaults)' : ' from .env'));
+    }
   } else {
     // [FIX-VERIFY-01] على تنصيب جديد (لا يوجد مستخدمون أصلاً وقت الترحيل أعلاه)،
     // verification_status الافتراضي بالعمود هو 'pending' — لا معنى له لحساب
     // الإدارة نفسه، فنحدّده صراحة هنا بدل تركه 'pending' بالخطأ.
-    db.prepare("INSERT INTO users(role,name,email,phone,password_hash,is_active,is_super_admin,verification_status) VALUES(?,?,?,?,?,1,1,'verified')")
-      .run('admin','مدير صلّحلي',adminEmail,'0799999999',adminPass);
+    db.prepare("INSERT INTO users(role,name,email,phone,password_hash,is_active,is_super_admin,verification_status,env_admin_fingerprint) VALUES(?,?,?,?,?,1,1,'verified',?)")
+      .run('admin','مدير صلّحلي',adminEmail,'0799999999',adminPass,envFingerprint);
     console.log('Admin account created' + (isTestEnv ? ' (test defaults)' : ' from .env'));
   }
 } else {

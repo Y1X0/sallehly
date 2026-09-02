@@ -8,6 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const Database = require('better-sqlite3');
+const bcrypt = require('bcrypt');
 const { test, expect } = require('@playwright/test');
 const { getPendingOtp, openTestDb, TEST_DB_PATH } = require('./helpers/db');
 const { migrate } = require('../config/migrate');
@@ -99,6 +100,79 @@ test.describe('[DB] أمان تشغيل migrate() أكثر من مرة', () => {
       expect(admins).toBe(1);
     } finally {
       process.env.NODE_ENV = prevEnv;
+      db.close();
+      fs.rmSync(tmpPath, { force: true });
+      fs.rmSync(`${tmpPath}-wal`, { force: true });
+      fs.rmSync(`${tmpPath}-shm`, { force: true });
+    }
+  });
+
+  // [FIX-ADMINENVRESET-01] راجع DECISIONS.md — قبل هذا الإصلاح كان migrate()
+  // يكتب فوق password_hash بالأدمن من ADMIN_EMAIL/ADMIN_PASSWORD بكل إقلاع طالما
+  // الحساب موجود، فأي تغيير لكلمة السر من داخل التطبيق نفسه يضيع بأول إعادة
+  // نشر. يثبت هذا الاختبار أن كلمة سر محدَّثة يدوياً تبقى كما هي عبر إقلاعات
+  // متكررة طالما .env لم يتغيّر فعلياً، وأنها تتغيّر فقط حين تتغيّر قيم .env.
+  test('migrate() لا يعيد ضبط كلمة سر الأدمن المُغيَّرة يدوياً طالما .env لم يتغيّر، ويطبّقها فقط عند تغيّر .env فعلياً', () => {
+    const tmpPath = path.join(os.tmpdir(), `sallehly-migrate-adminreset-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    const db = new Database(tmpPath);
+    const prevEmail = process.env.ADMIN_EMAIL;
+    const prevPassword = process.env.ADMIN_PASSWORD;
+    const prevNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'test';
+    try {
+      migrate(db);
+
+      // محاكاة تغيير كلمة السر من داخل التطبيق (لا علاقة له بـ.env)
+      const sentinelHash = bcrypt.hashSync('ChangedFromAppUI!', 12);
+      db.prepare("UPDATE users SET password_hash=? WHERE role='admin'").run(sentinelHash);
+
+      // إقلاع عادي لاحق — .env لم يتغيّر إطلاقاً
+      migrate(db);
+      let admin = db.prepare("SELECT password_hash FROM users WHERE role='admin'").get();
+      expect(admin.password_hash).toBe(sentinelHash);
+
+      // الآن المشغّل يغيّر .env فعلياً — يجب أن يُطبَّق التغيير هذه المرة
+      process.env.ADMIN_EMAIL = 'admin-test@example.com';
+      process.env.ADMIN_PASSWORD = 'BrandNewOperatorPass456';
+      migrate(db);
+      admin = db.prepare("SELECT password_hash FROM users WHERE role='admin'").get();
+      expect(admin.password_hash).not.toBe(sentinelHash);
+      expect(bcrypt.compareSync('BrandNewOperatorPass456', admin.password_hash)).toBeTruthy();
+    } finally {
+      process.env.ADMIN_EMAIL = prevEmail;
+      process.env.ADMIN_PASSWORD = prevPassword;
+      process.env.NODE_ENV = prevNodeEnv;
+      db.close();
+      fs.rmSync(tmpPath, { force: true });
+      fs.rmSync(`${tmpPath}-wal`, { force: true });
+      fs.rmSync(`${tmpPath}-shm`, { force: true });
+    }
+  });
+
+  test('migrate() على حساب أدمن قديم بلا env_admin_fingerprint (ترقية): يسجّل البصمة الأساسية بلا لمس كلمة السر الحالية', () => {
+    const tmpPath = path.join(os.tmpdir(), `sallehly-migrate-adminupgrade-${Date.now()}-${Math.random().toString(36).slice(2)}.sqlite`);
+    const db = new Database(tmpPath);
+    const prevNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'test';
+    try {
+      migrate(db);
+
+      // محاكاة حساب أدمن من قبل هذا الإصلاح: بصمة فارغة + كلمة سر محدَّثة يدوياً
+      const sentinelHash = bcrypt.hashSync('PreExistingAdminPass!', 12);
+      db.prepare("UPDATE users SET password_hash=?, env_admin_fingerprint=NULL WHERE role='admin'").run(sentinelHash);
+
+      // إقلاع الترقية — أول مرة يعمل بها هذا الإصلاح على حساب قديم
+      migrate(db);
+      let admin = db.prepare("SELECT password_hash, env_admin_fingerprint FROM users WHERE role='admin'").get();
+      expect(admin.password_hash).toBe(sentinelHash);
+      expect(admin.env_admin_fingerprint).not.toBeNull();
+
+      // إقلاع لاحق عادي — البصمة الآن مسجَّلة و.env لم يتغيّر، يجب أن تبقى كلمة السر كما هي
+      migrate(db);
+      admin = db.prepare("SELECT password_hash FROM users WHERE role='admin'").get();
+      expect(admin.password_hash).toBe(sentinelHash);
+    } finally {
+      process.env.NODE_ENV = prevNodeEnv;
       db.close();
       fs.rmSync(tmpPath, { force: true });
       fs.rmSync(`${tmpPath}-wal`, { force: true });
