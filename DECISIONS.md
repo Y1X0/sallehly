@@ -4720,3 +4720,48 @@ Render) يتفاقم مع الوقت، وأداء الاستعلامات ضده�
 `401`/`AUTH_INVALID_CREDENTIALS` — بدل الاصطدام بحد حجم الجسم أولاً). اختبار
 "200 ألف حرف" المُصحَّح (الآن 5 آلاف) يتحقق صراحة من `body.code` الصحيح.
 حزمة Playwright الكاملة (418 اختباراً): **418/418 ناجحة**.
+
+---
+
+# [FIX-FRAMEANCESTORS-01] frame-ancestors 'none' يطابق الآن X-Frame-Options: DENY فعلياً — آخر بند من [DEFERRED-AUDIT-10]
+
+من قائمة `[DEFERRED-AUDIT-10]` المؤجَّلة (البند "منخفض/تافه": "`X-Frame-Options:
+DENY` (Helmet) مُضعَّفة فعلياً بصمت بواسطة `frame-ancestors 'self'` بسياسة
+CSP") — آخر بند من جولة المتابعة، وآخر بند متبقٍ بالقائمة المؤجَّلة كاملة.
+
+## الخطورة
+منخفض — لا استغلال فعلي معروف بالوضع الحالي، لكن النية الأمنية المُعلَنة
+(`DENY` — منع تضمين الموقع داخل أي إطار على الإطلاق) لم تكن مُحقَّقة فعلياً؛
+المتصفحات الحديثة تُطبِّق `frame-ancestors` (توجيه CSP) بدل `X-Frame-Options`
+عند تعارضهما، فالسياسة الفعلية المُطبَّقة كانت "مسموح من نفس الأصل" لا
+"ممنوع كلياً".
+
+## الاكتشاف
+`middleware/security.js`'s `helmetMiddleware`: `frameguard: { action: 'deny' }`
+يضبط `X-Frame-Options: DENY` صراحة، لكن إعداد `contentSecurityPolicy` يستخدم
+`useDefaults: true` بلا تحديد `frame-ancestors` صراحة بكائن `directives` —
+تحقُّق مباشر من `helmet.contentSecurityPolicy.getDefaultDirectives()` يثبت
+أن القيمة الافتراضية المُدمَجة هي `frame-ancestors: ["'self'"]`، لا `'none'`.
+
+## الحل
+إضافة `"frame-ancestors": ["'none'"]` صراحة لكائن `directives` — يطابق نية
+`DENY` فعلياً. تحقُّق مسبق: لا استخدام حقيقي بالمشروع لتضمين الموقع داخل
+نفسه (الـ`iframe` الوحيد بالكود — `public/app.js`'s `mapBox()` — يُضمِّن
+OpenStreetMap خارجياً، مُدرَج أصلاً بتوجيه `frame-src` منفصل، غير مُتأثِّر).
+
+## الإثبات
+اختبار جديد `tests/security-headers.spec.js`: يثبت مباشرة على استجابة
+حقيقية (`GET /health`) أن `X-Frame-Options: DENY` و`Content-Security-Policy`
+يحمل `frame-ancestors 'none'` معاً، وأن القيمة الافتراضية القديمة (`'self'`)
+لم تعد موجودة بنفس التوجيه. حزمة Playwright الكاملة (422 اختباراً، يشمل
+الاختبار الجديد): **422/422 ناجحة**.
+
+## نطاق متروك عمداً
+لا شيء متبقٍ — هذا آخر بند بقائمة `[DEFERRED-AUDIT-10]` المؤجَّلة بأكملها
+(10 بنود إجمالاً عبر هذه الجولة: `FIX-NPMCI-01`، `FIX-ADMINENVRESET-01`،
+`SCHED-FIX-CRONSTAGGER-01`، `FEAT-UPLOADQUOTA-01`، `FEAT-RETENTION-01`،
+`SEC-FIX-CHATCHOKEPOINT-SCANFIX-01`، `FIX-API404-01`، `FIX-BODYLIMIT-01`،
+`FIX-FRAMEANCESTORS-01` — تسعة إصلاحات مُصلَحة عبر PR منفصلة، كل واحد
+بمُدخَل مستقل موثَّق أعلاه؛ البند العاشر — `SEC-FIX-TRUSTPROXY-CLOSED-01`
+(`trust proxy`) — كان أُغلق مسبقاً بتحقُّق ميداني منفصل، راجع مُدخَله
+أعلاه بهذا الملف).

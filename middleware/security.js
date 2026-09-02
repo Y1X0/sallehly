@@ -124,7 +124,18 @@ const helmetMiddleware = helmet({
       "img-src": ["'self'", "data:", "blob:", "https://*.tile.openstreetmap.org", "https://tile.openstreetmap.org", "https://unpkg.com"],
       "connect-src": ["'self'", "wss:", "https://*.tile.openstreetmap.org", "https://tile.openstreetmap.org", "https://unpkg.com"],
       "media-src": ["'self'", "blob:"],
-      "frame-src": ["'self'", "https://www.openstreetmap.org", "https://maps.google.com", "https://www.google.com"]
+      "frame-src": ["'self'", "https://www.openstreetmap.org", "https://maps.google.com", "https://www.google.com"],
+      // [FIX-FRAMEANCESTORS-01] راجع DECISIONS.md — useDefaults: true أعلاه
+      // يدمج توجيهات Helmet الافتراضية، ومنها frame-ancestors: ['self'] —
+      // بلا هذا السطر، سياسة CSP الفعلية كانت تسمح بتضمين الموقع داخل نفسه
+      // (iframe من نفس الأصل)، بينما frameguard: {action: 'deny'} أعلاه ينوي
+      // منع التضمين تماماً (X-Frame-Options: DENY). المتصفحات الحديثة تُطبِّق
+      // frame-ancestors عند تعارضه مع X-Frame-Options (الأخير يتفوّق)، فكانت
+      // النية الفعلية المُطبَّقة "مسموح من نفس الأصل" لا "ممنوع كلياً" كما
+      // توحي DENY. لا استخدام حقيقي بالمشروع لتضمين الموقع داخل نفسه (الـ
+      // iframe الوحيد بالكود يُضمِّن OpenStreetMap خارجياً، مُدرَج أصلاً
+      // بـframe-src أعلاه) — 'none' يطابق DENY فعلياً بدل 'self' الضمنية.
+      "frame-ancestors": ["'none'"]
     }
   }
 });
