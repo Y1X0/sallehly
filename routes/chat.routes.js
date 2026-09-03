@@ -164,6 +164,18 @@ module.exports = function (deps) {
     return res.status(400).json({ error: '⚠️ الرسائل العادية مسموحة. الممنوع فقط مشاركة رقم هاتف أو واتساب أو تيليجرام أو إيميل أو روابط تواصل خارجية.', code: 'CHAT_MESSAGE_BLOCKED' });
   }
 
+  // [FEAT-CHATPAGINATION-01] راجع DECISIONS.md — messages-updated (الحمولة
+  // الكاملة) يبقى يُبَث كما هو تماماً بكل مواقع الاستدعاء الثلاثة أدناه
+  // (توافق رجعي مع نسخ تطبيق مثبَّتة سابقاً لهذا الإصلاح، تعتمد عليه وحده) —
+  // message-added حدث إضافي جديد، لا بديل، يحمل الرسالة الجديدة فقط
+  // (آخر عنصر بـmessages، مضمون كونها الأحدث لأن getMessages ترتّب تصاعدياً)
+  // بلا أي استعلام إضافي. نسخة التطبيق الجديدة تستمع لهذا الحدث فقط فلا
+  // تعيد تحليل/عرض المحادثة كاملة عند كل رسالة.
+  function emitNewMessage(requestId, messages, senderId) {
+    safeEmit(requestId, 'messages-updated', { requestId, messages, senderId });
+    safeEmit(requestId, 'message-added', { requestId, message: messages[messages.length - 1], senderId });
+  }
+
   router.post('/requests/:id/messages', auth, messageLimiter, (req, res) => {
     const r = db.prepare('SELECT * FROM requests WHERE id=?').get(req.params.id);
     if (!r) return res.status(404).json({ error: 'الطلب غير موجود', code: 'REQUEST_NOT_FOUND' });
@@ -184,7 +196,7 @@ module.exports = function (deps) {
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
     markChatRead(r.id, req.user.id);
     const messages = getMessages(req.user, r.id);
-    safeEmit(r.id, 'messages-updated', { requestId: r.id, messages, senderId: Number(req.user.id) });
+    emitNewMessage(r.id, messages, Number(req.user.id));
 
     const chatPayload = {
       requestId: Number(r.id),
@@ -246,7 +258,7 @@ module.exports = function (deps) {
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
     markChatRead(r.id, req.user.id);
     const messages = getMessages(req.user, r.id);
-    safeEmit(r.id, 'messages-updated', { requestId: r.id, messages, senderId: Number(req.user.id) });
+    emitNewMessage(r.id, messages, Number(req.user.id));
     // [SEC-FIX-03] Targeted badges update for audio message
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
     if (r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId: r.id });
@@ -275,7 +287,7 @@ module.exports = function (deps) {
     db.prepare('INSERT INTO messages(request_id,sender_id,body) VALUES(?,?,?)').run(r.id, req.user.id, body);
     markChatRead(r.id, req.user.id);
     const messages = getMessages(req.user, r.id);
-    safeEmit(r.id, 'messages-updated', { requestId: r.id, messages, senderId: Number(req.user.id) });
+    emitNewMessage(r.id, messages, Number(req.user.id));
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
     if (r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId: r.id });
     io.to('admin-room').emit('chat-badges-updated', { requestId: r.id });
@@ -290,15 +302,41 @@ module.exports = function (deps) {
     // لما تفترضه الواجهة أصلاً (لا شاشة تفتح الشات قبل قبول عرض).
     // [SEC-FIX-CHATSCOPE-03] راجع DECISIONS.md — دالة مشتركة مع services/socket.js.
     if (!canAccessRequestChat(req.user, r)) return res.status(403).json({ error: 'لا تملك صلاحية', code: 'AUTH_FORBIDDEN' });
-    markChatRead(r.id, req.user.id);
+
+    // [FEAT-CHATPAGINATION-01] راجع DECISIONS.md — limit/before اختياريان
+    // تماماً؛ بلا تمريرهما (كل نسخ التطبيق قبل هذا الإصلاح) يبقى السلوك
+    // القديم حرفياً — كل رسائل الطلب دفعة واحدة. قيمة غير صالحة/خارج الحد
+    // المعقول (1-200) تُهمَل بصمت بدل رفض الطلب لأجل معامل اختياري.
+    const rawLimit = parseInt(req.query.limit, 10);
+    const limit = Number.isInteger(rawLimit) && rawLimit > 0 && rawLimit <= 200 ? rawLimit : undefined;
+    const rawBefore = parseInt(req.query.before, 10);
+    const beforeId = Number.isInteger(rawBefore) && rawBefore > 0 ? rawBefore : undefined;
+
+    const lastReadId = markChatRead(r.id, req.user.id);
     // [SEC-FIX-03] Targeted badges updated on read
     io.to(`user-${r.customer_id}`).emit('chat-badges-updated', { requestId: r.id });
     if (r.technician_id) io.to(`user-${r.technician_id}`).emit('chat-badges-updated', { requestId: r.id });
     io.to('admin-room').emit('chat-badges-updated', { requestId: r.id });
-    // [FIX-02] تحديث حالة "تمت المشاهدة" لدى الطرف الآخر فوراً
-    const readMessages = getMessages(req.user, req.params.id);
-    safeEmit(r.id, 'messages-updated', { requestId: r.id, messages: readMessages, senderId: Number(req.user.id) });
-    res.json({ messages: readMessages });
+
+    const readMessages = getMessages(req.user, req.params.id, { limit, beforeId });
+    // [FIX-02] [FEAT-CHATPAGINATION-01] راجع DECISIONS.md — messages-updated
+    // يبقى يحمل الحمولة الكاملة دائماً (توافق رجعي — لا يجوز أن يعتمد الحدث
+    // القديم على صفحة جزئية بغض النظر عن الطلب الحالي)، حتى لو استُخدِمت
+    // limit/beforeId هنا. messages-seen حدث إضافي مضغوط جديد (معرّف الطلب +
+    // من قرأ + حتى أي رسالة) — النسخة الجديدة من التطبيق تستخدمه بدل إعادة
+    // معالجة القائمة الكاملة فقط لتحديث علامة "تمت المشاهدة".
+    const fullMessages = (limit || beforeId) ? getMessages(req.user, req.params.id) : readMessages;
+    safeEmit(r.id, 'messages-updated', { requestId: r.id, messages: fullMessages, senderId: Number(req.user.id) });
+    safeEmit(r.id, 'messages-seen', { requestId: r.id, readerId: Number(req.user.id), upToMessageId: lastReadId });
+
+    res.json({
+      messages: readMessages,
+      // [FEAT-CHATPAGINATION-01] true لو الصفحة المُرجَعة امتلأت (قد توجد
+      // رسائل أقدم بعد) — تقدير عملي بلا استعلام COUNT إضافي، نفس نمط
+      // "صفحة كاملة = جرّب صفحة تالية" القياسي؛ لو لم تكن هذه آخر صفحة
+      // فعلياً سيُرجِع الطلب التالي ببساطة صفحة أصغر أو فارغة.
+      hasMore: limit !== undefined && readMessages.length === limit,
+    });
   });
 
   // [FIX-UGC-01] الإبلاغ عن رسالة مسيئة (Google Play UGC policy)

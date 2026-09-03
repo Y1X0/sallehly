@@ -72,10 +72,28 @@ function createDbHelpers(db) {
   // مواقع الاستدعاء الأربعة الحالية بـroutes/chat.routes.js تبقي فحصها الصريح
   // المسبق كما هو (يحمي أيضاً عمليات جانبية سابقة كإدراج رسالة/بث Socket.IO —
   // هذا الفحص الداخلي إضافي، لا بديل عنه).
-  function getMessages(user, requestId) {
+  // [FEAT-CHATPAGINATION-01] راجع DECISIONS.md — options اختياري تماماً؛ بلا
+  // تمريره (كل مواقع الاستدعاء الأربعة الحالية بـroutes/chat.routes.js، وأي
+  // نسخة تطبيق مثبَّتة سابقاً لهذا الإصلاح) السلوك القديم حرفياً بلا أي تغيير:
+  // كل رسائل الطلب دفعة واحدة، تصاعدياً. limit موجود فقط يُفعِّل صفحة محدودة
+  // الحجم (آخر limit رسالة قبل beforeId، أو الأحدث إطلاقاً بلا beforeId) —
+  // تُعاد النتيجة تصاعدياً دائماً بغض النظر عن استخدام limit، فلا يحتاج أي
+  // مُستهلِك (حالي أو جديد) معرفة اتجاه فرز مختلف حسب المسار المُستخدَم.
+  function getMessages(user, requestId, options = {}) {
+    const { limit, beforeId } = options;
     const request = db.prepare('SELECT * FROM requests WHERE id=?').get(requestId);
     if (!canAccessRequestChat(user, request)) throw new ForbiddenError();
-    const msgs = db.prepare('SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.sender_id WHERE request_id=? ORDER BY id').all(requestId);
+    let msgs;
+    if (limit) {
+      const params = [requestId];
+      let query = 'SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.sender_id WHERE request_id=?';
+      if (beforeId) { query += ' AND m.id<?'; params.push(Number(beforeId)); }
+      query += ' ORDER BY m.id DESC LIMIT ?';
+      params.push(Number(limit));
+      msgs = db.prepare(query).all(...params).reverse();
+    } else {
+      msgs = db.prepare('SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.sender_id WHERE request_id=? ORDER BY id').all(requestId);
+    }
     // أعلى رقم رسالة قرأها أي طرف آخر في هذا الطلب (لإظهار "تمت المشاهدة")
     const reads = db.prepare('SELECT user_id, last_read_message_id FROM chat_reads WHERE request_id=?').all(requestId);
     msgs.forEach(m => {
@@ -141,11 +159,17 @@ function createDbHelpers(db) {
     return db.prepare('SELECT * FROM messages WHERE id=? AND request_id=?').get(messageId, requestId);
   }
 
+  // [FEAT-CHATPAGINATION-01] راجع DECISIONS.md — ترجع last الآن (كانت بلا
+  // قيمة إرجاع) حتى يقدر المُستدعي (GET /requests/:id/messages) بث حدث
+  // messages-seen المضغوط بلا استعلام إضافي لنفس القيمة التي حسبتها هذه
+  // الدالة للتو. لا تغيير على أي مُستدعٍ حالي — كلهم يتجاهلون القيمة المُعادة
+  // أصلاً (جافاسكربت لا يفرض استهلاك قيمة إرجاع دالة).
   function markChatRead(requestId, userId) {
     const row = db.prepare('SELECT COALESCE(MAX(id),0) max_id FROM messages WHERE request_id=?').get(requestId);
     const last = Number(row?.max_id || 0);
     db.prepare(`INSERT INTO chat_reads(request_id,user_id,last_read_message_id,updated_at) VALUES(?,?,?,CURRENT_TIMESTAMP)
       ON CONFLICT(request_id,user_id) DO UPDATE SET last_read_message_id=excluded.last_read_message_id, updated_at=CURRENT_TIMESTAMP`).run(requestId, userId, last);
+    return last;
   }
 
   // يسجّل فعل إداري بجدول audit_logs. details ممكن يكون نص أو كائن (بيتحوّل لـ JSON تلقائياً).
