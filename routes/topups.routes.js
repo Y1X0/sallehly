@@ -1,5 +1,7 @@
 // routes/topups.routes.js — /api/topups, /api/admin/topups/:id/review, /api/ledger
 const express = require('express');
+const fs = require('fs');
+const crypto = require('crypto');
 
 module.exports = function (deps) {
   const { db } = deps;
@@ -29,10 +31,14 @@ module.exports = function (deps) {
     if (pendingCount >= 2) return res.status(429).json({ error: 'لديك طلبات شحن قيد المراجعة. انتظر موافقة الإدارة أولاً', code: 'TOPUP_TOO_MANY_PENDING' });
     if (!req.file) return res.status(400).json({ error: 'يجب رفع صورة إثبات الدفع', code: 'TOPUP_RECEIPT_REQUIRED' });
     const receipt_url = '/uploads/payments/' + req.file.filename;
+    // [FEAT-TOPUPDUPHASH-01] راجع DECISIONS.md — بصمة محتوى الملف فقط
+    // (لا اسمه ولا وقت رفعه)، لكشف نفس صورة الإيصال بالضبط لو أُعيد استخدامها
+    // بطلب آخر (نفس الفني أو فني مختلف) — إشارة للأدمن فقط، لا قرار آلي.
+    const receipt_hash = crypto.createHash('sha256').update(fs.readFileSync(req.file.path)).digest('hex');
     // [FIX-COMMISSIONSNAPSHOT-01] راجع DECISIONS.md — عمولة الباقة تُلقَط هنا
     // وقت التقديم، لا وقت المراجعة لاحقاً (routes أدناه)، حتى لا يتأثر الفني
     // بتعديل إداري لعمولة الباقة يحصل بعد أن يكون قد دفع فعلياً بمعدّل مختلف.
-    const info = db.prepare('INSERT INTO topups(technician_id,package_id,amount,bonus,commission_per_order,receipt_url) VALUES(?,?,?,?,?,?)').run(req.user.id, pkg.id, pkg.amount, pkg.bonus, pkg.commission_per_order, receipt_url);
+    const info = db.prepare('INSERT INTO topups(technician_id,package_id,amount,bonus,commission_per_order,receipt_url,receipt_hash) VALUES(?,?,?,?,?,?,?)').run(req.user.id, pkg.id, pkg.amount, pkg.bonus, pkg.commission_per_order, receipt_url, receipt_hash);
     const topup = db.prepare('SELECT * FROM topups WHERE id=?').get(info.lastInsertRowid);
 
     // [SEC-FIX-03] Topup notifications only to admin + the technician themselves
@@ -67,7 +73,19 @@ module.exports = function (deps) {
   // سقفاً مماثلاً: محصور بمعرّف الفني نفسه (WHERE technician_id=?) فلن ينمو
   // بلا حدود مهما كبرت المنصة.
   router.get('/topups', auth, (req, res) => {
-    if (req.user.role === 'admin') return res.json({ topups: db.prepare('SELECT tp.*,u.name technician_name,u.phone,p.name package_name FROM topups tp JOIN users u ON u.id=tp.technician_id JOIN packages p ON p.id=tp.package_id ORDER BY tp.id DESC LIMIT 2000').all() });
+    if (req.user.role === 'admin') {
+      const topups = db.prepare('SELECT tp.*,u.name technician_name,u.phone,p.name package_name FROM topups tp JOIN users u ON u.id=tp.technician_id JOIN packages p ON p.id=tp.package_id ORDER BY tp.id DESC LIMIT 2000').all();
+      // [FEAT-TOPUPDUPHASH-01] راجع DECISIONS.md — إشارة فقط، لا فلترة ولا
+      // تغيير بترتيب/محتوى القائمة. hashes تظهر أكثر من مرة (بأي حالة، أي
+      // فني) تُعلَّم duplicate_receipt=true؛ receipt_hash فارغ (طلبات شحن
+      // قديمة قبل هذا التعديل) لا تُحتسَب إطلاقاً — لا NULL يُطابق NULL هنا.
+      const dupHashes = new Set(
+        db.prepare("SELECT receipt_hash FROM topups WHERE receipt_hash IS NOT NULL GROUP BY receipt_hash HAVING COUNT(*) > 1").all()
+          .map((r) => r.receipt_hash)
+      );
+      const annotated = topups.map((t) => ({ ...t, duplicate_receipt: !!(t.receipt_hash && dupHashes.has(t.receipt_hash)) }));
+      return res.json({ topups: annotated });
+    }
     res.json({ topups: db.prepare('SELECT tp.*,p.name package_name FROM topups tp JOIN packages p ON p.id=tp.package_id WHERE technician_id=? ORDER BY id DESC').all(req.user.id) });
   });
 

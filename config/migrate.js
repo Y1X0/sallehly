@@ -349,6 +349,16 @@ try { db.prepare('ALTER TABLE users ADD COLUMN deleted_at TEXT').run(); } catch 
 // ونطاق هذا البند بـDECISIONS.md).
 try { db.prepare('ALTER TABLE users ADD COLUMN total_upload_bytes INTEGER NOT NULL DEFAULT 0').run(); } catch (e) {}
 
+// [FEAT-TOPUPDUPHASH-01] راجع routes/topups.routes.js وDECISIONS.md — بصمة
+// SHA-256 لمحتوى صورة إثبات الدفع، تُحسَب وقت التقديم فقط (لا تُعاد كتابتها
+// لاحقاً). الهدف الوحيد لهذا العمود: كشف نفس ملف الإيصال بالضبط مُستخدَم
+// بأكثر من طلب شحن — إشارة احتيال محتمل تُعرَض للأدمن ضمن قائمة المراجعة،
+// بلا أي قرار آلي (قبول/رفض يبقى قرار الأدمن حصراً دائماً). NULL لكل طلبات
+// الشحن الموجودة قبل هذا التعديل (لا رجعية ممكنة لملفات لم تُحفَظ بصمتها
+// وقتها) — لا تُحتسَب بأي كشف تكرار، تُعامَل كـ"غير معروفة" لا "غير مكررة".
+try { db.prepare('ALTER TABLE topups ADD COLUMN receipt_hash TEXT').run(); } catch (e) {}
+try { db.prepare('CREATE INDEX IF NOT EXISTS idx_topups_receipt_hash ON topups(receipt_hash)').run(); } catch (e) {}
+
 // [FEAT-GOOGLESIGNIN-01] تسجيل الدخول بجوجل — يبقى إلزامياً NULL لأي حساب
 // أنشأه صاحبه بإيميل/كلمة سر عادية (الغالبية اليوم)؛ يُضبَط فقط عند إنشاء
 // حساب عبر جوجل أو ربط حساب موجود لاحقاً (POST /auth/google بـauth.routes.js).
