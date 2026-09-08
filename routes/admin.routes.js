@@ -1,5 +1,9 @@
 // routes/admin.routes.js — /api/admin/*
 const express = require('express');
+// [PERF-METACACHE-01] راجع routes/meta.routes.js — يجب استدعاؤها فور أي
+// تعديل فعلي على service_categories/packages أدناه، وإلا يبقى GET /meta
+// العام يرجع نسخة قديمة حتى انتهاء التخزين المؤقت (حتى 60 ثانية).
+const { invalidateMetaCache } = require('./meta.routes');
 
 module.exports = function (deps) {
   const { db, path } = deps;
@@ -450,6 +454,7 @@ module.exports = function (deps) {
     if (icon.length > 10) return res.status(400).json({ error: 'رمز المهنة طويل جداً' });
     try {
       const info = db.prepare('INSERT INTO service_categories(name,icon) VALUES(?,?)').run(name, icon);
+      invalidateMetaCache();
       logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'إضافة مهنة', targetType: 'service', targetId: info.lastInsertRowid, details: { name, icon } });
       // [FIX-SERVICES-01] بث فوري لكل المستخدمين المتصلين (عملاء وفنيين) —
       // مهنة جديدة تفعّل تظهر بدون إعادة فتح التطبيق.
@@ -479,6 +484,7 @@ module.exports = function (deps) {
     if (!editingNameOrIcon) {
       const isActive = req.body.is_active ? 1 : 0;
       db.prepare('UPDATE service_categories SET is_active=? WHERE id=?').run(isActive, id);
+      invalidateMetaCache();
       logAudit({
         adminId: req.user.id,
         actorName: req.user.name,
@@ -507,6 +513,7 @@ module.exports = function (deps) {
       if (dup) return res.status(409).json({ error: 'هذه المهنة موجودة مسبقاً' });
 
       db.prepare('UPDATE service_categories SET name=?, icon=?, is_active=? WHERE id=?').run(name, icon, isActive, id);
+      invalidateMetaCache();
       logAudit({
         adminId: req.user.id,
         actorName: req.user.name,
@@ -531,6 +538,7 @@ module.exports = function (deps) {
     const svc = db.prepare('SELECT * FROM service_categories WHERE id=?').get(id);
     if (!svc) return res.status(404).json({ error: 'المهنة غير موجودة' });
     db.prepare('DELETE FROM service_categories WHERE id=?').run(id);
+    invalidateMetaCache();
     logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'حذف مهنة', targetType: 'service', targetId: id, details: { name: svc.name } });
     io.emit('services-updated', { type: 'deleted', name: svc.name });
     res.json({ ok: true });
@@ -556,6 +564,7 @@ module.exports = function (deps) {
     // ويُخصَم فعلياً من كل طلب شحن يُوافَق عليه على هذه الباقة.
     if (amount > MAX_FINANCIAL_AMOUNT || bonusVal > MAX_FINANCIAL_AMOUNT || commission > MAX_FINANCIAL_AMOUNT) return res.status(400).json({ error: `القيمة كبيرة جداً، الحد الأقصى ${MAX_FINANCIAL_AMOUNT} د.أ` });
     const info = db.prepare('INSERT INTO packages(name,amount,bonus,commission_per_order) VALUES(?,?,?,?)').run(clean(name), amount, bonusVal, commission);
+    invalidateMetaCache();
     logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'إضافة باقة', targetType: 'package', targetId: info.lastInsertRowid, details: { name: clean(name), amount, bonus: bonusVal, commission } });
     res.json({ package: db.prepare('SELECT * FROM packages WHERE id=?').get(info.lastInsertRowid) });
   });
@@ -585,6 +594,7 @@ module.exports = function (deps) {
     if (amount > MAX_FINANCIAL_AMOUNT || bonusVal > MAX_FINANCIAL_AMOUNT || commission > MAX_FINANCIAL_AMOUNT) return res.status(400).json({ error: `القيمة كبيرة جداً، الحد الأقصى ${MAX_FINANCIAL_AMOUNT} د.أ` });
     db.prepare('UPDATE packages SET name=?, amount=?, bonus=?, commission_per_order=?, is_active=? WHERE id=?')
       .run(name, amount, bonusVal, commission, isActive, id);
+    invalidateMetaCache();
     logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'تعديل باقة', targetType: 'package', targetId: id, details: { name, amount, bonus: bonusVal, commission, is_active: isActive } });
     res.json({ package: db.prepare('SELECT * FROM packages WHERE id=?').get(id) });
   });
@@ -595,6 +605,7 @@ module.exports = function (deps) {
     const pkg = db.prepare('SELECT * FROM packages WHERE id=?').get(id);
     if (!pkg) return res.status(404).json({ error: 'الباقة غير موجودة' });
     db.prepare('DELETE FROM packages WHERE id=?').run(id);
+    invalidateMetaCache();
     logAudit({ adminId: req.user.id, actorName: req.user.name, action: 'حذف باقة', targetType: 'package', targetId: id, details: { name: pkg.name } });
     res.json({ ok: true });
   });
