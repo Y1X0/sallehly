@@ -117,7 +117,11 @@ async function registerTechnician(i) {
   fd.append('national_number', String(2000000000 + i));
   fd.append('services', 'كهربائي');
   fd.append('areas', 'القويسمة');
-  fd.append('avatar', new Blob([Buffer.from([0x89, 0x50, 0x4e, 0x47])], { type: 'image/png' }), 'avatar.png');
+  // [LOADTEST-FIX-01] middleware/upload.js's verifyImageMagicBytes يتطلب
+  // توقيع PNG كاملاً (8 بايت: 89 50 4E 47 0D 0A 1A 0A) لا الأربعة الأولى
+  // فقط — كانت هذه الأداة ترسل توقيعاً ناقصاً فتُرفَض كل تسجيلات الفنيين
+  // بـFILE_TYPE_NOT_ALLOWED قبل وصولها لمرحلة القياس الفعلي إطلاقاً.
+  fd.append('avatar', new Blob([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], { type: 'image/png' }), 'avatar.png');
   const registerRes = await fetch(`${BASE_URL}/api/auth/register`, { method: 'POST', body: fd });
   if (!registerRes.ok) throw new Error(`فشل تسجيل فني #${i}: ${registerRes.status} ${await registerRes.text()}`);
   const db = openLoadTestDb();
@@ -166,7 +170,9 @@ async function seed() {
 // بنائه بكل مرة، فقط الفني المُرسِل يتغيّر.
 function buildTopupMultipartBody() {
   const boundary = '----loadtestboundary1234567890';
-  const receiptBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47]); // PNG header بسيط كافٍ لفحوصات النوع
+  // [LOADTEST-FIX-01] راجع تعليق registerTechnician أعلاه — نفس الإصلاح،
+  // توقيع PNG كامل (8 بايت) لا 4 فقط.
+  const receiptBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   const parts = [
     `--${boundary}\r\nContent-Disposition: form-data; name="package_id"\r\n\r\n1\r\n`,
     `--${boundary}\r\nContent-Disposition: form-data; name="receipt"; filename="receipt.png"\r\nContent-Type: image/png\r\n\r\n`,
@@ -264,6 +270,14 @@ async function main() {
       const r = await runLevel(connections, customerPool, technicianPool, child.pid);
       results.push(r);
       log(`النتيجة: ${r.requestsPerSec.toFixed(1)} req/s، p95=${r.latencyMs.p95}ms، أخطاء=${r.errors}، غير-2xx=${r.non2xx}`);
+      // [LOADTEST-FIX-01] بلا مهلة هنا، مستوى التزامن التالي (خصوصاً القفزة
+      // الكبيرة 500←1000) كان يبدأ فوراً بينما مقابس/مؤقّتات المستوى السابق
+      // لا تزال تُغلَق — أُعيد إنتاجه فعلياً: تشغيل 1000 اتصال بمعزل تام
+      // (LOADTEST_LEVELS=1000) رجع نتيجة طبيعية (230 req/s، صفر أخطاء)، بينما
+      // نفس المستوى مباشرة بعد تشغيلة 500 رجع فشلاً تاماً (صفر req/s، 1000
+      // خطأ) — تداخل بين مستويين متتاليين لا سعة خادم حقيقية. ثانيتان كافيتان
+      // لتفريغ أي اتصال/مؤقّت متبقٍّ قبل قياس المستوى التالي بمعزل حقيقي عنه.
+      await new Promise((r2) => setTimeout(r2, 2000));
     }
 
     writeReport(results);
