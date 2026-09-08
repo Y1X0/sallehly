@@ -17,6 +17,7 @@ const validator = require('validator');
 // Same require-name (`bcrypt`) keeps every call site below (`.hash`,
 // `.compare`, cost factor 12) completely unchanged.
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
 const { JWT_SECRET } = require('../config/env');
 
@@ -24,7 +25,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io } = deps.realtime;
   const { auth, upload, verifyImageMagicBytes, enforceUploadQuota } = deps.middleware;
-  const { sign, sendOtpEmail } = deps.services;
+  const { sign, sendOtpEmail, verifyGoogleIdToken } = deps.services;
   const { clean, userPublic, anonymizeUser, PHONE_REGEX, generateOtp } = deps.utils;
   const { COOKIE_OPTS, BASE, BLOCKING_REQUEST_STATUSES_SQL, FREE_TIER_QUOTA, OTP_MAX_ATTEMPTS } = deps.constants;
   const { registerLimiter, loginLimiter, passwordResetLimiter } = deps.limiters;
@@ -180,6 +181,129 @@ module.exports = function (deps) {
      res.status(500).json({ error: 'تعذر تسجيل الدخول، حاول مرة أخرى', code: 'LOGIN_FAILED' });
    }
   });
+  // [FEAT-GOOGLESIGNIN-01] راجع DECISIONS.md — تسجيل الدخول بجوجل (Firebase
+  // Authentication من طرف التطبيق). idToken يُتحقَّق منه هنا بالخادم دائماً
+  // (لا نثق أبداً بأي email/name يرسله العميل مباشرة بلا تحقق مستقل).
+  //
+  // ثلاث حالات:
+  // 1) google_id مرتبط مسبقاً بحساب → دخول مباشر (نفس شكل رد /auth/login تماماً).
+  // 2) لا يوجد ربط، لكن نفس الإيميل مسجَّل مسبقاً بحساب عادي (إيميل/كلمة سر)
+  //    → نربط الحسابين تلقائياً (نفس الإيميل يعني نفس الملكية أصلاً، وجوجل
+  //    وحده من يضمن ذلك عبر email_verified) ثم دخول مباشر.
+  // 3) لا يوجد حساب بهذا الإيميل إطلاقاً → حساب جديد، لكن الحقول الإلزامية
+  //    بجدول users (phone، role، وnational_number/services للفني) غير متوفرة
+  //    من جوجل — نرجع needsRegistration ليكمل العميل بشاشة تسجيل مختصرة
+  //    (بلا كلمة سر) تستدعي /auth/google-register أدناه.
+  router.post('/auth/google', loginLimiter, async (req, res) => {
+    try {
+      const idToken = String(req.body.idToken || req.body.id_token || '');
+      if (!idToken) return res.status(400).json({ error: 'رمز جوجل مفقود', code: 'GOOGLE_TOKEN_MISSING' });
+
+      let payload;
+      try {
+        payload = await verifyGoogleIdToken(idToken);
+      } catch (e) {
+        return res.status(401).json({ error: 'رمز جوجل غير صالح أو منتهٍ', code: 'GOOGLE_TOKEN_INVALID' });
+      }
+      if (!payload.email || !payload.email_verified) {
+        return res.status(401).json({ error: 'بريد حساب جوجل غير موثَّق', code: 'GOOGLE_EMAIL_UNVERIFIED' });
+      }
+      const googleId = payload.uid;
+      const email = String(payload.email).toLowerCase();
+
+      let user = db.prepare('SELECT * FROM users WHERE google_id=?').get(googleId);
+      if (!user) {
+        const byEmail = db.prepare('SELECT * FROM users WHERE email=?').get(email);
+        if (byEmail) {
+          db.prepare('UPDATE users SET google_id=? WHERE id=?').run(googleId, byEmail.id);
+          user = db.prepare('SELECT * FROM users WHERE id=?').get(byEmail.id);
+        }
+      }
+
+      if (!user) {
+        return res.json({
+          ok: true,
+          needsRegistration: true,
+          google: { name: String(payload.name || ''), email },
+        });
+      }
+      if (!user.is_active) return res.status(403).json({ error: 'الحساب موقوف', code: 'AUTH_ACCOUNT_SUSPENDED' });
+      const token = sign(user);
+      res.cookie('token', token, COOKIE_OPTS);
+      res.json({ user: userPublic(user), token });
+    } catch (e) {
+      console.error('google login failed:', e.message);
+      res.status(500).json({ error: 'تعذر تسجيل الدخول بجوجل، حاول مرة أخرى', code: 'GOOGLE_LOGIN_FAILED' });
+    }
+  });
+
+  // [FEAT-GOOGLESIGNIN-01] استكمال حساب جديد بعد GOOGLE_TOKEN من /auth/google
+  // أعلاه (needsRegistration=true) — نفس تحقّقات /auth/register تماماً عدا
+  // كلمة السر (غير موجودة أصلاً بهذا المسار: تُستبدَل بقيمة عشوائية غير
+  // قابلة للاستخدام، فالحساب يبقى صالحاً لتسجيل الدخول بجوجل فقط ما لم
+  // يستخدم المستخدم "نسيت كلمة السر" لاحقاً ليضبط كلمة سر فعلية). ولا OTP
+  // (جوجل وحده يكفي إثباتاً لملكية البريد عبر email_verified، لا حاجة
+  // لإثبات إضافي بخطوة منفصلة).
+  router.post('/auth/google-register', registerLimiter, upload.single('avatar'), verifyImageMagicBytes, async (req, res) => {
+   try {
+    const idToken = String(req.body.idToken || req.body.id_token || '');
+    if (!idToken) return res.status(400).json({ error: 'رمز جوجل مفقود', code: 'GOOGLE_TOKEN_MISSING' });
+    let payload;
+    try {
+      payload = await verifyGoogleIdToken(idToken);
+    } catch (e) {
+      return res.status(401).json({ error: 'رمز جوجل غير صالح أو منتهٍ', code: 'GOOGLE_TOKEN_INVALID' });
+    }
+    if (!payload.email || !payload.email_verified) {
+      return res.status(401).json({ error: 'بريد حساب جوجل غير موثَّق', code: 'GOOGLE_EMAIL_UNVERIFIED' });
+    }
+    const googleId = payload.uid;
+    const email = String(payload.email).toLowerCase();
+
+    const role = clean(req.body.role);
+    const name = clean(req.body.name) || String(payload.name || '');
+    const phone = clean(req.body.phone);
+    const national_number = clean(req.body.national_number || req.body.nationalNumber);
+    const city = clean(req.body.city);
+    const services = Array.isArray(req.body.services) ? req.body.services.join(',') : clean(req.body.services);
+    const areas = Array.isArray(req.body.areas) ? req.body.areas.join(',') : clean(req.body.areas);
+    const avatar_filename = req.file ? req.file.filename : '';
+
+    if (!['customer', 'technician'].includes(role)) return res.status(400).json({ error: 'نوع الحساب غير صحيح', code: 'REGISTER_INVALID_ROLE' });
+    if (name.length < 2) return res.status(400).json({ error: 'الرجاء إدخال الاسم الكامل', code: 'REGISTER_NAME_TOO_SHORT' });
+    if (name.length > 60) return res.status(400).json({ error: 'الاسم طويل جداً، الحد الأقصى 60 حرف', code: 'NAME_TOO_LONG_60' });
+    if (role === 'technician' && !avatar_filename) return res.status(400).json({ error: 'الصورة الشخصية مطلوبة للفني فقط', code: 'REGISTER_TECH_AVATAR_REQUIRED' });
+    if (role === 'technician' && !services) return res.status(400).json({ error: 'يجب اختيار خدمة واحدة على الأقل', code: 'REGISTER_TECH_SERVICES_REQUIRED' });
+    if (!PHONE_REGEX.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code: 'PHONE_INVALID_FORMAT' });
+    if (role === 'technician' && !/^\d{10}$/.test(national_number)) return res.status(400).json({ error: 'الرقم الوطني يجب أن يكون 10 أرقام', code: 'REGISTER_INVALID_NATIONAL_NUMBER' });
+    if (city.length > 50) return res.status(400).json({ error: 'اسم المدينة طويل جداً', code: 'CITY_TOO_LONG' });
+    if (services.length > 500) return res.status(400).json({ error: 'الخدمات طويلة جداً', code: 'REGISTER_SERVICES_TOO_LONG' });
+    if (areas.length > 500) return res.status(400).json({ error: 'المناطق طويلة جداً', code: 'REGISTER_AREAS_TOO_LONG' });
+
+    if (db.prepare('SELECT id FROM users WHERE email=? OR google_id=?').get(email, googleId))
+      return res.status(409).json({ error: 'الحساب موجود مسبقاً، سجّل الدخول مباشرة', code: 'REGISTER_EMAIL_TAKEN' });
+    if (db.prepare('SELECT id FROM users WHERE phone=?').get(phone))
+      return res.status(409).json({ error: 'رقم الهاتف مستخدم مسبقاً', code: 'REGISTER_PHONE_TAKEN' });
+
+    const randomHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
+    const avatar_url = avatar_filename ? '/uploads/avatars/' + avatar_filename : '';
+    try {
+      const info = db.prepare('INSERT INTO users(role,name,email,phone,password_hash,national_number,city,services,areas,avatar_url,is_active,google_id) VALUES(?,?,?,?,?,?,?,?,?,?,1,?)')
+        .run(role, name, email, phone, randomHash, role === 'technician' ? national_number : null, city, services, areas, avatar_url, googleId);
+      const user = db.prepare('SELECT * FROM users WHERE id=?').get(info.lastInsertRowid);
+      const token = sign(user);
+      res.cookie('token', token, COOKIE_OPTS);
+      res.json({ user: userPublic(user), token, message: 'تم إنشاء الحساب بنجاح' });
+    } catch (e) {
+      if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'البريد أو رقم الهاتف مستخدم مسبقاً', code: 'REGISTER_DUPLICATE' });
+      throw e;
+    }
+   } catch (e) {
+     console.error('google register failed:', e.message);
+     res.status(500).json({ error: 'تعذر إنشاء الحساب، حاول مرة أخرى', code: 'REGISTER_FAILED' });
+   }
+  });
+
   // [SEC-FIX-09] لا يشترط auth() صراحة (يبقى نفس السلوك السابق تماماً حتى لو
   // كان التوكن منتهياً/غير صالح أصلاً — يرجع {ok:true} دائماً)، لكن لو كان
   // التوكن قابلاً لفك تشفيره فعلاً، نُبطل كل نسخه فوراً عبر token_version

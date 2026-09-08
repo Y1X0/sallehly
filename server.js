@@ -25,7 +25,7 @@ const { createNotificationHelper } = require('./utils/notification');
 const { upload, uploadAudio, verifyImageMagicBytes, enforceUploadQuota } = require('./middleware/upload');
 const security = require('./middleware/security');
 const { sendOtpEmail } = require('./services/email');
-const { sendPush } = require('./services/push');
+const { sendPush, verifyGoogleIdToken } = require('./services/push');
 const { createSocket } = require('./services/socket');
 const { alertError } = require('./services/error-alert');
 
@@ -70,7 +70,7 @@ const deps = {
   db,
   realtime: { io, safeEmit },
   middleware: { auth, requireRole, requireSuperAdmin, upload, uploadAudio, verifyImageMagicBytes, enforceUploadQuota },
-  services: { sendOtpEmail, sendPush, createDbBackup, sign },
+  services: { sendOtpEmail, sendPush, createDbBackup, sign, verifyGoogleIdToken },
   utils: { ...utilsHelpers, ...dbHelpers, ...notificationHelper },
   limiters: {
     loginLimiter: security.loginLimiter,

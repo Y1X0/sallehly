@@ -349,6 +349,16 @@ try { db.prepare('ALTER TABLE users ADD COLUMN deleted_at TEXT').run(); } catch 
 // ونطاق هذا البند بـDECISIONS.md).
 try { db.prepare('ALTER TABLE users ADD COLUMN total_upload_bytes INTEGER NOT NULL DEFAULT 0').run(); } catch (e) {}
 
+// [FEAT-GOOGLESIGNIN-01] تسجيل الدخول بجوجل — يبقى إلزامياً NULL لأي حساب
+// أنشأه صاحبه بإيميل/كلمة سر عادية (الغالبية اليوم)؛ يُضبَط فقط عند إنشاء
+// حساب عبر جوجل أو ربط حساب موجود لاحقاً (POST /auth/google بـauth.routes.js).
+// فهرس فريد جزئي (لا قيد UNIQUE على العمود نفسه — ALTER TABLE ADD COLUMN
+// بـSQLite لا يدعم إضافة قيد UNIQUE مباشرة) يمنع ربط نفس حساب جوجل بأكثر
+// من مستخدم، بلا أي تعارض مع القيم NULL المتعددة (كل صفوف WHERE NULL
+// مستثناة من الفهرس الجزئي أصلاً، بعكس UNIQUE عادي كان سيرفض أكثر من NULL).
+try { db.prepare('ALTER TABLE users ADD COLUMN google_id TEXT').run(); } catch (e) {}
+try { db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL').run(); } catch (e) {}
+
 // [FIX-COMMISSIONSNAPSHOT-01] راجع DECISIONS.md — قبل هذا الإصلاح، عمولة كل
 // شحن رصيد كانت تُقرأ حيّة من packages.commission_per_order وقت مراجعة الأدمن
 // (POST /admin/topups/:id/review)، لا وقت تقديم الطلب. لو عدّل الأدمن عمولة

@@ -48,4 +48,15 @@ async function sendPush(token, title, body, data = {}) {
   }
 }
 
-module.exports = { sendPush };
+// [FEAT-GOOGLESIGNIN-01] راجع routes/auth.routes.js (POST /auth/google) —
+// يتحقق من ID token الصادر عن Firebase Authentication بعد تسجيل الدخول
+// بجوجل من التطبيق، ويرجع payload الموقَّع (uid فريد لحساب جوجل، email،
+// email_verified، name) بعد التحقق من التوقيع والصلاحية عبر نفس تطبيق
+// Firebase Admin المُهيَّأ أعلاه لإشعارات Push — بلا أي اعتماد إضافي جديد.
+// يرمي استثناءً لأي توكن غير صالح/منتهٍ؛ الراوت المستدعي مسؤول عن التقاطه.
+async function verifyGoogleIdToken(idToken) {
+  if (!firebaseAdmin) throw new Error('Firebase Admin SDK غير مهيَّأ');
+  return firebaseAdmin.auth().verifyIdToken(idToken);
+}
+
+module.exports = { sendPush, verifyGoogleIdToken };
