@@ -3,6 +3,7 @@
 
 const path = require('path');
 const crypto = require('crypto');
+const validator = require('validator');
 
 // [SEC-FIX-05] Escape LIKE wildcards to prevent unintended wildcard matching
 function escapeLike(str) { return String(str || '').replace(/[%_\\]/g, c => '\\' + c); }
@@ -71,4 +72,26 @@ function maskCoordsUnlessConfirmedTechnician(request, technicianId) {
   return { ...request, lat: null, lng: null };
 }
 
-module.exports = { escapeLike, hasSafeExt, safeUploadName, clean, userPublic, canAccessRequestChat, maskCoordsUnlessConfirmedTechnician, PHONE_REGEX, generateOtp };
+// [FIX-EMAILASCII-01] راجع DECISIONS.md — validator.isEmail() الافتراضية
+// تسمح بأحرف غير-ASCII بالجزء قبل @ (allow_utf8_local_part=true افتراضياً
+// بهذه المكتبة)، فتقبل إيميلاً يحتوي رقماً أو حرفاً عربياً متخفّياً (مثلاً
+// كيبورد بوضع عربي بدّل رقماً إنجليزياً برقم هندي عربي يشبهه بصرياً بلا أي
+// فرق ظاهر بالعين) — يمرّ التسجيل هنا بنجاح ظاهري، ثم يُرفَض فعلياً من
+// Resend وقت الإرسال الحقيقي بخطأ "Invalid `to` field": حالة حقيقية رُصدت
+// مباشرة بسجلات Resend (422، "email address contains non-ASCII characters")
+// لمستخدم اختبار كتب إيميله بكيبورد عربي. الفحص المزدوج هنا يفرّق بين
+// إيميل تالف فعلاً (كلا الفحصين يرفضانه) وإيميل صحيح الشكل لكنه غير-ASCII
+// تحديداً (الفحص المتساهل يقبله، الصارم يرفضه) — ليعطي المستخدم رسالة
+// دقيقة تحل مشكلته الفعلية (بدّل الكيبورد) بدل رسالة عامة تدفعه لتكرار نفس
+// الخطأ بلا فهم السبب.
+function validateEmailInput(email) {
+  if (validator.isEmail(email, { allow_utf8_local_part: false })) {
+    return { valid: true, code: null };
+  }
+  if (validator.isEmail(email)) {
+    return { valid: false, code: 'EMAIL_NON_ASCII' };
+  }
+  return { valid: false, code: 'EMAIL_INVALID' };
+}
+
+module.exports = { escapeLike, hasSafeExt, safeUploadName, clean, userPublic, canAccessRequestChat, maskCoordsUnlessConfirmedTechnician, PHONE_REGEX, generateOtp, validateEmailInput };

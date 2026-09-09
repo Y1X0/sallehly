@@ -26,7 +26,7 @@ module.exports = function (deps) {
   const { io } = deps.realtime;
   const { auth, upload, verifyImageMagicBytes, enforceUploadQuota } = deps.middleware;
   const { sign, sendOtpEmail, verifyGoogleIdToken } = deps.services;
-  const { clean, userPublic, anonymizeUser, PHONE_REGEX, generateOtp } = deps.utils;
+  const { clean, userPublic, anonymizeUser, PHONE_REGEX, generateOtp, validateEmailInput } = deps.utils;
   const { COOKIE_OPTS, BASE, BLOCKING_REQUEST_STATUSES_SQL, FREE_TIER_QUOTA, OTP_MAX_ATTEMPTS } = deps.constants;
   const { registerLimiter, loginLimiter, passwordResetLimiter } = deps.limiters;
   const router = express.Router();
@@ -63,7 +63,17 @@ module.exports = function (deps) {
     // خدمة مسجَّلة يدخل بحساب لا يمكنه أبداً تلقي أي طلب متطابق (كل مطابقة
     // بالمنصة تعتمد على تقاطع services)، بلا أي تنبيه له وقت التسجيل بالسبب.
     if (role === 'technician' && !services) return res.status(400).json({ error: 'يجب اختيار خدمة واحدة على الأقل', code: 'REGISTER_TECH_SERVICES_REQUIRED' });
-    if (!validator.isEmail(email)) return res.status(400).json({ error: 'البريد غير صحيح', code: 'EMAIL_INVALID' });
+    // [FIX-EMAILASCII-01] راجع utils/helpers.js وDECISIONS.md — رسالة مخصَّصة
+    // لحالة "شكل صحيح لكن يحتوي رموزاً غير-ASCII" (غالباً كيبورد بوضع غير
+    // إنجليزي بدّل رقماً/حرفاً بمكافئ يشبهه بصرياً)، تحل السبب الفعلي
+    // (تبديل الكيبورد) بدل رسالة عامة كانت تدفع لتكرار نفس الخطأ بلا فهم.
+    const emailCheck = validateEmailInput(email);
+    if (!emailCheck.valid) {
+      if (emailCheck.code === 'EMAIL_NON_ASCII') {
+        return res.status(400).json({ error: 'البريد الإلكتروني يحتوي على رموز غير مسموحة — تأكد أن كيبورد جهازك بوضع إنجليزي وأعد كتابته', code: 'EMAIL_NON_ASCII' });
+      }
+      return res.status(400).json({ error: 'البريد غير صحيح', code: 'EMAIL_INVALID' });
+    }
     if (email.length > 100) return res.status(400).json({ error: 'البريد الإلكتروني طويل جداً', code: 'REGISTER_EMAIL_TOO_LONG' });
     if (!PHONE_REGEX.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code: 'PHONE_INVALID_FORMAT' });
     if (password.length < 8) return res.status(400).json({ error: 'كلمة السر يجب أن تكون 8 أحرف على الأقل', code: 'PASSWORD_TOO_SHORT_8' });
@@ -328,7 +338,17 @@ module.exports = function (deps) {
   router.post('/auth/forgot-password', passwordResetLimiter, async (req, res) => {
    try {
     const email = clean(req.body.email || '').toLowerCase();
-    if (!validator.isEmail(email)) return res.status(400).json({ error: 'البريد الإلكتروني غير صحيح', code: 'FORGOT_PASSWORD_INVALID_EMAIL' });
+    // [FIX-EMAILASCII-01] راجع utils/helpers.js — نفس منطق /auth/register
+    // بالضبط. يحدث قبل فحص وجود الحساب (السطر التالي)، فلا علاقة له بحماية
+    // SEC-FIX-04 ضد Enumeration أدناه — هذا فحص شكل الإدخال نفسه فقط، لا
+    // يكشف أي شيء عن وجود حساب من عدمه.
+    const emailCheck = validateEmailInput(email);
+    if (!emailCheck.valid) {
+      if (emailCheck.code === 'EMAIL_NON_ASCII') {
+        return res.status(400).json({ error: 'البريد الإلكتروني يحتوي على رموز غير مسموحة — تأكد أن كيبورد جهازك بوضع إنجليزي وأعد كتابته', code: 'EMAIL_NON_ASCII' });
+      }
+      return res.status(400).json({ error: 'البريد الإلكتروني غير صحيح', code: 'FORGOT_PASSWORD_INVALID_EMAIL' });
+    }
     const user = db.prepare('SELECT * FROM users WHERE email=?').get(email);
     // [SEC-FIX-04] No User Enumeration — always return the same message
     if (!user) {
