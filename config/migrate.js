@@ -369,6 +369,24 @@ try { db.prepare('CREATE INDEX IF NOT EXISTS idx_topups_receipt_hash ON topups(r
 try { db.prepare('ALTER TABLE users ADD COLUMN google_id TEXT').run(); } catch (e) {}
 try { db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL').run(); } catch (e) {}
 
+// [FEAT-APPLESIGNIN-01] راجع DECISIONS.md — تسجيل الدخول بأبل، نفس شكل
+// google_id أعلاه بالضبط (نفس فهرس فريد جزئي، نفس منطق NULL للحسابات
+// العادية) — مطلوب من Apple لأي تطبيق يعرض تسجيل دخول بطرف ثالث (جوجل هنا)
+// أن يعرض "تسجيل عبر Apple" كخيار موازٍ (App Store Review Guideline 4.8).
+try { db.prepare('ALTER TABLE users ADD COLUMN apple_id TEXT').run(); } catch (e) {}
+try { db.prepare('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_id ON users(apple_id) WHERE apple_id IS NOT NULL').run(); } catch (e) {}
+
+// [FIX-SOCIALDELETE-01] راجع DECISIONS.md — حسابات جوجل/أبل تُنشَأ بكلمة سر
+// عشوائية غير معروفة حتى لصاحب الحساب (راجع /auth/google-register) — قبل
+// هذا الإصلاح كان DELETE /me (حذف الحساب الذاتي) يطلب كلمة السر دائماً
+// للتأكيد، فيرفض bcrypt.compare أي كلمة يكتبها مستخدم جوجل/أبل دائماً: لا
+// طريقة لحذف حسابه الذاتي إطلاقاً (اكتُشف فعلياً عبر تدقيق الكود، ليس بلاغ
+// مستخدم). NULL/1 = يملك كلمة سر حقيقية (كل الحسابات العادية، الافتراضي
+// الصحيح بلا حاجة تعبئة رجعية لأي صف موجود)؛ 0 = كلمة سر عشوائية فقط
+// (يُضبَط عند إنشاء حساب جوجل/أبل)، يُعاد 1 فور نجاح "نسيت كلمة السر" (يعني
+// المستخدم يعرف كلمة سر حقيقية الآن).
+try { db.prepare('ALTER TABLE users ADD COLUMN has_password INTEGER').run(); } catch (e) {}
+
 // [FIX-COMMISSIONSNAPSHOT-01] راجع DECISIONS.md — قبل هذا الإصلاح، عمولة كل
 // شحن رصيد كانت تُقرأ حيّة من packages.commission_per_order وقت مراجعة الأدمن
 // (POST /admin/topups/:id/review)، لا وقت تقديم الطلب. لو عدّل الأدمن عمولة

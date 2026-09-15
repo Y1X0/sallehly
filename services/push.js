@@ -59,4 +59,11 @@ async function verifyGoogleIdToken(idToken) {
   return firebaseAdmin.auth().verifyIdToken(idToken);
 }
 
-module.exports = { sendPush, verifyGoogleIdToken };
+// [FEAT-APPLESIGNIN-01] اسم مستعار فقط — verifyGoogleIdToken أعلاه تتحقق من
+// أي ID token صادر عن Firebase Authentication بغض النظر عن مزوّد الهوية
+// الأصلي (جوجل أو أبل)، فالتحقق provider-agnostic فعلياً بلا أي تعديل مطلوب
+// عليها. اسم مستعار فقط لتوضيح القصد بمسارات أبل (routes/auth.routes.js)
+// بلا تكرار المنطق أو لمس الدالة الأصلية المُختبَرة والمستخدمة فعلياً بمسار جوجل.
+const verifyFirebaseIdToken = verifyGoogleIdToken;
+
+module.exports = { sendPush, verifyGoogleIdToken, verifyFirebaseIdToken };

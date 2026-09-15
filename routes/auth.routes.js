@@ -25,7 +25,7 @@ module.exports = function (deps) {
   const { db } = deps;
   const { io } = deps.realtime;
   const { auth, upload, verifyImageMagicBytes, enforceUploadQuota } = deps.middleware;
-  const { sign, sendOtpEmail, verifyGoogleIdToken } = deps.services;
+  const { sign, sendOtpEmail, verifyGoogleIdToken, verifyFirebaseIdToken } = deps.services;
   const { clean, userPublic, anonymizeUser, PHONE_REGEX, generateOtp, validateEmailInput } = deps.utils;
   const { COOKIE_OPTS, BASE, BLOCKING_REQUEST_STATUSES_SQL, FREE_TIER_QUOTA, OTP_MAX_ATTEMPTS } = deps.constants;
   const { registerLimiter, loginLimiter, passwordResetLimiter } = deps.limiters;
@@ -298,7 +298,7 @@ module.exports = function (deps) {
     const randomHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
     const avatar_url = avatar_filename ? '/uploads/avatars/' + avatar_filename : '';
     try {
-      const info = db.prepare('INSERT INTO users(role,name,email,phone,password_hash,national_number,city,services,areas,avatar_url,is_active,google_id) VALUES(?,?,?,?,?,?,?,?,?,?,1,?)')
+      const info = db.prepare('INSERT INTO users(role,name,email,phone,password_hash,national_number,city,services,areas,avatar_url,is_active,google_id,has_password) VALUES(?,?,?,?,?,?,?,?,?,?,1,?,0)')
         .run(role, name, email, phone, randomHash, role === 'technician' ? national_number : null, city, services, areas, avatar_url, googleId);
       const user = db.prepare('SELECT * FROM users WHERE id=?').get(info.lastInsertRowid);
       const token = sign(user);
@@ -310,6 +310,121 @@ module.exports = function (deps) {
     }
    } catch (e) {
      console.error('google register failed:', e.message);
+     res.status(500).json({ error: 'تعذر إنشاء الحساب، حاول مرة أخرى', code: 'REGISTER_FAILED' });
+   }
+  });
+
+  // [FEAT-APPLESIGNIN-01] راجع DECISIONS.md — تسجيل الدخول بأبل. نفس بنية
+  // /auth/google أعلاه سطراً بسطر تقريباً (نفس ثلاث الحالات: ربط مسبق → دخول
+  // مباشر؛ نفس الإيميل بحساب عادي → ربط تلقائي؛ لا حساب إطلاقاً →
+  // needsRegistration). الفرق الوحيد: عمود apple_id بدل google_id، ودالة
+  // verifyFirebaseIdToken (اسم مستعار توضيحي فقط — نفس التحقق provider-agnostic
+  // تماماً، راجع services/push.js). مطلوب من Apple (Guideline 4.8): أي تطبيق
+  // يعرض تسجيل دخول بطرف ثالث (جوجل هنا) لازم يعرض "تسجيل عبر Apple" موازياً.
+  router.post('/auth/apple', loginLimiter, async (req, res) => {
+    try {
+      const idToken = String(req.body.idToken || req.body.id_token || '');
+      if (!idToken) return res.status(400).json({ error: 'رمز أبل مفقود', code: 'APPLE_TOKEN_MISSING' });
+
+      let payload;
+      try {
+        payload = await verifyFirebaseIdToken(idToken);
+      } catch (e) {
+        return res.status(401).json({ error: 'رمز أبل غير صالح أو منتهٍ', code: 'APPLE_TOKEN_INVALID' });
+      }
+      if (!payload.email || !payload.email_verified) {
+        return res.status(401).json({ error: 'بريد حساب أبل غير موثَّق', code: 'APPLE_EMAIL_UNVERIFIED' });
+      }
+      const appleId = payload.uid;
+      const email = String(payload.email).toLowerCase();
+
+      let user = db.prepare('SELECT * FROM users WHERE apple_id=?').get(appleId);
+      if (!user) {
+        const byEmail = db.prepare('SELECT * FROM users WHERE email=?').get(email);
+        if (byEmail) {
+          db.prepare('UPDATE users SET apple_id=? WHERE id=?').run(appleId, byEmail.id);
+          user = db.prepare('SELECT * FROM users WHERE id=?').get(byEmail.id);
+        }
+      }
+
+      if (!user) {
+        return res.json({
+          ok: true,
+          needsRegistration: true,
+          apple: { name: String(payload.name || ''), email },
+        });
+      }
+      if (!user.is_active) return res.status(403).json({ error: 'الحساب موقوف', code: 'AUTH_ACCOUNT_SUSPENDED' });
+      const token = sign(user);
+      res.cookie('token', token, COOKIE_OPTS);
+      res.json({ user: userPublic(user), token });
+    } catch (e) {
+      console.error('apple login failed:', e.message);
+      res.status(500).json({ error: 'تعذر تسجيل الدخول بأبل، حاول مرة أخرى', code: 'APPLE_LOGIN_FAILED' });
+    }
+  });
+
+  // [FEAT-APPLESIGNIN-01] استكمال حساب جديد بعد APPLE_TOKEN من /auth/apple
+  // أعلاه (needsRegistration=true) — نفس /auth/google-register سطراً بسطر،
+  // apple_id بدل google_id وhas_password=0 (راجع FIX-SOCIALDELETE-01 بـ
+  // migrate.js — كلمة سر عشوائية غير قابلة للاستخدام، DELETE /me يعرف يتجاوز
+  // طلبها لهذه الحسابات تحديداً).
+  router.post('/auth/apple-register', registerLimiter, upload.single('avatar'), verifyImageMagicBytes, async (req, res) => {
+   try {
+    const idToken = String(req.body.idToken || req.body.id_token || '');
+    if (!idToken) return res.status(400).json({ error: 'رمز أبل مفقود', code: 'APPLE_TOKEN_MISSING' });
+    let payload;
+    try {
+      payload = await verifyFirebaseIdToken(idToken);
+    } catch (e) {
+      return res.status(401).json({ error: 'رمز أبل غير صالح أو منتهٍ', code: 'APPLE_TOKEN_INVALID' });
+    }
+    if (!payload.email || !payload.email_verified) {
+      return res.status(401).json({ error: 'بريد حساب أبل غير موثَّق', code: 'APPLE_EMAIL_UNVERIFIED' });
+    }
+    const appleId = payload.uid;
+    const email = String(payload.email).toLowerCase();
+
+    const role = clean(req.body.role);
+    const name = clean(req.body.name) || String(payload.name || '');
+    const phone = clean(req.body.phone);
+    const national_number = clean(req.body.national_number || req.body.nationalNumber);
+    const city = clean(req.body.city);
+    const services = Array.isArray(req.body.services) ? req.body.services.join(',') : clean(req.body.services);
+    const areas = Array.isArray(req.body.areas) ? req.body.areas.join(',') : clean(req.body.areas);
+    const avatar_filename = req.file ? req.file.filename : '';
+
+    if (!['customer', 'technician'].includes(role)) return res.status(400).json({ error: 'نوع الحساب غير صحيح', code: 'REGISTER_INVALID_ROLE' });
+    if (name.length < 2) return res.status(400).json({ error: 'الرجاء إدخال الاسم الكامل', code: 'REGISTER_NAME_TOO_SHORT' });
+    if (name.length > 60) return res.status(400).json({ error: 'الاسم طويل جداً، الحد الأقصى 60 حرف', code: 'NAME_TOO_LONG_60' });
+    if (role === 'technician' && !avatar_filename) return res.status(400).json({ error: 'الصورة الشخصية مطلوبة للفني فقط', code: 'REGISTER_TECH_AVATAR_REQUIRED' });
+    if (role === 'technician' && !services) return res.status(400).json({ error: 'يجب اختيار خدمة واحدة على الأقل', code: 'REGISTER_TECH_SERVICES_REQUIRED' });
+    if (!PHONE_REGEX.test(phone)) return res.status(400).json({ error: 'رقم الهاتف يجب أن يبدأ 07 ويتكون من 10 أرقام', code: 'PHONE_INVALID_FORMAT' });
+    if (role === 'technician' && !/^\d{10}$/.test(national_number)) return res.status(400).json({ error: 'الرقم الوطني يجب أن يكون 10 أرقام', code: 'REGISTER_INVALID_NATIONAL_NUMBER' });
+    if (city.length > 50) return res.status(400).json({ error: 'اسم المدينة طويل جداً', code: 'CITY_TOO_LONG' });
+    if (services.length > 500) return res.status(400).json({ error: 'الخدمات طويلة جداً', code: 'REGISTER_SERVICES_TOO_LONG' });
+    if (areas.length > 500) return res.status(400).json({ error: 'المناطق طويلة جداً', code: 'REGISTER_AREAS_TOO_LONG' });
+
+    if (db.prepare('SELECT id FROM users WHERE email=? OR apple_id=?').get(email, appleId))
+      return res.status(409).json({ error: 'الحساب موجود مسبقاً، سجّل الدخول مباشرة', code: 'REGISTER_EMAIL_TAKEN' });
+    if (db.prepare('SELECT id FROM users WHERE phone=?').get(phone))
+      return res.status(409).json({ error: 'رقم الهاتف مستخدم مسبقاً', code: 'REGISTER_PHONE_TAKEN' });
+
+    const randomHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 12);
+    const avatar_url = avatar_filename ? '/uploads/avatars/' + avatar_filename : '';
+    try {
+      const info = db.prepare('INSERT INTO users(role,name,email,phone,password_hash,national_number,city,services,areas,avatar_url,is_active,apple_id,has_password) VALUES(?,?,?,?,?,?,?,?,?,?,1,?,0)')
+        .run(role, name, email, phone, randomHash, role === 'technician' ? national_number : null, city, services, areas, avatar_url, appleId);
+      const user = db.prepare('SELECT * FROM users WHERE id=?').get(info.lastInsertRowid);
+      const token = sign(user);
+      res.cookie('token', token, COOKIE_OPTS);
+      res.json({ user: userPublic(user), token, message: 'تم إنشاء الحساب بنجاح' });
+    } catch (e) {
+      if (String(e.message).includes('UNIQUE')) return res.status(409).json({ error: 'البريد أو رقم الهاتف مستخدم مسبقاً', code: 'REGISTER_DUPLICATE' });
+      throw e;
+    }
+   } catch (e) {
+     console.error('apple register failed:', e.message);
      res.status(500).json({ error: 'تعذر إنشاء الحساب، حاول مرة أخرى', code: 'REGISTER_FAILED' });
    }
   });
@@ -415,7 +530,10 @@ module.exports = function (deps) {
       // هنا يُبطل أي توكن قائم فوراً؛ لا حاجة لإصدار توكن جديد (بعكس
       // /me/password) لأن هذا المسار غير مصادَق أصلاً — المستخدم سيسجّل دخولاً
       // جديداً بكلمة سره الجديدة كما تقول رسالة النجاح "يمكنك الدخول الآن".
-      db.prepare('UPDATE users SET password_hash=?, token_version=token_version+1 WHERE id=?').run(hash, d.userId);
+      // [FIX-SOCIALDELETE-01] لو كان الحساب جوجل/أبل (has_password=0)، هذا
+      // المسار هو الطريقة الوحيدة يكتسب فيها المستخدم كلمة سر حقيقية يعرفها —
+      // has_password=1 من هنا فصاعداً (لا يؤثر على حساب عادي أصلاً NULL=1).
+      db.prepare('UPDATE users SET password_hash=?, token_version=token_version+1, has_password=1 WHERE id=?').run(hash, d.userId);
       db.prepare('DELETE FROM pending_users WHERE email=?').run(email);
       // token_version+1 وحدها لا تقطع أي اتصال Socket.IO حي فوراً (يُعاد
       // التحقق فقط عند اتصال جديد — راجع نطاق متروك عمداً بـ
@@ -553,7 +671,12 @@ module.exports = function (deps) {
     const password = String(req.body.password || '');
     const u = db.prepare('SELECT * FROM users WHERE id=?').get(id);
     if (!u) return res.status(404).json({ error: 'الحساب غير موجود', code: 'DELETE_ACCOUNT_NOT_FOUND' });
-    if (!(await bcrypt.compare(password, u.password_hash))) {
+    // [FIX-SOCIALDELETE-01] راجع DECISIONS.md وتعليق migrate.js — حساب جوجل/أبل
+    // (has_password=0) كلمة سره الحقيقية عشوائية غير معروفة حتى لصاحبه، فلا
+    // طريقة يقدر فيها يكتبها أبداً. auth() أعلاه أثبت هويته بتوكن صالح فعلاً —
+    // كافٍ كتأكيد هوية لهذه الحالة تحديداً (الواجهة تُخفي حقل كلمة السر أصلاً
+    // وتطلب تأكيداً نصياً بديلاً — راجع settings_screen.dart deleteAccountFlow).
+    if (u.has_password !== 0 && !(await bcrypt.compare(password, u.password_hash))) {
       return res.status(401).json({ error: 'كلمة السر غير صحيحة', code: 'DELETE_ACCOUNT_WRONG_PASSWORD' });
     }
     const activeRequest = db.prepare(
