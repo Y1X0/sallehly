@@ -122,14 +122,21 @@ const helmetMiddleware = helmet({
       // تسجيل الدخول/تجديد التوكن الفعلية التي تنفّذها المكتبة من صفحة الموقع
       // نفسها)، وfirebaseapp.com لـframe-src (iframe مساعد داخلي تستخدمه Firebase
       // Auth لمزامنة الجلسة بين النوافذ وقت تسجيل الدخول المنبثق Popup).
-      "script-src": ["'self'", "https://unpkg.com", "https://www.gstatic.com"],
+      // apis.google.com أُضيف لاحقاً بعد تأكيد فعلي من Console المتصفح (CSP
+      // كانت تحجب https://apis.google.com/js/api.js — مكتبة gapi الداخلية
+      // التي يحمّلها Firebase Auth compat SDK ديناميكياً أثناء signInWithPopup،
+      // غير موثّقة بشكل صريح بمستندات Firebase لكنها ضرورية فعلياً).
+      "script-src": ["'self'", "https://unpkg.com", "https://www.gstatic.com", "https://apis.google.com"],
       "script-src-attr": ["'unsafe-inline'"],
       "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://unpkg.com"],
       "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
       "img-src": ["'self'", "data:", "blob:", "https://*.tile.openstreetmap.org", "https://tile.openstreetmap.org", "https://unpkg.com"],
       "connect-src": ["'self'", "wss:", "https://*.tile.openstreetmap.org", "https://tile.openstreetmap.org", "https://unpkg.com", "https://identitytoolkit.googleapis.com", "https://securetoken.googleapis.com"],
       "media-src": ["'self'", "blob:"],
-      "frame-src": ["'self'", "https://www.openstreetmap.org", "https://maps.google.com", "https://www.google.com", "https://sallehly-9bc16.firebaseapp.com"],
+      // apis.google.com أُضيف احتياطياً مع script-src أعلاه — مكتبة gapi.iframes
+      // التي يحمّلها api.js تفتح إطاراً مضمَّناً من نفس النطاق لتبادل الرسائل
+      // (postMessage) بين نافذة تسجيل الدخول المنبثقة والصفحة الأصلية.
+      "frame-src": ["'self'", "https://www.openstreetmap.org", "https://maps.google.com", "https://www.google.com", "https://sallehly-9bc16.firebaseapp.com", "https://apis.google.com"],
       // [FIX-FRAMEANCESTORS-01] راجع DECISIONS.md — useDefaults: true أعلاه
       // يدمج توجيهات Helmet الافتراضية، ومنها frame-ancestors: ['self'] —
       // بلا هذا السطر، سياسة CSP الفعلية كانت تسمح بتضمين الموقع داخل نفسه
