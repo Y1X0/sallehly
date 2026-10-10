@@ -117,14 +117,19 @@ const helmetMiddleware = helmet({
       // ~118 خاصية style="" مباشرة (تنسيق ديناميكي حقيقي بمولّد الواجهة)، وإزالتها بهالمرحلة
       // ستكسر شكل الواجهة بالكامل؛ تحتاج إعادة هيكلة منفصلة مؤجّلة بثقة حالياً.
       // script-src-attr أبقيناها كذلك — app.js فيه ~107 onclick="" (نفس السبب، مؤجّلة بثقة).
-      "script-src": ["'self'", "https://unpkg.com"],
+      // [FEAT-GOOGLESIGNIN-WEB-01] أُضيف gstatic.com لـscript-src (مكتبة Firebase
+      // Auth JS)، identitytoolkit/securetoken.googleapis.com لـconnect-src (نداءات
+      // تسجيل الدخول/تجديد التوكن الفعلية التي تنفّذها المكتبة من صفحة الموقع
+      // نفسها)، وfirebaseapp.com لـframe-src (iframe مساعد داخلي تستخدمه Firebase
+      // Auth لمزامنة الجلسة بين النوافذ وقت تسجيل الدخول المنبثق Popup).
+      "script-src": ["'self'", "https://unpkg.com", "https://www.gstatic.com"],
       "script-src-attr": ["'unsafe-inline'"],
       "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://unpkg.com"],
       "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
       "img-src": ["'self'", "data:", "blob:", "https://*.tile.openstreetmap.org", "https://tile.openstreetmap.org", "https://unpkg.com"],
-      "connect-src": ["'self'", "wss:", "https://*.tile.openstreetmap.org", "https://tile.openstreetmap.org", "https://unpkg.com"],
+      "connect-src": ["'self'", "wss:", "https://*.tile.openstreetmap.org", "https://tile.openstreetmap.org", "https://unpkg.com", "https://identitytoolkit.googleapis.com", "https://securetoken.googleapis.com"],
       "media-src": ["'self'", "blob:"],
-      "frame-src": ["'self'", "https://www.openstreetmap.org", "https://maps.google.com", "https://www.google.com"],
+      "frame-src": ["'self'", "https://www.openstreetmap.org", "https://maps.google.com", "https://www.google.com", "https://sallehly-9bc16.firebaseapp.com"],
       // [FIX-FRAMEANCESTORS-01] راجع DECISIONS.md — useDefaults: true أعلاه
       // يدمج توجيهات Helmet الافتراضية، ومنها frame-ancestors: ['self'] —
       // بلا هذا السطر، سياسة CSP الفعلية كانت تسمح بتضمين الموقع داخل نفسه

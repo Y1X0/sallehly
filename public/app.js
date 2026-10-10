@@ -16,13 +16,47 @@ const FREE_TIER_QUOTA = 2;
 // ═══════════════════════════════════════════════
 // Firebase Push Notifications — Web
 // ═══════════════════════════════════════════════
+// [FEAT-GOOGLESIGNIN-WEB-01] apiKey/authDomain/projectId حقيقيون الآن (نفس
+// مشروع Firebase المستخدَم بتطبيق الموبايل) — كافيان لتشغيل Firebase Auth
+// (signInWithPopup) بلا حاجة لتسجيل "تطبيق ويب" منفصل بـFirebase Console؛
+// الحقول الثلاثة الباقية (messagingSenderId/appId/VAPID_KEY تحت) تخص إشعارات
+// Push حصراً (initFirebasePush) ولا تُستخدَم بمسار تسجيل الدخول إطلاقاً — ما
+// زالت تنتظر إعداد "تطبيق ويب" + شهادة VAPID منفصلَين، خارج نطاق هذا التعديل.
 const FIREBASE_CONFIG = {
-  apiKey:            "AIzaSyXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX", // ← من Firebase Console
+  apiKey:            "AIzaSyB1U9FxhveMTbpw0o_Ko9JTB6DwDveMHJ8",
   authDomain:        "sallehly-9bc16.firebaseapp.com",
   projectId:         "sallehly-9bc16",
   storageBucket:     "sallehly-9bc16.appspot.com",
-  messagingSenderId: "XXXXXXXXXXXX",                             // ← من Firebase Console
-  appId:             "1:XXXXXXXXXXXX:web:XXXXXXXXXXXXXXXX"       // ← من Firebase Console
+  messagingSenderId: "XXXXXXXXXXXX",                             // ← من Firebase Console (Push فقط)
+  appId:             "1:XXXXXXXXXXXX:web:XXXXXXXXXXXXXXXX"       // ← من Firebase Console (Push فقط)
+};
+
+// [FEAT-GOOGLESIGNIN-WEB-01] راجع DECISIONS.md — تسجيل الدخول/التسجيل بجوجل
+// بالموقع. يُستخدَم من كل من شاشة الدخول (v60) وشاشة التسجيل (v60r). نفس بنية
+// /auth/google بالخادم المستخدَمة أصلاً من تطبيق الموبايل بالضبط: idToken من
+// Firebase Auth → تحقّق من الخادم → إما دخول مباشر أو needsRegistration=true
+// لإكمال بيانات حساب جديد (دور/هاتف/مدينة...، لا يملكها جوجل).
+window.v60GoogleAuth = async function(){
+  try{
+    if(typeof firebase === 'undefined') throw new Error('تعذر تحميل خدمة جوجل، تحقق من اتصالك بالإنترنت');
+    if(!firebase.apps?.length) firebase.initializeApp(FIREBASE_CONFIG);
+    const provider = new firebase.auth.GoogleAuthProvider();
+    const result = await firebase.auth().signInWithPopup(provider);
+    const idToken = await result.user.getIdToken();
+    const j = await api('/api/auth/google', { method:'POST', body: JSON.stringify({ idToken }) });
+    if(j.needsRegistration){
+      register('customer', { idToken, name: j.google?.name || '', email: j.google?.email || '' });
+      toast('أكمل بياناتك لإنشاء الحساب');
+    } else {
+      state.user = j.user;
+      toast('مرحباً ' + (j.user?.name||'') + ' 👋');
+      dashboard();
+      setTimeout(()=>initFirebasePush(), 1500);
+    }
+  } catch(err){
+    if(err?.code === 'auth/popup-closed-by-user' || err?.code === 'auth/cancelled-popup-request') return;
+    toast(err.message || 'تعذر تسجيل الدخول بجوجل');
+  }
 };
 
 // VAPID Key من Firebase Console → Cloud Messaging → Web Push certificates
@@ -712,8 +746,12 @@ async function doLogin(e){
 // ── V60: Premium Register Page ──
 ;(function(){
 
-register = window.register = function(role='customer'){
+register = window.register = function(role='customer', googleData=null){
   state.tab = 'dash';
+  // [FEAT-GOOGLESIGNIN-WEB-01] يُكتب دائماً (حتى null) حتى لا يبقى idToken قديم
+  // عالقاً لو المستخدم وصل لهالشاشة لاحقاً بطريقة عادية (بدون جوجل) — أي استدعاء
+  // register(role) بلا الوسيط الثاني (كل الاستدعاءات الحالية بالكود) يصفّره تلقائياً.
+  state._googleReg = googleData;
   document.body.classList.remove('dashboard-mode','v37-dashboard','sidebar-open','open');
   const safe = window.esc || ((v)=>String(v??''));
 
@@ -749,6 +787,14 @@ register = window.register = function(role='customer'){
           <p class="v60-sub">انضم لمنصة صلّحلي للخدمات والصيانة المنزلية</p>
         </div>
 
+        ${googleData ? '' : `
+        <button type="button" class="v60-google-btn" onclick="v60GoogleAuth()">
+          <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238C29.211 35.091 26.715 36 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
+          <span>التسجيل السريع عبر جوجل</span>
+        </button>
+        <div class="v60-divider"><span>أو أنشئ حساباً بالبريد الإلكتروني</span></div>
+        `}
+
         <!-- Error -->
         <div class="v60-error" id="v60RegError" style="display:none">
           <span class="v60-error-icon">⚠️</span>
@@ -774,14 +820,14 @@ register = window.register = function(role='customer'){
               <label class="v60-label">الاسم الكامل</label>
               <div class="v60-input-wrap">
                 <svg class="v60-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="7" r="4"/><path d="M6 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/></svg>
-                <input id="name" class="v60-input" type="text" placeholder="مثال: أحمد محمد" required minlength="2" oninput="v60ClearRegError()">
+                <input id="name" class="v60-input" type="text" placeholder="مثال: أحمد محمد" required minlength="2" oninput="v60ClearRegError()" value="${googleData?safe(googleData.name):''}">
               </div>
             </div>
             <div class="v60-field">
               <label class="v60-label">البريد الإلكتروني</label>
               <div class="v60-input-wrap">
                 <svg class="v60-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 7l10 7 10-7"/></svg>
-                <input id="remail" class="v60-input" type="email" autocomplete="email" placeholder="example@email.com" required oninput="v60ClearRegError()">
+                <input id="remail" class="v60-input" type="email" autocomplete="email" placeholder="example@email.com" required oninput="v60ClearRegError()" value="${googleData?safe(googleData.email):''}" ${googleData?'readonly':''}>
               </div>
             </div>
           </div>
@@ -795,6 +841,7 @@ register = window.register = function(role='customer'){
                 <input id="phone" class="v60-input" type="tel" placeholder="0791234567" required oninput="v60ClearRegError()">
               </div>
             </div>
+            ${googleData ? '' : `
             <div class="v60-field">
               <label class="v60-label">كلمة السر</label>
               <div class="v60-input-wrap">
@@ -805,6 +852,7 @@ register = window.register = function(role='customer'){
                 </button>
               </div>
             </div>
+            `}
           </div>
 
           <!-- Row 3: City -->
@@ -961,7 +1009,9 @@ window.v60DoRegister = async function(e){
     fd.append('name', document.getElementById('name')?.value.trim() || '');
     fd.append('email', document.getElementById('remail')?.value.trim() || '');
     fd.append('phone', document.getElementById('phone')?.value.trim() || '');
-    fd.append('password', document.getElementById('rpassword')?.value || '');
+    // [FEAT-GOOGLESIGNIN-WEB-01] حساب جوجل بلا كلمة سر إطلاقاً (راجع has_password
+    // بDECISIONS.md) — حقل #rpassword غير موجود أصلاً بهالحالة (مخفي بالقالب أعلاه).
+    if(!state._googleReg) fd.append('password', document.getElementById('rpassword')?.value || '');
     fd.append('city', document.getElementById('city')?.value || '');
     fd.append('national_number', document.getElementById('national')?.value.trim() || '');
     fd.append('services', Array.from(document.querySelectorAll('#v61SrvWrap input:checked')).map(i=>i.value).join(','));
@@ -975,12 +1025,19 @@ window.v60DoRegister = async function(e){
       fd.append('avatar', avatar);
     }
 
-    const j = await api('/api/auth/register', {method:'POST', body:fd});
+    let j;
+    if(state._googleReg){
+      fd.append('idToken', state._googleReg.idToken);
+      j = await api('/api/auth/google-register', {method:'POST', body:fd});
+    } else {
+      j = await api('/api/auth/register', {method:'POST', body:fd});
+    }
 
     if(j.step === 'verify'){
       showOtpScreen?.(j.email);
     } else {
       state.user = j.user;
+      state._googleReg = null;
       if(btn) btn.style.background = 'linear-gradient(135deg,#059669,#10b981)';
       if(btnText) btnText.textContent = '✓ تم إنشاء الحساب!';
       setTimeout(()=>{ toast?.('مرحباً ' + (j.user?.name||'') + ' 🎉'); dashboard(); }, 400);
@@ -3456,6 +3513,12 @@ login = function(){
           <p class="v60-sub">منصة الصيانة المنزلية الأولى في الأردن</p>
         </div>
 
+        <button type="button" class="v60-google-btn" onclick="v60GoogleAuth()">
+          <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238C29.211 35.091 26.715 36 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
+          <span>تسجيل الدخول عبر جوجل</span>
+        </button>
+        <div class="v60-divider"><span>أو بالبريد الإلكتروني</span></div>
+
         <!-- Error box -->
         <div class="v60-error" id="v60Error" style="display:none">
           <span class="v60-error-icon">⚠️</span>
@@ -3714,6 +3777,9 @@ st.textContent = `
 .v60-divider::before,.v60-divider::after{content:'';flex:1;height:1px;background:rgba(255,255,255,0.08)}
 .v60-secondary{width:100%;height:50px;background:transparent;border:1px solid rgba(255,255,255,0.12);color:rgba(255,255,255,0.75);border-radius:14px;font-size:15px;font-weight:600;font-family:inherit;cursor:pointer;transition:all 0.25s}
 .v60-secondary:hover{background:rgba(255,255,255,0.06);border-color:rgba(255,255,255,0.2);color:#fff}
+.v60-google-btn{width:100%;height:50px;background:#fff;border:1px solid rgba(255,255,255,0.12);color:#1f2937;border-radius:14px;font-size:14px;font-weight:700;font-family:inherit;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:10px;transition:all 0.25s}
+.v60-google-btn:hover{background:#f3f4f6;transform:translateY(-1px)}
+.v60-google-btn:active{transform:translateY(0)}
 .v60-hint{text-align:center;font-size:12px;color:rgba(255,255,255,0.2);margin:16px 0 0}
 .v60-trust{display:flex;gap:16px;flex-wrap:wrap;justify-content:center}
 .v60-trust span{color:rgba(255,255,255,0.3);font-size:12px;display:flex;align-items:center;gap:4px}

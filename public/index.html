@@ -34,6 +34,14 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800;900&display=swap" rel="stylesheet">
+
+  <!-- [FEAT-GOOGLESIGNIN-WEB-01] تسجيل الدخول/التسجيل بجوجل بالموقع — نفس مكتبة
+       Firebase المُستخدَمة أصلاً لإشعارات Push (public/app.js FIREBASE_CONFIG)،
+       بس compat/auth بدل compat/messaging. الخادم يتحقق من idToken الناتج عبر
+       نفس verifyGoogleIdToken (routes/auth.routes.js /auth/google) المُستخدَمة
+       أصلاً لتسجيل دخول جوجل بتطبيق الموبايل — provider-agnostic بالكامل. -->
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 </head>
 <body>
 
