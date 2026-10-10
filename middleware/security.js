@@ -102,6 +102,14 @@ const supportLimiter = rateLimit({
 // [SEC-FIX-13] Helmet with explicit frameguard DENY + CSP hardened
 const helmetMiddleware = helmet({
   frameguard: { action: 'deny' },
+  // [FEAT-GOOGLESIGNIN-WEB-01] راجع DECISIONS.md — Helmet يفرض افتراضياً
+  // Cross-Origin-Opener-Policy: same-origin، وهذا يقطع قناة الاتصال
+  // (window.opener/postMessage) بين نافذة تسجيل الدخول المنبثقة بجوجل
+  // (signInWithPopup) والصفحة الأصلية بصمت — لا خطأ واضح بالـConsole، الصفحة
+  // فقط تبقى عالقة "تعمل" للأبد بعد اختيار الحساب (تأكّد ميدانياً بتجربة
+  // مباشرة). same-origin-allow-popups يحافظ على نفس الحماية ضد نوافذ Cross-
+  // Origin العشوائية، ويستثني فقط النوافذ المنبثقة التي فتحتها الصفحة نفسها.
+  crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
   hsts: {
     maxAge: 31536000,
     includeSubDomains: true,
