@@ -16,14 +16,17 @@ const FREE_TIER_QUOTA = 2;
 // ═══════════════════════════════════════════════
 // Firebase Push Notifications — Web
 // ═══════════════════════════════════════════════
-// [FEAT-GOOGLESIGNIN-WEB-01] apiKey/authDomain/projectId حقيقيون الآن (نفس
-// مشروع Firebase المستخدَم بتطبيق الموبايل) — كافيان لتشغيل Firebase Auth
-// (signInWithPopup) بلا حاجة لتسجيل "تطبيق ويب" منفصل بـFirebase Console؛
+// [FEAT-GOOGLESIGNIN-WEB-01] apiKey هو "Browser key (auto created by Firebase)"
+// تحديداً (Google Cloud Console → APIs & Services → Credentials) — فايربيس
+// ينشئ تلقائياً 3 مفاتيح منفصلة لكل مشروع (iOS/Android/Browser)، كل واحد
+// مقيَّد لمنصته. أول محاولة استخدمت مفتاح Android بالغلط فرمت
+// auth/internal-error من كل محاولة signInWithPopup (مقيَّد ببصمة/حزمة
+// أندرويد، يرفض طلبات متصفح). authDomain/projectId كانا صحيحين أصلاً.
 // الحقول الثلاثة الباقية (messagingSenderId/appId/VAPID_KEY تحت) تخص إشعارات
 // Push حصراً (initFirebasePush) ولا تُستخدَم بمسار تسجيل الدخول إطلاقاً — ما
 // زالت تنتظر إعداد "تطبيق ويب" + شهادة VAPID منفصلَين، خارج نطاق هذا التعديل.
 const FIREBASE_CONFIG = {
-  apiKey:            "AIzaSyB1U9FxhveMTbpw0o_Ko9JTB6DwDveMHJ8",
+  apiKey:            "AIzaSyDgVltlPKMo_YtDAEc8_sfOdRdMHAYV0ec",
   authDomain:        "sallehly-9bc16.firebaseapp.com",
   projectId:         "sallehly-9bc16",
   storageBucket:     "sallehly-9bc16.appspot.com",
